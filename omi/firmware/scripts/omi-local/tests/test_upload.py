@@ -243,6 +243,7 @@ class ServerTests(unittest.TestCase):
 
         server2 = run(self._with_server(go2))
         self.assertEqual(up2.result, "ok")
+        self.assertEqual(server2.sessions_ok, 1)
         self.assertEqual(up2.uploaded, 300 - acked)  # no re-upload of persisted chunks
         self.assertEqual(self.ring.read_seq, 300)
         files = sorted(self.dest.glob("*.opus"))

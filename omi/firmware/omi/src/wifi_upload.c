@@ -303,9 +303,15 @@ static enum wifi_upload_result upload_records(int sock, bool manual, sd_ring_inf
     size_t buf_len = 0;
     uint8_t *buf = storage_shared_bulk_buffer(&buf_len);
     uint32_t chunk_packets = (uint32_t) (buf_len / RAW_AUDIO_PACKET_BYTES);
-    uint64_t last_advanced = seq;
+    uint64_t last_advanced = info->read_seq;
     uint64_t end = info->write_seq;
     uint8_t got_type;
+
+    /* The receiver asked to start past our read pointer: it already persisted
+     * [read_seq, seq) in an earlier (interrupted) session, so free that now. */
+    if (seq > last_advanced && sd_ring_advance(seq) == 0) {
+        last_advanced = seq;
+    }
 
     for (int pass = 0; pass < UP_MAX_PASSES; pass++) {
         while (seq < end) {
