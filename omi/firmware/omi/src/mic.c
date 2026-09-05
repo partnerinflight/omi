@@ -23,6 +23,7 @@
 #include "storage.h"
 #include "t5838_aad.h"
 #include "transport.h"
+#include "wifi_upload.h"
 #endif
 
 LOG_MODULE_REGISTER(mic, CONFIG_LOG_DEFAULT_LEVEL);
@@ -374,7 +375,7 @@ static void enter_hw_aad(void)
      * slave latency here was causing dropped BLE connections. */
     /* Keep the SD powered while a phone is connected so it can sync recordings at
      * any time; only cut SD power when offline + idle. */
-    if (!is_connected) {
+    if (!is_connected && !wifi_upload_active()) {
         sd_request_power(false);
     }
 

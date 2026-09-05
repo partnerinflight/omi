@@ -61,3 +61,15 @@ class StateStore:
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self._data, indent=2, sort_keys=True))
         tmp.replace(self.path)
+
+    def fsync(self) -> None:
+        import os
+
+        try:
+            fd = os.open(self.path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)

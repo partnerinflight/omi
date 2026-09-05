@@ -2,6 +2,9 @@
 #define SETTINGS_H
 
 #include <stdint.h>
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+#include "wifi_upload.h"
+#endif
 #include <zephyr/drivers/rtc.h>
 
 /**
@@ -91,5 +94,11 @@ int app_settings_save_lsm6dsl_time_base(uint64_t epoch_s, uint32_t imu_timestamp
  * @param imu_timestamp Output IMU timestamp counter.
  */
 int app_settings_get_lsm6dsl_time_base(uint64_t *epoch_s, uint32_t *imu_timestamp);
+
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+/** Persist / read back the Wi-Fi upload configuration ("omi/wifi_upload"). */
+int app_settings_save_wifi_upload(const struct wifi_upload_config *cfg);
+int app_settings_get_wifi_upload(struct wifi_upload_config *out);
+#endif
 
 #endif // SETTINGS_H

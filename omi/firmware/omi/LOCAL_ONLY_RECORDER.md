@@ -102,8 +102,71 @@ is running (`omi-local info`).
 
 See `omi/firmware/scripts/omi-local/README.md`.
 
+## Optional: Wi-Fi upload to a local receiver while charging
+
+The CV1 carries an nRF7002 Wi-Fi companion that upstream never enabled. The
+Wi-Fi build (`CONFIG_OMI_WIFI_UPLOAD`, `src/wifi_upload.c`) uses it for one
+thing only: while the device is on the charger and the ring holds at least a
+minute of unread audio, it joins the provisioned network, connects to ONE
+provisioned receiver (`omi-local serve` on any Windows/macOS/Linux machine on
+the LAN), proves the receiver knows the shared secret, streams the unread
+records, and deletes each chunk only after the receiver has ACKed that it wrote
+and fsync'ed it. The nRF7002 is powered down again after the session (or when
+the charger is removed, which aborts the session). Off the charger nothing
+changes.
+
+### Build
+
+```bash
+west build -b omi/nrf5340/cpuapp omi/firmware/omi --sysbuild -d build-wifi --pristine always \
+  -- -DBOARD_ROOT="$PWD/omi/firmware" -DCONF_FILE=omi.conf \
+     -DEXTRA_CONF_FILE=overlay-wifi-upload.conf -DSB_EXTRA_CONF_FILE=sysbuild-wifi.conf
+```
+
+`sysbuild-wifi.conf` is mandatory: NCS sysbuild silently forces
+`CONFIG_WIFI_NRF70=n` unless `SB_CONFIG_WIFI_NRF70=y` is set.
+
+### Provision and run
+
+```bash
+omi-local serve ~/omi-recordings --port 7331        # on the receiver machine; prints/creates the secret
+omi-local wifi-setup --ssid MyWifi --password '...' --host 192.168.1.20 --port 7331   # over BLE, same secret file
+omi-local wifi-status                               # configured? last result? heap headroom?
+omi-local upload-now --watch 30                     # force a session without waiting for the charger
+```
+
+The secret lives in `~/.omi-local/upload-secret.hex` on the machine that ran
+`wifi-setup`; copy that file to the receiver machine (or pass `--secret-file`
+on both sides). Give the receiver a fixed LAN IP (DHCP reservation): the
+firmware has no DNS.
+
+### Protocol
+
+See the header of `src/wifi_upload.c` (TCP, framed messages, mutual
+HMAC-SHA256 challenge/response, ACK-after-persist). `src/lib/core/local_auth.c`
+is a self-contained SHA-256/HMAC that is compiled natively and cross-checked
+against Python's hashlib in the CLI test-suite.
+
+### Memory budget (measured)
+
+| Build | app-core RAM | flash |
+|---|---|---|
+| BLE-only recorder | 335 KB / 440 KB (74%) | 247 KB |
+| Wi-Fi upload | 429 KB / 440 KB (95%) | 630 KB |
+
+Zephyr allocates everything at link time, so the recorder cannot "free" RAM
+during an upload; the Wi-Fi build instead shrinks two recorder buffers
+(`SD_REQ_QUEUE_MSGS` 100→40, `AUDIO_BUFFER_SAMPLES` 1 s→0.3 s) and lends the
+16 KiB BLE bulk buffer to the uploader. The system heap is 120 KB (Nordic's
+default ask is 150 KB); `omi-local wifi-status` reports free/max-used heap so
+this can be tuned on real hardware. **Heap sufficiency, association and
+throughput have not been validated on a device yet.**
+
 ## Remaining ways audio could leave the device
 
+* The Wi-Fi upload path, in the Wi-Fi build only, and only to the receiver
+  that proves knowledge of the provisioned 32-byte secret. Wi-Fi credentials
+  and the secret are stored in the settings partition of internal flash.
 * The local dump service itself, if a BLE client that knows the protocol
   connects and explicitly issues `READ`. BLE is unauthenticated in upstream
   firmware and this fork does not change that (pairing/bonding can be added on

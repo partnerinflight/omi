@@ -17,6 +17,7 @@
 #include "sd_card.h"
 #include "transport.h"
 #include "utils.h"
+#include "wifi_upload.h"
 
 LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -41,6 +42,9 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
  *   [0x12][seq:u64]                ADVANCE (delete) everything before seq
  *   [0x13]                         CLEAR (delete everything)
  *   [0x03]                         STOP the current read
+ *   [0x20]                         UPLOAD_NOW (Wi-Fi build: start an upload session now)
+ * Config characteristic (Wi-Fi build only): write TLVs (see wifi_upload.h) to
+ * provision SSID/PSK/receiver/secret; read the 28-byte upload status.
  * Notifications (from the control characteristic):
  *   [0x01][status]                                          ACK
  *   [0x02][read:u64][write:u64][cap:u32][dropped:u64][pkt:u16][codec:u8]  INFO
@@ -55,12 +59,14 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 #define CMD_RING_READ 0x11
 #define CMD_RING_ADVANCE 0x12
 #define CMD_RING_CLEAR 0x13
+#define CMD_UPLOAD_NOW 0x20
 
 #define STORAGE_DEFERRED 0xFF
 
 #define INVALID_COMMAND 6
 #define STORAGE_NOT_READY 9
 #define SEQ_OUT_OF_RANGE 10
+#define UPLOAD_NOT_CONFIGURED 11
 
 #define NOTIFY_ACK 0x01
 #define NOTIFY_INFO 0x02
@@ -103,6 +109,21 @@ static struct bt_uuid_128 storage_write_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x7D2C0002, 0x9A6B, 0x4E2F, 0xB1C3, 0x5A0F0C41ED10));
 static struct bt_uuid_128 storage_read_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x7D2C0003, 0x9A6B, 0x4E2F, 0xB1C3, 0x5A0F0C41ED10));
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+static struct bt_uuid_128 upload_config_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x7D2C0004, 0x9A6B, 0x4E2F, 0xB1C3, 0x5A0F0C41ED10));
+static ssize_t upload_config_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags);
+static ssize_t upload_config_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset);
+#endif
 
 K_THREAD_STACK_DEFINE(storage_stack, 4096);
 static struct k_thread storage_thread;
@@ -123,11 +144,86 @@ static struct bt_gatt_attr storage_service_attr[] = {
                            NULL,
                            NULL),
     BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+    BT_GATT_CHARACTERISTIC(&upload_config_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           upload_config_read_handler,
+                           upload_config_write_handler,
+                           NULL),
+#endif
 };
 
 struct bt_gatt_service storage_service = BT_GATT_SERVICE(storage_service_attr);
 
+/* While a Wi-Fi upload session owns the bulk buffer / SD, BLE READ/ADVANCE/
+ * CLEAR are answered with STORAGE_NOT_READY instead of racing the uploader. */
+static bool upload_busy;
+
+void storage_set_upload_busy(bool busy)
+{
+    upload_busy = busy;
+}
+
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+/* Provisioning writes arrive on the BT RX thread; parse + persist on the
+ * system workqueue so settings/flash I/O never runs on the BT stack. */
+static uint8_t upload_cfg_pending[192];
+static uint16_t upload_cfg_pending_len;
+static int8_t upload_cfg_last_err;
+static void upload_cfg_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    int ret = wifi_upload_apply_tlv(upload_cfg_pending, upload_cfg_pending_len);
+    upload_cfg_last_err = (int8_t) ret;
+    memset(upload_cfg_pending, 0, sizeof(upload_cfg_pending)); /* PSK/secret */
+}
+static K_WORK_DEFINE(upload_cfg_work, upload_cfg_work_handler);
+
+static ssize_t upload_config_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+    if (offset != 0 || len == 0 || len > sizeof(upload_cfg_pending)) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    if (k_work_is_pending(&upload_cfg_work)) {
+        return BT_GATT_ERR(BT_ATT_ERR_PROCEDURE_IN_PROGRESS);
+    }
+    memcpy(upload_cfg_pending, buf, len);
+    upload_cfg_pending_len = len;
+    k_work_submit(&upload_cfg_work);
+    return len;
+}
+
+static ssize_t upload_config_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset)
+{
+    struct wifi_upload_status st;
+    wifi_upload_get_status(&st);
+    st.reserved = (uint8_t) upload_cfg_last_err;
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &st, sizeof(st));
+}
+#endif /* CONFIG_OMI_WIFI_UPLOAD */
+
 static uint8_t storage_buffer[STORAGE_BUFFER_SIZE];
+
+uint8_t *storage_shared_bulk_buffer(size_t *len)
+{
+    if (len) {
+        *len = sizeof(storage_buffer);
+    }
+    return storage_buffer;
+}
 static uint8_t data_notify_buf[STORAGE_NOTIFY_VALUE_MAX_LEN];
 static uint8_t control_notify_buf[STORAGE_CONTROL_NOTIFY_SIZE];
 
@@ -625,6 +721,12 @@ static uint8_t parse_storage_command(void *buf, uint16_t len)
         return 0;
     }
 
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+    if (command == CMD_UPLOAD_NOW) {
+        return (wifi_upload_request_now() == 0) ? 0 : UPLOAD_NOT_CONFIGURED;
+    }
+#endif
+
     return INVALID_COMMAND;
 }
 
@@ -683,7 +785,9 @@ static void storage_write(void)
 
         if (clear_requested) {
             clear_requested = 0;
-            if (conn) {
+            if (conn && upload_busy) {
+                (void) send_ack(conn, STORAGE_NOT_READY);
+            } else if (conn) {
                 LOG_INF("Explicit delete: clearing the whole ring");
                 int ret = sd_ring_clear();
                 if (ret >= 0) {
@@ -695,7 +799,9 @@ static void storage_write(void)
 
         if (advance_request_pending) {
             advance_request_pending = 0;
-            if (conn) {
+            if (conn && upload_busy) {
+                (void) send_ack(conn, STORAGE_NOT_READY);
+            } else if (conn) {
                 LOG_INF("Explicit delete: advancing ring read pointer to seq %llu",
                         (unsigned long long) pending_advance_seq);
                 int ret = sd_ring_advance(pending_advance_seq);
@@ -708,6 +814,10 @@ static void storage_write(void)
 
         if (read_request_pending) {
             if (!conn) {
+                read_request_pending = 0;
+                read_deadline = 0;
+            } else if (upload_busy) {
+                (void) send_ack(conn, STORAGE_NOT_READY);
                 read_request_pending = 0;
                 read_deadline = 0;
             } else if (sd_is_ready()) {

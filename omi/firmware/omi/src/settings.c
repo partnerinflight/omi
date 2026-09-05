@@ -23,6 +23,9 @@ struct lsm6dsl_time_base {
 };
 
 static struct lsm6dsl_time_base lsm6dsl_time_base = {0};
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+static struct wifi_upload_config wifi_upload_cfg = {0};
+#endif
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -91,6 +94,21 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
             (unsigned)len, (unsigned)sizeof(rtc_epoch), (unsigned)sizeof(uint32_t));
         return -EINVAL;
     }
+
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+    if (settings_name_steq(name, "wifi_upload", &next) && !next) {
+        if (len != sizeof(wifi_upload_cfg)) {
+            LOG_WRN("wifi_upload size mismatch: len=%u expected=%u", (unsigned) len, (unsigned) sizeof(wifi_upload_cfg));
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &wifi_upload_cfg, sizeof(wifi_upload_cfg));
+        if (rc >= 0) {
+            LOG_INF("Loaded wifi_upload config (enabled=%u)", wifi_upload_cfg.enabled);
+            return 0;
+        }
+        return rc;
+    }
+#endif
 
     if (settings_name_steq(name, "lsm6dsl_time_base", &next) && !next) {
         if (len == sizeof(lsm6dsl_time_base)) {
@@ -188,6 +206,31 @@ int app_settings_get_lsm6dsl_time_base(uint64_t *epoch_s, uint32_t *imu_timestam
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(app_settings, "omi", NULL, settings_set, NULL, NULL);
+
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+int app_settings_save_wifi_upload(const struct wifi_upload_config *cfg)
+{
+    if (!cfg) {
+        return -EINVAL;
+    }
+    int err = settings_save_one("omi/wifi_upload", cfg, sizeof(*cfg));
+    if (err) {
+        LOG_ERR("Failed to save wifi_upload config (err %d)", err);
+        return err;
+    }
+    wifi_upload_cfg = *cfg;
+    return 0;
+}
+
+int app_settings_get_wifi_upload(struct wifi_upload_config *out)
+{
+    if (!out) {
+        return -EINVAL;
+    }
+    *out = wifi_upload_cfg;
+    return 0;
+}
+#endif
 
 int app_settings_init(void)
 {

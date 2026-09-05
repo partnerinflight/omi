@@ -29,6 +29,8 @@ bool sd_is_ready(void);
 /** @brief True when the ring holds no free slot: recording is paused (nothing is
  *  overwritten) until the host explicitly deletes recordings. */
 bool sd_ring_is_full(void);
+/** @brief Approximate unread packets from the in-RAM ring state (no SD access). */
+uint64_t sd_ring_peek_unread(void);
 
 /**
  * @brief Request the SD worker to power the SD NAND on (remount) or off.

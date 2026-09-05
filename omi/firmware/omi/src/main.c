@@ -23,6 +23,7 @@
 
 #include "imu.h"
 #include "lib/core/sd_card.h"
+#include "lib/core/wifi_upload.h"
 #include "rtc.h"
 #include "spi_flash.h"
 #include "wdog_facade.h"
@@ -141,6 +142,15 @@ void set_led_state()
     }
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    // Uploading over Wi-Fi (only ever on the charger): solid green + blue blink.
+    if (wifi_upload_active()) {
+        set_led_green(true);
+        set_led_blue(blink_toggle);
+        set_led_red(false);
+        blink_toggle = !blink_toggle;
+        return;
+    }
+
     // Storage full: recording is paused (old audio is never overwritten).
     // Alternate red/blue every second -- a pattern no other state uses -- and
     // buzz once on the transition so it is noticed while worn.
@@ -367,6 +377,13 @@ int main(void)
         return ret;
     }
     // Hardware AAD (T5838) is started inside mic_start().
+
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+    ret = wifi_upload_init();
+    if (ret) {
+        LOG_ERR("Failed to start Wi-Fi upload service (err %d)", ret);
+    }
+#endif
 
     LOG_INF("Device initialized successfully\n");
 

@@ -379,3 +379,9 @@ class BleakTransport:
             return bytes(await self._client.read_gatt_char(P.DIS_FIRMWARE_REV_UUID)).decode(errors="replace")
         except Exception:  # noqa: BLE001
             return None
+
+    async def read_gatt(self, uuid: str) -> bytes:
+        return bytes(await self._client.read_gatt_char(uuid))
+
+    async def write_gatt(self, uuid: str, data: bytes) -> None:
+        await self._client.write_gatt_char(uuid, data, response=True)

@@ -20,7 +20,13 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
 #define DISK_SECTOR_SIZE 512U
 
+/* Each queued write is ~460 B. The Wi-Fi build needs the RAM for the nRF70
+ * stack, so it keeps ~4 s of audio buffered across an SD remount instead of ~10 s. */
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+#define SD_REQ_QUEUE_MSGS 40
+#else
 #define SD_REQ_QUEUE_MSGS 100
+#endif
 #define SD_PRIO_QUEUE_MSGS 10
 #define WRITE_DRAIN_BURST 16
 
@@ -1189,6 +1195,14 @@ bool is_sd_on(void)
 bool sd_ring_is_full(void)
 {
     return atomic_get(&ring_full) != 0;
+}
+
+uint64_t sd_ring_peek_unread(void)
+{
+    /* Lock-free snapshot of the worker's in-RAM ring state; good enough for a
+     * "is there anything worth uploading" threshold and needs no SD access
+     * (the card may be powered off). */
+    return ring_used_packets();
 }
 
 bool sd_is_ready(void)

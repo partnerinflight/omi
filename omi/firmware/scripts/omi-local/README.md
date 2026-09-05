@@ -68,6 +68,34 @@ as files. Consequently:
 Protocol details live in `omi_local/protocol.py` and in the header comment of
 `omi/firmware/omi/src/lib/core/storage.c`.
 
+## Wi-Fi upload receiver (Windows, macOS or Linux)
+
+With the Wi-Fi firmware build the device uploads by itself whenever it is on
+the charger. Run the receiver on the machine that should hold the recordings:
+
+```powershell
+# Windows PowerShell (Python 3.10+ from python.org)
+cd omi\firmware\scripts\omi-local
+py -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -e .
+omi-local serve C:\omi-recordings --port 7331
+```
+
+Allow the port through Windows Firewall (Private network) when prompted, and
+give the machine a fixed LAN IP. Then, from any machine with Bluetooth and the
+same secret file (`~/.omi-local/upload-secret.hex`, or `%USERPROFILE%\.omi-local\`
+on Windows; `wifi-setup` creates it):
+
+```bash
+omi-local wifi-setup --ssid MyWifi --password '...' --host 192.168.1.20 --port 7331
+omi-local wifi-status
+omi-local upload-now --watch 30
+```
+
+The receiver writes the same per-session `.opus` + `.json` files as `pull`,
+ACKs a chunk only after it is written and fsync'ed, and the device deletes
+only ACKed chunks. An interrupted upload resumes from what the receiver holds.
+
 ## Tests
 
 ```bash

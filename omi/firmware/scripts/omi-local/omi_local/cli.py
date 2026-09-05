@@ -10,8 +10,11 @@
     omi-local delete --all
     omi-local time-sync
     omi-local verify <file.opus>
+    omi-local wifi-setup --ssid S --password P --host IP [--port N]   # provision Wi-Fi upload (Wi-Fi firmware)
+    omi-local wifi-status / wifi-forget / upload-now
+    omi-local serve <dest> [--port N]                                 # the local receiver for Wi-Fi uploads
 
-Nothing here talks to any server. BLE only.
+Nothing here talks to any cloud. BLE, or TCP on your own LAN for `serve`.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from pathlib import Path
 
 from . import __version__
 from . import protocol as P
+from . import upload_protocol as U
 from .device import BleakTransport, DeviceError, DumpClient, Progress, TransferError
 from .oggopus import MuxState, OggOpusWriter, iter_pages
 from .state import DeviceState, OpenFile, StateStore
@@ -194,6 +198,16 @@ class SessionWriter:
         if seq == self.state.downloaded_through:
             self.state.downloaded_through = chunk_end
         self.store.put(self.state)
+
+    def fsync(self) -> None:
+        """Force written pages to disk (the Wi-Fi receiver ACKs only after this)."""
+        import os
+
+        for fp in (self._fp, self._raw_fp):
+            if fp is not None and not fp.closed:
+                fp.flush()
+                os.fsync(fp.fileno())
+        self.store.fsync()
 
     def finish(self, final: bool) -> None:
         """final=True closes the current file with EOS (device fully drained)."""
@@ -400,6 +414,101 @@ async def cmd_time_sync(args) -> int:
         await client.close()
 
 
+async def _read_upload_status(t: BleakTransport) -> U.UploadStatus:
+    return U.parse_upload_status(await t.read_gatt(U.UPLOAD_CONFIG_UUID))
+
+
+def _print_upload_status(st: U.UploadStatus) -> None:
+    print(f"wifi upload    : {'configured' if st.configured else 'NOT configured'}")
+    print(f"state          : {st.state_name}")
+    print(f"last result    : {st.result_name} (errno {st.last_errno})")
+    if st.last_config_err:
+        print(f"last config    : rejected (err {st.last_config_err})")
+    print(f"sessions ok    : {st.sessions_ok}, packets uploaded: {st.packets_uploaded}")
+    if st.last_attempt_uptime_s:
+        print(f"last attempt   : {st.last_attempt_uptime_s}s after boot")
+    if st.heap_free or st.heap_max_used:
+        print(f"heap           : {st.heap_free} B free, {st.heap_max_used} B max used (Wi-Fi stack tuning)")
+
+
+async def cmd_wifi_setup(args) -> int:
+    from .server import load_or_create_secret
+
+    secret = load_or_create_secret(Path(args.secret_file) if args.secret_file else None)
+    blob = U.encode_wifi_config(ssid=args.ssid, password=args.password, host=args.host, port=args.port,
+                                secret=secret, enabled=not args.disabled)
+    client, t = await _connect(args)
+    try:
+        await t.write_gatt(U.UPLOAD_CONFIG_UUID, blob)
+        await asyncio.sleep(1.0)  # the device persists on its work queue
+        st = await _read_upload_status(t)
+        if st.last_config_err:
+            print(f"device rejected the configuration (err {st.last_config_err})", file=sys.stderr)
+            return 2
+        print(f"provisioned: ssid={args.ssid!r} receiver={args.host}:{args.port} "
+              f"secret={'from ' + args.secret_file if args.secret_file else 'in ~/.omi-local/upload-secret.hex'}")
+        _print_upload_status(st)
+        print("run `omi-local serve <dest>` on the receiver machine with the same secret file")
+        return 0
+    finally:
+        await client.close()
+
+
+async def cmd_wifi_status(args) -> int:
+    client, t = await _connect(args)
+    try:
+        _print_upload_status(await _read_upload_status(t))
+        return 0
+    finally:
+        await client.close()
+
+
+async def cmd_wifi_forget(args) -> int:
+    client, t = await _connect(args)
+    try:
+        await t.write_gatt(U.UPLOAD_CONFIG_UUID, U.encode_wifi_config(forget=True))
+        await asyncio.sleep(1.0)
+        st = await _read_upload_status(t)
+        print("Wi-Fi upload configuration erased" if not st.configured else "device still reports configured")
+        return 0 if not st.configured else 2
+    finally:
+        await client.close()
+
+
+async def cmd_upload_now(args) -> int:
+    client, t = await _connect(args)
+    try:
+        await client.t.write_control(bytes([U.CMD_UPLOAD_NOW]))
+        ack = await client._ack()
+        if ack.status != P.STATUS_OK:
+            print(f"device refused: {'Wi-Fi upload not configured' if ack.status == 11 else P.status_name(ack.status)}",
+                  file=sys.stderr)
+            return 2
+        print("upload session requested; the device connects to the receiver by itself.")
+        if args.watch:
+            for _ in range(int(args.watch)):
+                await asyncio.sleep(2.0)
+                st = await _read_upload_status(t)
+                print(f"  state={st.state_name} last={st.result_name} packets={st.packets_uploaded}")
+                if st.state == 0 and st.last_attempt_uptime_s:
+                    break
+        return 0
+    finally:
+        await client.close()
+
+
+async def cmd_serve(args) -> int:
+    from .server import UploadServer, load_or_create_secret
+
+    secret = load_or_create_secret(Path(args.secret_file) if args.secret_file else None)
+    server = UploadServer(secret, Path(args.dest), host=args.bind, port=args.port)
+    print(f"receiver: listening on {args.bind}:{args.port}, saving to {args.dest} (Ctrl-C to stop)")
+    print("provision the device with: omi-local wifi-setup --ssid ... --password ... --host <this machine's IP> "
+          f"--port {args.port}")
+    await server.serve_forever()
+    return 0
+
+
 def cmd_verify(args) -> int:
     data = Path(args.file).read_bytes()
     pages = list(iter_pages(data))
@@ -444,6 +553,23 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("time-sync", help="set the device clock from this computer")
     s = sub.add_parser("verify", help="check an .opus file written by pull")
     s.add_argument("file")
+
+    s = sub.add_parser("wifi-setup", help="provision Wi-Fi upload (requires the Wi-Fi firmware build)")
+    s.add_argument("--ssid", required=True)
+    s.add_argument("--password", default="", help="WPA2 password (omit for an open network)")
+    s.add_argument("--host", required=True, help="IPv4 address of the machine running `omi-local serve`")
+    s.add_argument("--port", type=int, default=7331)
+    s.add_argument("--secret-file", help="shared secret file (default ~/.omi-local/upload-secret.hex, created if missing)")
+    s.add_argument("--disabled", action="store_true", help="store the config but keep uploads off")
+    sub.add_parser("wifi-status", help="show Wi-Fi upload status / last result / heap headroom")
+    sub.add_parser("wifi-forget", help="erase the Wi-Fi upload configuration from the device")
+    s = sub.add_parser("upload-now", help="trigger an upload session immediately (ignores the charger)")
+    s.add_argument("--watch", type=int, default=0, metavar="N", help="poll status N times (2 s apart)")
+    s = sub.add_parser("serve", help="run the local receiver for Wi-Fi uploads")
+    s.add_argument("dest")
+    s.add_argument("--port", type=int, default=7331)
+    s.add_argument("--bind", default="0.0.0.0")
+    s.add_argument("--secret-file", help="shared secret file (default ~/.omi-local/upload-secret.hex)")
     return p
 
 
@@ -453,7 +579,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "verify":
         return cmd_verify(args)
     handler = {"scan": cmd_scan, "info": cmd_info, "list": cmd_list, "pull": cmd_pull, "delete": cmd_delete,
-               "time-sync": cmd_time_sync}[args.cmd]
+               "time-sync": cmd_time_sync, "wifi-setup": cmd_wifi_setup, "wifi-status": cmd_wifi_status,
+               "wifi-forget": cmd_wifi_forget, "upload-now": cmd_upload_now, "serve": cmd_serve}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except DeviceError as e:
