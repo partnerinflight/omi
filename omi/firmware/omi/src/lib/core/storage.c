@@ -12,12 +12,43 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
 
+#include "config.h"
 #include "rtc.h"
 #include "sd_card.h"
 #include "transport.h"
 #include "utils.h"
 
 LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
+
+/*
+ * LOCAL DUMP PROTOCOL (local-only recorder build)
+ *
+ * This is the upstream ring-buffer sync protocol, decoupled from the Omi app:
+ *
+ *  - The GATT service/characteristic UUIDs are different from the Omi app's
+ *    storage service (30295780-...), so the app does not discover a storage
+ *    service and never starts a sync.
+ *  - The device NEVER moves the ring read pointer on its own. Upstream
+ *    auto-advanced ("freed") the ring as the phone acknowledged data, both
+ *    during a transfer and on disconnect; that is gone. Reading is idempotent
+ *    and may be repeated/resumed at any seq in [read_seq, write_seq).
+ *  - Deletion happens only via the explicit CMD_RING_ADVANCE (delete up to a
+ *    seq the host has verified) or CMD_RING_CLEAR (delete everything).
+ *
+ * Commands (write to the control characteristic):
+ *   [0x10]                         INFO
+ *   [0x11][start:u64][count:u32]   READ count packets from start (count 0 = to end)
+ *   [0x12][seq:u64]                ADVANCE (delete) everything before seq
+ *   [0x13]                         CLEAR (delete everything)
+ *   [0x03]                         STOP the current read
+ * Notifications (from the control characteristic):
+ *   [0x01][status]                                          ACK
+ *   [0x02][read:u64][write:u64][cap:u32][dropped:u64][pkt:u16][codec:u8]  INFO
+ *   [0x05][start:u64][count:u32]                            READ_BEGIN
+ *   [0x03][bytes...]                                        DATA (not record aligned)
+ *   [0x04][status][next_seq:u64]                            DONE
+ * Each ring record is [utc_timestamp:u32 BE][440 bytes of [len:u8][opus frame]...].
+ */
 
 #define CMD_STOP_SYNC 0x03
 #define CMD_RING_INFO 0x10
@@ -41,6 +72,7 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 #define STORAGE_IDLE_POLL_MS_CONNECTED 1
 #define STORAGE_WRITE_NOTIFY_ATTR_IDX 2
 #define STORAGE_STATUS_REFRESH_MS 250
+#define STORAGE_INFO_RESPONSE_LEN 32
 
 #define STORAGE_CHUNK_COUNT 36U
 #define STORAGE_BUFFER_SIZE (RAW_AUDIO_PACKET_BYTES * STORAGE_CHUNK_COUNT)
@@ -48,10 +80,6 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 #define STORAGE_NOTIFY_VALUE_MAX_LEN ((CONFIG_BT_L2CAP_TX_MTU > 3U) ? (CONFIG_BT_L2CAP_TX_MTU - 3U) : 20U)
 
 #define SYNC_SPEED_LOG_INTERVAL_MS (2 * 1000)
-
-/* How often, during a bulk read, to persist the ring read pointer up to the
- * packets the phone has confirmed receiving (incremental auto-save). */
-#define STORAGE_ADVANCE_CHECKPOINT_MS 2000
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
@@ -66,18 +94,21 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
                                            uint16_t len,
                                            uint16_t offset);
 
-static struct bt_uuid_128 storage_service_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295780, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
+/* Local-only recorder UUIDs. Deliberately NOT the Omi app's storage service
+ * (30295780-4301-EABD-2904-2849ADFEAE43) so the app cannot find, drain or
+ * clear the ring. Keep in sync with omi/firmware/scripts/omi-local/omi_local/protocol.py. */
+struct bt_uuid_128 local_storage_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x7D2C0001, 0x9A6B, 0x4E2F, 0xB1C3, 0x5A0F0C41ED10));
 static struct bt_uuid_128 storage_write_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295781, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x7D2C0002, 0x9A6B, 0x4E2F, 0xB1C3, 0x5A0F0C41ED10));
 static struct bt_uuid_128 storage_read_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295782, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x7D2C0003, 0x9A6B, 0x4E2F, 0xB1C3, 0x5A0F0C41ED10));
 
 K_THREAD_STACK_DEFINE(storage_stack, 4096);
 static struct k_thread storage_thread;
 
 static struct bt_gatt_attr storage_service_attr[] = {
-    BT_GATT_PRIMARY_SERVICE(&storage_service_uuid),
+    BT_GATT_PRIMARY_SERVICE(&local_storage_service_uuid),
     BT_GATT_CHARACTERISTIC(&storage_write_uuid.uuid,
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_WRITE,
@@ -126,15 +157,6 @@ static uint64_t transfer_start_seq;
 static uint64_t current_read_seq;
 static uint32_t remaining_packets;
 static uint8_t transfer_end_status;
-
-/* Incremental auto-save: bytes of audio the phone has confirmed receiving are
- * accumulated in the TX-completion callback, then the ring read pointer is
- * advanced (and persisted to SD) up to that point. Only delivered data is ever
- * freed, so a mid-sync disconnect resumes from the last checkpoint instead of
- * re-syncing from the start. */
-static atomic_t sync_confirmed_bytes = ATOMIC_INIT(0);
-static uint64_t sync_checkpoint_seq;
-static int64_t sync_checkpoint_deadline_ms;
 
 static atomic_t storage_status_used_bytes = ATOMIC_INIT(0);
 static atomic_t storage_status_unread_packets = ATOMIC_INIT(0);
@@ -243,12 +265,11 @@ static int storage_notify(struct bt_conn *conn, const void *data, uint16_t len)
 }
 
 /* Completion callback: a bulk DATA notification was sent, free its throttle slot.
- * user_data carries this notification's audio-byte count (set in
- * storage_notify_data); accumulate what the phone has confirmed receiving. */
+ * Deliberately does NOT touch the ring read pointer: delivery is never deletion. */
 static void storage_data_tx_done(struct bt_conn *conn, void *user_data)
 {
     ARG_UNUSED(conn);
-    atomic_add(&sync_confirmed_bytes, (atomic_val_t) (uintptr_t) user_data);
+    ARG_UNUSED(user_data);
     transport_bulk_tx_release();
 }
 
@@ -269,13 +290,12 @@ static int storage_notify_data(struct bt_conn *conn, const void *data, uint16_t 
         return -ENOMEM;
     }
 
-    /* len includes the 1-byte NOTIFY_DATA marker; the audio payload is len-1. */
     struct bt_gatt_notify_params params = {
         .attr = &storage_service.attrs[STORAGE_WRITE_NOTIFY_ATTR_IDX],
         .data = data,
         .len = len,
         .func = storage_data_tx_done,
-        .user_data = (void *) (uintptr_t) (len > 0U ? (uint16_t) (len - 1U) : 0U),
+        .user_data = NULL,
     };
 
     int err = bt_gatt_notify_cb(conn, &params);
@@ -364,7 +384,8 @@ static int send_ring_info_response(struct bt_conn *conn)
     sys_put_be32(info.capacity_packets, control_notify_buf + 17);
     sys_put_be64(info.dropped_packets, control_notify_buf + 21);
     sys_put_be16(RAW_AUDIO_PACKET_BYTES, control_notify_buf + 29);
-    return storage_notify(conn, control_notify_buf, 31);
+    control_notify_buf[31] = CODEC_ID; /* 21 = Opus 16 kHz mono, 20 ms frames */
+    return storage_notify(conn, control_notify_buf, STORAGE_INFO_RESPONSE_LEN);
 }
 
 static void reset_transfer_state(void)
@@ -376,61 +397,6 @@ static void reset_transfer_state(void)
     current_read_seq = 0;
     remaining_packets = 0;
     transfer_end_status = 0;
-    atomic_set(&sync_confirmed_bytes, 0);
-    sync_checkpoint_seq = 0;
-    sync_checkpoint_deadline_ms = 0;
-}
-
-/* Ring seq the phone has confirmed receiving (whole packets only). */
-static uint64_t sync_confirmed_seq(void)
-{
-    uint32_t bytes = (uint32_t) atomic_get(&sync_confirmed_bytes);
-    return transfer_start_seq + (uint64_t) (bytes / RAW_AUDIO_PACKET_BYTES);
-}
-
-/* Adjust the cached status for `delta` packets freed, without an SD read, so
- * the app sees free space grow live during a sync. Recording (write_seq) still
- * corrects it via the periodic SD refresh; this only makes the freeing visible
- * between refreshes. */
-static void sync_status_account_freed(uint64_t delta)
-{
-    uint64_t freed = delta * (uint64_t) RAW_AUDIO_PACKET_BYTES;
-    atomic_val_t used = atomic_get(&storage_status_used_bytes);
-    atomic_val_t unread = atomic_get(&storage_status_unread_packets);
-    atomic_val_t free_b = atomic_get(&storage_status_free_bytes);
-
-    atomic_set(&storage_status_used_bytes, used > (atomic_val_t) freed ? used - (atomic_val_t) freed : 0);
-    atomic_set(&storage_status_unread_packets, unread > (atomic_val_t) delta ? unread - (atomic_val_t) delta : 0);
-    atomic_set(&storage_status_free_bytes, free_b + (atomic_val_t) freed);
-}
-
-/* Persist the ring read pointer up to the confirmed-synced seq. Throttled to
- * STORAGE_ADVANCE_CHECKPOINT_MS unless forced. Only moves forward over data the
- * phone already has, so it is always safe to call mid-transfer.
- *
- * force=false (mid-transfer): non-blocking advance so the BLE send stream never
- * stalls. force=true (DONE / disconnect): blocking, to guarantee the read
- * pointer is persisted before the transfer tears down. */
-static void sync_checkpoint_advance(bool force)
-{
-    uint64_t confirmed = sync_confirmed_seq();
-    if (confirmed <= sync_checkpoint_seq) {
-        return;
-    }
-
-    int64_t now = k_uptime_get();
-    if (!force && now < sync_checkpoint_deadline_ms) {
-        return;
-    }
-    sync_checkpoint_deadline_ms = now + STORAGE_ADVANCE_CHECKPOINT_MS;
-
-    uint64_t delta = confirmed - sync_checkpoint_seq;
-    int ret = force ? sd_ring_advance(confirmed) : sd_ring_advance_async(confirmed);
-    if (ret == 0) {
-        sync_checkpoint_seq = confirmed;
-        sync_status_account_freed(delta);
-        LOG_INF("Ring auto-advanced to synced seq %llu", (unsigned long long) confirmed);
-    }
 }
 
 void storage_stop_transfer(void)
@@ -481,9 +447,6 @@ static int start_pending_read(struct bt_conn *conn)
     current_read_seq = pending_start_seq;
     remaining_packets = requested_packets;
     transfer_end_status = 0;
-    atomic_set(&sync_confirmed_bytes, 0);
-    sync_checkpoint_seq = pending_start_seq;
-    sync_checkpoint_deadline_ms = k_uptime_get() + STORAGE_ADVANCE_CHECKPOINT_MS;
     sync_speed_reset(SYNC_SPEED_MODE_NONE);
 
     return 0;
@@ -594,9 +557,8 @@ static void write_to_gatt(struct bt_conn *conn)
 
         current_read_seq += packets_read;
         remaining_packets -= packets_read;
-
-        /* Free device storage as the phone confirms receipt (throttled). */
-        sync_checkpoint_advance(false);
+        /* No auto-advance here: the ring read pointer only moves on an explicit
+         * CMD_RING_ADVANCE / CMD_RING_CLEAR from the host. */
     }
 
     done_pending = true;
@@ -722,6 +684,7 @@ static void storage_write(void)
         if (clear_requested) {
             clear_requested = 0;
             if (conn) {
+                LOG_INF("Explicit delete: clearing the whole ring");
                 int ret = sd_ring_clear();
                 if (ret >= 0) {
                     storage_status_cache_maybe_refresh(true);
@@ -733,6 +696,8 @@ static void storage_write(void)
         if (advance_request_pending) {
             advance_request_pending = 0;
             if (conn) {
+                LOG_INF("Explicit delete: advancing ring read pointer to seq %llu",
+                        (unsigned long long) pending_advance_seq);
                 int ret = sd_ring_advance(pending_advance_seq);
                 if (ret >= 0) {
                     storage_status_cache_maybe_refresh(true);
@@ -765,16 +730,14 @@ static void storage_write(void)
 
         if (transfer_active) {
             if (conn == NULL) {
-                /* Link dropped mid-sync: persist progress up to the last packet
-                 * the phone confirmed, so reconnect resumes from there. */
-                sync_checkpoint_advance(true);
+                /* Link dropped mid-dump: just abort. Nothing is freed, so the host
+                 * can reconnect and re-read from wherever it stopped. */
                 storage_stop_transfer();
             } else if (done_pending) {
                 int err = send_done(conn, transfer_end_status, current_read_seq);
                 if (err == -ENOMEM) {
                     k_yield();
                 } else {
-                    sync_checkpoint_advance(true);
                     reset_transfer_state();
                 }
             } else {

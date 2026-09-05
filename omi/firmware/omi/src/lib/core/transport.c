@@ -35,6 +35,21 @@
 #include "storage.h"
 LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
 
+/*
+ * LOCAL-ONLY RECORDER BUILD
+ *
+ * Microphone audio has exactly one destination in this firmware: the SD ring
+ * (write_to_storage -> sd_card.c). There is no BLE audio characteristic, no
+ * live-stream path and no auto-sync. Stored audio only leaves the device when
+ * a BLE client explicitly issues the local dump commands in storage.c.
+ */
+#ifndef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+#error "Local-only recorder requires CONFIG_OMI_ENABLE_OFFLINE_STORAGE=y"
+#endif
+#ifdef CONFIG_OMI_ENABLE_SPEAKER
+#error "The BLE audio service (incl. speaker playback) was removed from the local-only recorder build"
+#endif
+
 #ifdef CONFIG_OMI_ENABLE_RFSW_CTRL
 static const struct gpio_dt_spec rfsw_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(rfsw_en_pin), gpios, {0});
 #endif
@@ -42,7 +57,7 @@ static const struct gpio_dt_spec rfsw_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(rfsw
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 extern struct bt_gatt_service storage_service;
 extern bool storage_is_on;
-static bool storage_full_warned = false;
+static bool storage_unavailable_warned = false;
 #endif
 
 extern bool is_connected;
@@ -53,27 +68,8 @@ static atomic_t pusher_stop_flag;
 
 struct bt_conn *current_connection = NULL;
 uint16_t current_mtu = 0;
-uint16_t current_package_index = 0;
-
-static ssize_t audio_data_write_handler(struct bt_conn *conn,
-                                        const struct bt_gatt_attr *attr,
-                                        const void *buf,
-                                        uint16_t len,
-                                        uint16_t offset,
-                                        uint8_t flags);
 
 static struct bt_conn_cb _callback_references;
-static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
-static ssize_t audio_data_read_characteristic(struct bt_conn *conn,
-                                              const struct bt_gatt_attr *attr,
-                                              void *buf,
-                                              uint16_t len,
-                                              uint16_t offset);
-static ssize_t audio_codec_read_characteristic(struct bt_conn *conn,
-                                               const struct bt_gatt_attr *attr,
-                                               void *buf,
-                                               uint16_t len,
-                                               uint16_t offset);
 static ssize_t settings_dim_ratio_write_handler(struct bt_conn *conn,
                                                 const struct bt_gatt_attr *attr,
                                                 const void *buf,
@@ -126,49 +122,10 @@ K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
 //
 // Service and Characteristic
 //
-// Audio service with UUID 19B10000-E8F2-537E-4F6C-D104768A1214
-// exposes following characteristics:
-// - Audio data (UUID 19B10001-E8F2-537E-4F6C-D104768A1214) to send audio data (read/notify)
-// - Audio codec (UUID 19B10002-E8F2-537E-4F6C-D104768A1214) to send audio codec type (read)
-// TODO: The current audio service UUID seems to come from old Intel sample code,
-// we should change it to UUID 814b9b7c-25fd-4acd-8604-d28877beee6d
-static struct bt_uuid_128 audio_service_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10000, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-static struct bt_uuid_128 audio_characteristic_data_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10001, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-static struct bt_uuid_128 audio_characteristic_format_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10002, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-static struct bt_uuid_128 audio_characteristic_speaker_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10003, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-
-static struct bt_gatt_attr audio_service_attr[] = {
-    BT_GATT_PRIMARY_SERVICE(&audio_service_uuid),
-    BT_GATT_CHARACTERISTIC(&audio_characteristic_data_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ,
-                           audio_data_read_characteristic,
-                           NULL,
-                           NULL),
-    BT_GATT_CCC(audio_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-    BT_GATT_CHARACTERISTIC(&audio_characteristic_format_uuid.uuid,
-                           BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ,
-                           audio_codec_read_characteristic,
-                           NULL,
-                           NULL),
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-    BT_GATT_CHARACTERISTIC(&audio_characteristic_speaker_uuid.uuid,
-                           BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_WRITE,
-                           NULL,
-                           audio_data_write_handler,
-                           NULL),
-    BT_GATT_CCC(audio_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), //
-#endif
-
-};
-
-static struct bt_gatt_service audio_service = BT_GATT_SERVICE(audio_service_attr);
+// NOTE: the upstream "Audio" service (19B10000-...) with its notify-able audio
+// data characteristic has been removed. Nothing in this build can notify
+// microphone frames over GATT. The codec id is reported in the local storage
+// INFO response instead (storage.c).
 
 // --- Settings Service ---
 static struct bt_uuid_128 settings_service_uuid =
@@ -295,7 +252,7 @@ static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_serv
 // Advertisement data
 static const struct bt_data bt_ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    BT_DATA(BT_DATA_UUID128_ALL, audio_service_uuid.val, sizeof(audio_service_uuid.val)),
+    BT_DATA(BT_DATA_UUID128_ALL, local_storage_service_uuid.val, sizeof(local_storage_service_uuid.val)),
     BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
@@ -307,17 +264,6 @@ static const struct bt_data bt_sd[] = {
 //
 // State and Characteristics
 //
-
-static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
-{
-    if (value == BT_GATT_CCC_NOTIFY) {
-        LOG_INF("Client subscribed for notifications");
-    } else if (value == 0) {
-        LOG_INF("Client unsubscribed from notifications");
-    } else {
-        LOG_INF("Invalid CCC value: %u", value);
-    }
-}
 
 static void charging_status_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
 {
@@ -333,42 +279,6 @@ static void charging_status_ccc_config_changed_handler(const struct bt_gatt_attr
     } else {
         LOG_INF("Invalid charging status CCC value: %u", value);
     }
-}
-
-static ssize_t audio_data_read_characteristic(struct bt_conn *conn,
-                                              const struct bt_gatt_attr *attr,
-                                              void *buf,
-                                              uint16_t len,
-                                              uint16_t offset)
-{
-    LOG_DBG("audio_data_read_characteristic");
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, NULL, 0);
-}
-
-static ssize_t audio_codec_read_characteristic(struct bt_conn *conn,
-                                               const struct bt_gatt_attr *attr,
-                                               void *buf,
-                                               uint16_t len,
-                                               uint16_t offset)
-{
-    uint8_t value[1] = {CODEC_ID};
-    LOG_DBG("audio_codec_read_characteristic %d", CODEC_ID);
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
-}
-
-static ssize_t audio_data_write_handler(struct bt_conn *conn,
-                                        const struct bt_gatt_attr *attr,
-                                        const void *buf,
-                                        uint16_t len,
-                                        uint16_t offset,
-                                        uint8_t flags)
-{
-    uint16_t amount = 400;
-    int16_t *int16_buf = (int16_t *) buf;
-    uint8_t *data = (uint8_t *) buf;
-    bt_gatt_notify(conn, attr, &amount, sizeof(amount));
-    amount = speak(len, buf);
-    return len;
 }
 
 static ssize_t settings_dim_ratio_write_handler(struct bt_conn *conn,
@@ -655,16 +565,15 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 #endif
 }
 
-// Number of BLE TX slots reserved for non-audio notifications (battery, status, diagnostics).
-// Audio is throttled so these slots are always available.
-#define AUDIO_TX_RESERVED_SLOTS 2
+// Number of BLE TX slots reserved for short control notifications (battery, status, ACKs).
+// The storage dump stream is throttled so these slots are always available.
+#define BULK_TX_RESERVED_SLOTS 2
 
-// Semaphore that caps concurrent in-flight audio notifications to
-// (CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS), preserving
-// AUDIO_TX_RESERVED_SLOTS buffers for battery/diagnostic/status notifs.
-K_SEM_DEFINE(audio_tx_sem,
-             CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS,
-             CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS);
+// Semaphore that caps concurrent in-flight bulk (storage dump) notifications to
+// (CONFIG_BT_CONN_TX_MAX - BULK_TX_RESERVED_SLOTS).
+K_SEM_DEFINE(bulk_tx_sem,
+             CONFIG_BT_CONN_TX_MAX - BULK_TX_RESERVED_SLOTS,
+             CONFIG_BT_CONN_TX_MAX - BULK_TX_RESERVED_SLOTS);
 
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 {
@@ -697,11 +606,10 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     current_mtu = 0;
     charging_status_last_notified = -1;
 
-    // Reset the audio TX throttle semaphore so the pusher thread is not
+    // Reset the bulk TX throttle semaphore so the storage thread is not
     // left blocked forever if it was waiting for a slot when the connection dropped.
-    k_sem_init(&audio_tx_sem,
-               CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS,
-               CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS);
+    k_sem_init(
+        &bulk_tx_sem, CONFIG_BT_CONN_TX_MAX - BULK_TX_RESERVED_SLOTS, CONFIG_BT_CONN_TX_MAX - BULK_TX_RESERVED_SLOTS);
 }
 
 static bool _le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
@@ -970,7 +878,6 @@ static int ensure_local_ble_identity(void)
 // Ring Buffer
 //
 
-#define NET_BUFFER_HEADER_SIZE 3
 #define RING_BUFFER_HEADER_SIZE 2
 static uint8_t tx_queue[NETWORK_RING_BUF_SIZE * (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)];
 static uint8_t tx_buffer[CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE];
@@ -1030,105 +937,23 @@ static bool read_from_tx_queue()
 // Pusher
 //
 
-// Called by the BT stack when an audio notification has been sent and its
-// TX buffer returned to the pool. Releases the throttle semaphore slot.
-static void on_audio_tx_done(struct bt_conn *conn, void *user_data)
-{
-    ARG_UNUSED(conn);
-    ARG_UNUSED(user_data);
-    k_sem_give(&audio_tx_sem);
-}
-
-// Shared TX-slot reservation. The storage-sync path takes/releases the same
-// semaphore as the audio pusher, so audio + sync together never consume the
-// last AUDIO_TX_RESERVED_SLOTS buffers -> they stay free for short control
-// notifications (battery/charging/status), which were otherwise starved (-ENOMEM)
-// during a sync.
+// Shared TX-slot reservation for the storage dump stream (storage.c). Reserving
+// a slot per bulk notification keeps BULK_TX_RESERVED_SLOTS buffers free for
+// short control notifications (battery/charging/status/ACK), which were
+// otherwise starved (-ENOMEM) during a transfer.
 int transport_bulk_tx_acquire(k_timeout_t timeout)
 {
-    return k_sem_take(&audio_tx_sem, timeout);
+    return k_sem_take(&bulk_tx_sem, timeout);
 }
 
 void transport_bulk_tx_release(void)
 {
-    k_sem_give(&audio_tx_sem);
+    k_sem_give(&bulk_tx_sem);
 }
 
 // Thread
 K_THREAD_STACK_DEFINE(pusher_stack, 4096);
 static struct k_thread pusher_thread;
-static uint16_t packet_next_index = 0;
-
-// Define buffer sizes based on configuration and potential MTU
-#define MAX_POSSIBLE_MTU 517
-static uint8_t pusher_temp_data[MAX_POSSIBLE_MTU];
-
-static bool push_to_gatt(struct bt_conn *conn)
-{
-    uint8_t *buffer = tx_buffer + RING_BUFFER_HEADER_SIZE;
-    uint32_t offset = 0;
-    uint8_t index = 0;
-    int retry_count = 0;
-    const int max_retries = 3;
-
-    while (offset < tx_buffer_size) {
-        uint32_t packet_size = MIN(current_mtu - NET_BUFFER_HEADER_SIZE, tx_buffer_size - offset);
-
-        // Block until a throttle slot is available. This preserves every audio
-        // packet while still guaranteeing AUDIO_TX_RESERVED_SLOTS remain free
-        // for battery/diagnostic/status notifications at all times.
-        k_sem_take(&audio_tx_sem, K_FOREVER);
-
-        uint32_t id = packet_next_index++;
-        pusher_temp_data[0] = id & 0xFF;
-        pusher_temp_data[1] = (id >> 8) & 0xFF;
-        pusher_temp_data[2] = index;
-        memcpy(pusher_temp_data + NET_BUFFER_HEADER_SIZE, buffer + offset, packet_size);
-
-        offset += packet_size;
-        index++;
-
-        retry_count = 0;
-        while (retry_count < max_retries) {
-            // Try send notification with completion callback to release the throttle slot.
-            // bt_gatt_notify_cb only invokes the callback when it returns 0 (success),
-            // so there is no risk of double-releasing the semaphore in the error path below.
-            struct bt_gatt_notify_params params = {
-                .attr = &audio_service.attrs[1],
-                .data = pusher_temp_data,
-                .len = packet_size + NET_BUFFER_HEADER_SIZE,
-                .func = on_audio_tx_done,
-                .user_data = NULL,
-            };
-            int err = bt_gatt_notify_cb(conn, &params);
-#ifdef CONFIG_OMI_ENABLE_MONITOR
-            monitor_inc_gatt_notify();
-#endif
-
-            // Log failure
-            if (err) {
-                LOG_DBG("bt_gatt_notify_cb failed (err %d)", err);
-                LOG_DBG("MTU: %d, packet_size: %d", current_mtu, packet_size + NET_BUFFER_HEADER_SIZE);
-                k_sleep(K_MSEC(1));
-                retry_count++;
-                continue;
-            }
-
-            // Break if success (slot released in on_audio_tx_done callback)
-            break;
-        }
-
-        if (retry_count >= max_retries) {
-            LOG_ERR("Failed to send packet after %d retries", max_retries);
-            // bt_gatt_notify_cb never succeeded so its callback will never fire;
-            // release the throttle slot manually.
-            k_sem_give(&audio_tx_sem);
-            return false;
-        }
-    }
-
-    return true;
-}
 
 #define OPUS_PREFIX_LENGTH 1
 #define OPUS_PADDED_LENGTH 80
@@ -1174,44 +999,9 @@ bool write_to_storage(void)
 }
 #endif
 
-static bool use_storage = true;
-#define MAX_FILES 10
-#define MAX_AUDIO_FILE_SIZE 300000
-static int recent_file_size_updated = 0;
-static uint8_t heartbeat_count = 0;
-
-void test_pusher(void)
-{
-    uint32_t runs_count = 0;
-    while (1) {
-        k_sleep(K_MSEC(1));
-        struct bt_conn *conn = current_connection;
-        if (conn) {
-            conn = bt_conn_ref(conn);
-        }
-        bool valid = true;
-        if (current_mtu < MINIMAL_PACKET_SIZE) {
-            valid = false;
-        } else if (!conn) {
-            valid = false;
-        } else if (runs_count % 100 == 0) {
-            valid = bt_gatt_is_subscribed(conn, &audio_service.attrs[1], BT_GATT_CCC_NOTIFY); // Check if subscribed
-        }
-        if (valid) {
-            // Expected 100 packages per seconds
-            bool sent = push_to_gatt(conn);
-            if (!sent) {
-                // k_sleep(K_MSEC(50));
-            }
-        }
-        if (conn) {
-            bt_conn_unref(conn);
-        }
-        runs_count++;
-        k_yield();
-    }
-}
-
+/* Local-only recorder: every encoded frame is appended to the SD ring,
+ * regardless of BLE state. A connected or subscribed client never changes
+ * this path -- there is no live-stream branch to switch to. */
 void pusher(void)
 {
     k_msleep(500);
@@ -1222,33 +1012,12 @@ void pusher(void)
         }
 
         while (read_from_tx_queue()) {
-            struct bt_conn *conn = current_connection;
-            bool is_subscribed = false;
-            if (conn) {
-                conn = bt_conn_ref(conn);
-                if (current_mtu >= MINIMAL_PACKET_SIZE) {
-                    is_subscribed = bt_gatt_is_subscribed(conn, &audio_service.attrs[1], BT_GATT_CCC_NOTIFY);
-                }
-            }
-
-            if (conn && is_subscribed) {
-                push_to_gatt(conn);
-                bt_conn_unref(conn);
-            } else if (!conn) {
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                if (is_sd_on()) {
-                    storage_full_warned = false;
-                    write_to_storage();
-                } else {
-                    if (!storage_full_warned) {
-                        LOG_WRN("Offline storage unavailable");
-                        storage_full_warned = true;
-                    }
-                }
-#endif
-            } else {
-                bt_conn_unref(conn);
-                k_sleep(K_MSEC(10));
+            if (is_sd_on()) {
+                storage_unavailable_warned = false;
+                write_to_storage();
+            } else if (!storage_unavailable_warned) {
+                LOG_WRN("Offline storage unavailable, audio frame dropped");
+                storage_unavailable_warned = true;
             }
         }
     }
@@ -1386,8 +1155,7 @@ int transport_start()
 
 #endif
 
-    // Start advertising
-    bt_gatt_service_register(&audio_service);
+    // Register GATT services (no audio service in the local-only recorder build)
     bt_gatt_service_register(&settings_service);
     bt_gatt_service_register(&features_service);
     bt_gatt_service_register(&time_sync_service);

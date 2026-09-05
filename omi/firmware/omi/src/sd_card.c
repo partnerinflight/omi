@@ -191,6 +191,12 @@ static uint32_t write_drop_packets;
 static uint32_t write_drop_bytes;
 static int64_t last_write_blocked_log_ms;
 
+/* Local-only recorder: the ring NEVER overwrites unread audio. When the next
+ * batch slot still holds unread packets, recording stops (new packets are
+ * dropped and counted) until the host explicitly deletes (advance/clear). */
+static atomic_t ring_full = ATOMIC_INIT(0);
+static int64_t last_ring_full_log_ms;
+
 static char compat_current_name[MAX_FILENAME_LEN];
 static char compat_saved_name[MAX_FILENAME_LEN];
 static uint32_t compat_saved_offset;
@@ -249,6 +255,14 @@ static uint32_t batch_sector_for_base_seq(uint64_t base_seq)
     uint64_t batch_index = base_seq / RAW_PACKETS_PER_BATCH;
     uint32_t slot = (uint32_t) (batch_index % data_batch_count);
     return RAW_META_SECTORS + (slot * RAW_BATCH_SECTORS);
+}
+
+/* True when the on-disk slot that base_seq maps to holds no unread audio, i.e.
+ * writing a whole batch there cannot destroy anything the host has not deleted.
+ * The slot previously held [base_seq - capacity, base_seq - capacity + PPB). */
+static bool ring_batch_slot_free(uint64_t base_seq)
+{
+    return (base_seq + RAW_PACKETS_PER_BATCH) <= (ring_state.read_seq + (uint64_t) ring_state.capacity_packets);
 }
 
 static void start_empty_batch(uint64_t base_seq)
@@ -490,6 +504,17 @@ static int flush_current_batch(bool sync_requested)
         return 0;
     }
 
+    /* Defense in depth: process_write_data_req() never starts a batch in an
+     * occupied slot, so this cannot trigger; if it ever does, keep the old
+     * audio and lose the new batch rather than the other way round. */
+    if (!ring_batch_slot_free(current_batch_base_seq)) {
+        LOG_ERR("refusing to overwrite unread audio at seq %llu (read_seq %llu)",
+                (unsigned long long) current_batch_base_seq,
+                (unsigned long long) ring_state.read_seq);
+        atomic_set(&ring_full, 1);
+        return -ENOSPC;
+    }
+
     struct raw_batch_header header = {
         .magic = RAW_BATCH_MAGIC,
         .version = RAW_LAYOUT_VERSION,
@@ -510,22 +535,9 @@ static int flush_current_batch(bool sync_requested)
         return -EIO;
     }
 
-    uint64_t new_write_seq = current_batch_base_seq + current_batch_packets;
-
-    if (ring_state.write_seq <= current_batch_base_seq && current_batch_base_seq >= ring_state.capacity_packets) {
-        uint64_t overwritten_end_seq = current_batch_base_seq - ring_state.capacity_packets + RAW_PACKETS_PER_BATCH;
-        if (ring_state.read_seq < overwritten_end_seq) {
-            ring_state.dropped_packets += overwritten_end_seq - ring_state.read_seq;
-            ring_state.read_seq = overwritten_end_seq;
-        }
-    }
-
-    if ((new_write_seq - ring_state.read_seq) > ring_state.capacity_packets) {
-        uint64_t overflow = (new_write_seq - ring_state.read_seq) - ring_state.capacity_packets;
-        ring_state.read_seq += overflow;
-        ring_state.dropped_packets += overflow;
-    }
-    ring_state.write_seq = new_write_seq;
+    /* The slot was verified free above, so nothing unread was overwritten and
+     * read_seq is never moved by the writer. */
+    ring_state.write_seq = current_batch_base_seq + current_batch_packets;
 
     ret = persist_ring_metadata();
     if (ret < 0) {
@@ -552,6 +564,7 @@ static int clear_ring_internal(bool sync_requested)
     ring_state.read_seq = 0;
     ring_state.write_seq = 0;
     ring_state.dropped_packets = 0;
+    atomic_set(&ring_full, 0);
     compat_current_name[0] = '\0';
     compat_saved_name[0] = '\0';
     compat_saved_offset = 0;
@@ -663,6 +676,8 @@ static int advance_read_seq_internal(uint64_t new_read_seq, bool sync_requested)
         (void) sync_media();
     }
 
+    /* Space was freed by an explicit delete: recording may resume. */
+    atomic_set(&ring_full, 0);
     return 0;
 }
 
@@ -677,14 +692,11 @@ static void process_write_data_req(const sd_req_t *req)
         return;
     }
 
-    if (!rtc_is_valid()) {
-        return;
-    }
-
-    uint32_t timestamp = get_utc_time();
-    if (timestamp == 0U || timestamp < 1700000000U) {
-        return;
-    }
+    /* Local-only recorder: record even before the clock has ever been set (a
+     * device that never met a phone/host must still record). Packets written
+     * without a valid RTC carry timestamp 0; the host CLI syncs the clock on
+     * every connection so this only affects a factory-fresh device. */
+    uint32_t timestamp = rtc_is_valid() ? get_utc_time() : 0U;
 
     if (!current_batch_loaded) {
         start_empty_batch(ring_state.write_seq);
@@ -693,6 +705,21 @@ static void process_write_data_req(const sd_req_t *req)
     if (current_batch_packets >= RAW_PACKETS_PER_BATCH) {
         start_empty_batch(ring_state.write_seq);
     }
+
+    /* Storage full: an empty batch may only be started in a slot that holds no
+     * unread audio. A batch that already has packets was validated when it
+     * started (read_seq only ever grows, so it stays valid). */
+    if (current_batch_packets == 0U && !ring_batch_slot_free(current_batch_base_seq)) {
+        ring_state.dropped_packets++;
+        if (atomic_cas(&ring_full, 0, 1) || (k_uptime_get() - last_ring_full_log_ms) > 10000) {
+            LOG_WRN("storage full: recording paused, %llu unread packets kept (dropped=%llu)",
+                    (unsigned long long) (ring_state.write_seq - ring_state.read_seq),
+                    (unsigned long long) ring_state.dropped_packets);
+            last_ring_full_log_ms = k_uptime_get();
+        }
+        return;
+    }
+    atomic_set(&ring_full, 0);
 
     size_t dst_offset = RAW_BATCH_HEADER_BYTES + ((size_t) current_batch_packets * RAW_AUDIO_PACKET_BYTES);
     sys_put_be32(timestamp, current_batch + dst_offset);
@@ -1157,6 +1184,11 @@ int app_sd_off(void)
 bool is_sd_on(void)
 {
     return sd_enabled;
+}
+
+bool sd_ring_is_full(void)
+{
+    return atomic_get(&ring_full) != 0;
 }
 
 bool sd_is_ready(void)

@@ -4,6 +4,10 @@
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 
 #include <stdbool.h>
+#include <zephyr/bluetooth/uuid.h>
+
+/** Local-only recorder storage service UUID (advertised; used by the dump CLI). */
+extern struct bt_uuid_128 local_storage_service_uuid;
 
 /**
  * @brief Initializes the Storage Transport thread

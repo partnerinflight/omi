@@ -37,6 +37,9 @@ bool is_connected = false;
 bool is_charging = false;
 bool is_off = false;
 bool blink_toggle = false;
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+static bool storage_full_notified = false;
+#endif
 
 static void print_reset_reason(void)
 {
@@ -138,7 +141,25 @@ void set_led_state()
     }
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    // If RTC not synced, blink red to warn user to connect phone app
+    // Storage full: recording is paused (old audio is never overwritten).
+    // Alternate red/blue every second -- a pattern no other state uses -- and
+    // buzz once on the transition so it is noticed while worn.
+    if (sd_ring_is_full()) {
+        if (!storage_full_notified) {
+            storage_full_notified = true;
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+            play_haptic_milli(300);
+#endif
+        }
+        set_led_green(is_charging);
+        set_led_red(blink_toggle);
+        set_led_blue(!blink_toggle);
+        blink_toggle = !blink_toggle;
+        return;
+    }
+    storage_full_notified = false;
+
+    // If RTC not synced, blink red to warn user to set the clock (omi-local time-sync)
     if (!rtc_is_valid()) {
         set_led_green(is_charging);
         set_led_blue(!blink_toggle && is_connected);

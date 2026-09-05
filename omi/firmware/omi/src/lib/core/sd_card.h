@@ -26,6 +26,9 @@ void sd_write_pause(bool pause);
 bool is_sd_on(void);
 /** @brief True when the SD is powered AND mounted (ring reads/writes will work). */
 bool sd_is_ready(void);
+/** @brief True when the ring holds no free slot: recording is paused (nothing is
+ *  overwritten) until the host explicitly deletes recordings. */
+bool sd_ring_is_full(void);
 
 /**
  * @brief Request the SD worker to power the SD NAND on (remount) or off.

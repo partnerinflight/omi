@@ -2,6 +2,10 @@
 
 The firmware for the OMI consumer version.
 
+> **This branch is the local-only recorder variant** — no live BLE audio, no auto-sync,
+> no auto-delete; recordings are pulled with `scripts/omi-local`. See
+> [LOCAL_ONLY_RECORDER.md](LOCAL_ONLY_RECORDER.md).
+
 ## Install
 
 Use https://docs.omi.me/doc/developer/firmware/Compile_firmware as the reference with these specifications.
