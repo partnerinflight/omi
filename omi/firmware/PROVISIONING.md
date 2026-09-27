@@ -10,9 +10,10 @@ account or service is involved.
 
 The recovered custom branch uses a different SD format from stock 3.0.19.
 A device already running the recovered raw-ring firmware keeps its recordings.
-A stock LittleFS device must have its recordings preserved before this image
-boots: initialization of the raw ring overwrites the filesystem metadata.
-See the connected-device finding and flashing gate in [VALIDATION_MAC.md](VALIDATION_MAC.md).
+A stock LittleFS device needs its recordings exported, or their loss explicitly
+accepted, before this image boots: raw-ring initialization overwrites filesystem
+metadata. The owner accepted that migration for the connected CV1; see
+[VALIDATION_MAC.md](VALIDATION_MAC.md).
 Do not interpret "no chip erase" as preservation of an incompatible SD layout.
 
 ## Setup
@@ -51,6 +52,24 @@ battery. Wi-Fi is brought down after setup/upload; BLE control and MCUboot
 SMP DFU remain available. Recording continues on its existing threads.
 
 ## Persistence and protocol
+
+The radio owner supplies a stable local unicast MAC derived from the nRF5340
+hardware ID before powering Wi-Fi up; it does not depend on the nRF7002 OTP
+address and never writes OTP. It waits for Nordic's supplicant to register and
+unregister the interface before AP/STA transitions. Socket polling supports all
+16 descriptors; a compiler guard rejects fewer than the six entries required
+by NCS 2.9's supplicant configuration. A four-entry limit terminated the
+supplicant with `select: Not enough space` on the actual CV1. The network
+management event thread has an 8 KiB stack, also guarded at compile time:
+retained fault logs identified a real stack overflow in `mgmt_work_q_obj`
+with the SDK's 4200-byte default during interface setup.
+
+CV1's U11 I/O supply switch is a **TPS22916CYFPR**, unlike the DK's TCK106AG
+assumed by NCS. The board startup hook discharges the rails, asserts BUCKEN,
+then enables IOVDD and waits 10 ms before QSPI access. TI specifies 1.7 ms typical
+turn-on at 3.6 V for the C variant, longer than NCS's 1 ms delay. See the
+[TI datasheet, section 6.6](https://www.ti.com/lit/ds/symlink/tps22916.pdf) and the
+consumer schematic's nRF7002 sheet. SDK sources remain untouched.
 
 Nordic `wifi_credentials` with its Settings/NVS backend owns the Wi-Fi password.
 This backend is **not encrypted at rest** on this non-TF-M build. The app's

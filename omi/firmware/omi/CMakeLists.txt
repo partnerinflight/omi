@@ -56,7 +56,7 @@ if(CONFIG_OMI_WIFI_UPLOAD)
     set_property(TARGET softap_wifi_provision PROPERTY SOURCES "${provision_sources}")
     target_sources(softap_wifi_provision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/provisioning.c)
     target_include_directories(softap_wifi_provision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    list(APPEND app_sources src/wifi_upload.c src/wifi_config.c)
+    list(APPEND app_sources src/wifi_upload.c src/wifi_config.c src/wifi_radio.c)
     list(APPEND core_sources src/lib/core/local_auth.c)
 endif()
 

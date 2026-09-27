@@ -18,6 +18,7 @@
 #include <zephyr/net/wifi_mgmt.h>
 
 #include "lib/core/wifi_config.h"
+#include "lib/core/wifi_radio.h"
 #include "lib/core/wifi_upload.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -280,7 +281,7 @@ int omi_provision_run(void)
     struct net_if *iface = net_if_get_first_wifi();
     if (!iface)
         return -ENODEV;
-    int ret = net_if_up(iface), server = -1;
+    int ret = wifi_radio_start(iface), server = -1;
     bool ap_requested = false, dhcp_started = false;
     struct in_addr address, netmask, pool;
     zsock_inet_pton(AF_INET, "192.168.4.1", &address);
@@ -372,7 +373,7 @@ out:
     }
     net_if_ipv4_addr_rm(iface, &address);
     net_mgmt_del_event_callback(&events);
-    net_if_down(iface);
+    wifi_radio_stop(iface);
     memset(destination, 0, sizeof(destination));
     return ret;
 }

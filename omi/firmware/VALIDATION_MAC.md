@@ -1,11 +1,11 @@
 # Mac migration validation — 2026-09-27
 
-**Not flashed: the connected stock device contains 16 LittleFS recordings
-(49,920,640 bytes). The custom firmware uses a raw SD ring and would initialize
-over that filesystem. Export/preserve these recordings before installing it.
-The stock BLE download implementation auto-deletes completed files, so a
-backup requires an explicit data-migration decision. No download/delete/erase
-or OTA write was performed.**
+**Hardware migration authorized and performed over BLE.** The owner explicitly
+accepted loss of the stock LittleFS recordings. App and network images were
+uploaded, their secondary-slot digests verified, marked permanent and rebooted.
+No chip erase or SWD was used. Offline recording and repeated BLE OTA work.
+The setup AP `OMI-Setup-CE3B` now broadcasts and macOS successfully associates
+with it. Temporary diagnostic images are not release artifacts.
 
 Recovered `partnerinflight/omi`, branch `feature/local-only-recorder`, commit
 `42a433de2d20ff3ab242476baab6a099be8c4cef`. Its three commits preserve offline
@@ -52,7 +52,7 @@ The feature build also completed a pristine sysbuild; exact memory use and
 artifact hashes are in the local build logs and final task report. A final
 pristine build after commit binds the delivered images to the reported revision.
 
-Host suite: 46 tests passed, including real loopback receiver tests, native
+Host suite: 49 tests passed, including real loopback receiver tests, native
 firmware parser/hold/ownership tests and execution of the page JavaScript.
 The setup page was also rendered and inspected at a narrow mobile viewport.
 The local preview uses the actual HTML; this does not prove AP reachability.
@@ -63,20 +63,35 @@ official `Omi_CV1_OTA_v3.0.19.zip` downloaded for recovery. Stock/custom signed
 application images use the same RSA key hash; imgtool verifies the custom
 signature and image digest. Both OTA manifests identify app image 0 and
 network image 1, with matching load addresses and MCUboot image version 0.0.0.
-These checks establish packaging compatibility, not successful hardware boot.
+The new firmware boots and reports `3.0.22-localwifi.2`. BLE readback measured
+SD sequence growth with no dropped records. An inherited packing bug initially
+produced truncated Opus frames; commit `7ede982d7` fixes whole-frame boundaries
+and zero padding. A fresh 50-record sample contained 255 Opus frames (5.1 seconds)
+and decoded with ffmpeg without errors. The BLE MCUboot service remained
+usable through repeated updates.
+
+Hardware startup exposed an all-zero OTP MAC read, CV1 power-switch timing that
+differs from the DK, and an undersized socket poll table that terminated Nordic's
+supplicant. The branch contains corresponding fixes and regression guards.
+A retained crash log identified a subsequent stack overflow in
+`mgmt_work_q_obj`; increasing its 4200-byte stack to 8192 bytes eliminated that
+reset. The AP stays active with BLE responsive; measured system heap high-water
+usage was 86,076 / 120,000 bytes. Native tests execute the production power/MAC/
+lifecycle code, and negative compile tests reject the measured bad limits.
+Temporary disabled synthetic settings survived reboot without opening an AP.
+They contained no user credentials and were cleared before AP testing.
 
 ## BLE OTA procedure
 
-1. First preserve the 16 existing stock recordings, or explicitly accept their
-   loss. This is an SD-format migration from stock 3.0.19 LittleFS to the
-   recovered branch's raw ring. Do not flash before resolving this. Then charge
-   Omi, keep it nearby, and close other apps connected to it.
+1. For another stock device, export recordings or accept their loss before the
+   LittleFS-to-raw-ring migration. This decision is already resolved for the
+   connected CV1. Charge Omi, keep it nearby, and close other connected apps.
 2. In Nordic **nRF Connect for Mobile** (iOS/macOS), connect to Omi and open
    the **DFU / MCU Manager** action. Select `dfu_application.zip` as a
    multi-image MCUboot package; let the manifest select both cores. Do not use
    the legacy Nordic Secure DFU service or pick a raw HEX file.
 3. Start the update, keep the app foreground and wait for upload and reboot.
-   Reconnect and check firmware revision `3.0.22-localwifi.1`, SMP service,
+   Reconnect and check firmware revision `3.0.22-localwifi.2`, SMP service,
    and the setup AP. An interrupted upload can be retried before reboot.
    This board uses overwrite-only updates; automatic boot rollback is not
    available. Preserve the known-good OTA package as the recovery option.
@@ -103,15 +118,21 @@ the target serial before executing if multiple probes are attached. Do not add
 A protected or otherwise unrecoverable target needs a separately justified
 recovery decision. No SWD probe was detected on this Mac.
 
-## Physical validation still required
+## Hardware validation status
 
-Successful boot, SD recording growth, audio decode, AP reachability, saved
-settings after reboot, STA/DNS/mDNS connectivity, real upload, unreachable-server
-queue retention/retry, button gestures and post-update BLE DFU must be measured
-on hardware. Build/unit-test results must not be described as those tests.
+Verified: boot, microphone/Opus decode, persistent SD ring growth, BLE control,
+repeated app OTA, initial two-core OTA, configuration survival after reset,
+setup AP broadcasting and macOS association.
+Queue samples were read without advancing their read pointer.
 
-Device file-list evidence: `/Users/eugenepolonsky/code/SecondBrain/.inspection/stock-file-list.json`.
-No personal audio or credentials are committed to Git.
+Still required: real portal HTTP requests, station Wi-Fi association,
+DNS/mDNS, real receiver upload, failed destination/retry on hardware, and physical
+button gestures. Host tests cover authentication, disconnect/resume, queue safety,
+portal JavaScript and button timing, but do not establish those hardware results.
+
+The local `.inspection/` directory contains OTA logs, status snapshots, decoded
+audio evidence and temporary diagnostics. No personal audio or credentials are
+committed to Git. Known-good stock recovery is retained separately.
 
 A clean configure of the untouched recovered branch placed NVS at `0xf8000`
 (size `0x2000`). New dependencies initially reordered dynamic partitions.

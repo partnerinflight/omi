@@ -37,6 +37,7 @@
 #include <zephyr/sys/byteorder.h>
 
 #include "lib/core/wifi_config.h"
+#include "lib/core/wifi_radio.h"
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
 #include <zephyr/sys/sys_heap.h>
 #endif
@@ -435,7 +436,7 @@ static enum wifi_upload_result run_session(bool manual, int *err)
     atomic_clear(&link_lost);
     k_sem_reset(&connect_sem);
     k_sem_reset(&ip_sem);
-    *err = net_if_up(iface);
+    *err = wifi_radio_start(iface);
     if (*err && *err != -EALREADY) {
         result = WIFI_UPLOAD_ERR_WIFI_CONNECT;
         goto out;
@@ -518,7 +519,7 @@ out:
     if (wifi_up) {
         net_dhcpv4_stop(iface);
         (void) net_mgmt(NET_REQUEST_WIFI_DISCONNECT, iface, NULL, 0);
-        (void) net_if_down(iface); /* powers the nRF7002 down */
+        wifi_radio_stop(iface); /* powers the nRF7002 down */
     }
     storage_release_upload();
     atomic_clear(&active);
@@ -627,7 +628,7 @@ int wifi_upload_init(void)
      * unpowered) until a session needs it. */
     struct net_if *iface = net_if_get_first_wifi();
     if (iface && net_if_is_up(iface)) {
-        (void) net_if_down(iface);
+        wifi_radio_stop(iface);
     }
 
     k_thread_create(&wifi_upload_thread,
