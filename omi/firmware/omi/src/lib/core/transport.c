@@ -29,6 +29,7 @@
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
+#include "record_packer.h"
 #include "rtc.h"
 #include "sd_card.h"
 #include "settings.h"
@@ -955,47 +956,28 @@ void transport_bulk_tx_release(void)
 K_THREAD_STACK_DEFINE(pusher_stack, 4096);
 static struct k_thread pusher_thread;
 
-#define OPUS_PREFIX_LENGTH 1
-#define OPUS_PADDED_LENGTH 80
 static uint32_t offset = 0;
-static uint16_t buffer_offset = 0;
+static size_t buffer_offset;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
+static void emit_storage_record(const uint8_t *record, size_t size)
+{
+    write_to_file((uint8_t *) record, size);
+}
+
 bool write_to_storage(void)
 {
-    uint8_t *buffer = tx_buffer + 2;
-    uint8_t packet_size = (uint8_t) (tx_buffer_size + OPUS_PREFIX_LENGTH);
-
-    // buffer_offset = buffer_offset+amount_to_fill;
-    // check if adding the new packet will cause a overflow
-    if (buffer_offset + packet_size > MAX_WRITE_SIZE - 1) {
-
-        storage_temp_data[buffer_offset] = tx_buffer_size;
-        uint8_t *write_ptr = storage_temp_data;
-        write_to_file(write_ptr, MAX_WRITE_SIZE);
-
-        buffer_offset = packet_size;
-        storage_temp_data[0] = tx_buffer_size;
-        memcpy(storage_temp_data + 1, buffer, tx_buffer_size);
-
-    } else if (buffer_offset + packet_size == MAX_WRITE_SIZE - 1) {
-        // exact frame needed
-        storage_temp_data[buffer_offset] = tx_buffer_size;
-        memcpy(storage_temp_data + buffer_offset + 1, buffer, tx_buffer_size);
-        buffer_offset = 0;
-        uint8_t *write_ptr = (uint8_t *) storage_temp_data;
-        write_to_file(write_ptr, MAX_WRITE_SIZE);
-    } else {
-        storage_temp_data[buffer_offset] = tx_buffer_size;
-        memcpy(storage_temp_data + buffer_offset + 1, buffer, tx_buffer_size);
-        buffer_offset = buffer_offset + packet_size;
-    }
-
+    bool accepted = record_packer_append(storage_temp_data,
+                                         sizeof(storage_temp_data),
+                                         &buffer_offset,
+                                         tx_buffer + 2,
+                                         tx_buffer_size,
+                                         emit_storage_record);
 #ifdef CONFIG_OMI_ENABLE_MONITOR
     monitor_inc_storage_write();
 #endif
-    return true;
+    return accepted;
 }
 #endif
 
@@ -1162,7 +1144,7 @@ int transport_start()
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio
-    memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
+    memset(storage_temp_data, 0, sizeof(storage_temp_data));
     bt_gatt_service_register(&storage_service);
 #endif
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));

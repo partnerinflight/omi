@@ -64,7 +64,9 @@ new hostname TLV. Hostnames including `secondbrain.local` use DNS/mDNS IPv4
 resolution. URLs, paths, IPv6 and enterprise/WPA3-only networks are not supported.
 
 The recovered receiver protocol is retained: mutual HMAC-SHA256 authentication,
-sequence-based resume, and ACK only after audio/state persistence. Firmware
+sequence-based resume, and ACK only after audio/state persistence. The recorder
+only stores complete Opus frames and zero-pads unused record tails; native C
+tests exercise overflow, exact-fit records and buffer reuse with the host decoder. Firmware
 advances its read pointer only to acknowledged or previously persisted
 sequences. A wrong key, disconnect, timeout or unavailable receiver leaves
 unacknowledged records queued. Payloads are authenticated at connection setup,
