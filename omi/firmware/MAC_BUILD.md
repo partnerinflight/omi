@@ -21,13 +21,32 @@ In that toolchain shell, choose an SDK directory **outside the Git checkout**:
 mkdir -p "$HOME/ncs/v2.9.0"
 cd "$HOME/ncs/v2.9.0"
 west init -m https://github.com/nrfconnect/sdk-nrf --mr v2.9.0 .
+# Activate only CV1 build dependencies (west still resolves imported manifests).
+west config manifest.project-filter '-.*,+zephyr,+mcuboot,+mbedtls,+oberon-psa-crypto,+nrfxlib,+trusted-firmware-m,+bsim,+nanopb,+cmsis,+cmsis-dsp,+hal_nordic,+hal_st,+hostap,+littlefs,+nrf_wifi,+segger,+tinycrypt,+zcbor,+libmetal,+open-amp'
 west update -o=--depth=1 -n
+west blobs fetch nrf_wifi
 west zephyr-export
 ```
 
 The compiler, CMake, Ninja, Python, and west come from Nordic's bundle. Do not
 substitute a Homebrew ARM compiler. Use `python` inside the toolchain shell.
 SDK source installation and toolchain installation are separate steps.
+
+## Native protobuf generator on Apple Silicon
+
+The NCS 2.9.0 macOS bundle's nanopb `protoc` is Intel-only. The SoftAP build
+needs a native generator. Outside the Nordic shell, use a native Python 3.12:
+
+```bash
+python -m venv "$HOME/ncs/protoc-venv"
+"$HOME/ncs/protoc-venv/bin/python" -m pip install grpcio-tools==1.62.3
+export OMI_PROTOC_PYTHON="$HOME/ncs/protoc-venv/bin/python"
+export OMI_PROTOC="/absolute/path/to/repo/omi/firmware/scripts/protoc-native"
+```
+
+These variables survive the toolchain launcher. Only protobuf generation uses
+this venv; compiler, SDK libraries, CMake and build Python remain Nordic's.
+The override is optional on platforms with a working bundled generator.
 
 ## Build
 
@@ -72,3 +91,6 @@ python -m unittest discover -s tests -t .
 These tests exercise the receiver and a software model of the device protocol.
 They do not validate the microphone, SD card, radio, bootloader compatibility,
 or battery behavior on a physical Omi.
+
+Setup, button gestures, receiver protocol and credential storage: [PROVISIONING.md](PROVISIONING.md).
+Exact local build and hardware results: [VALIDATION_MAC.md](VALIDATION_MAC.md).

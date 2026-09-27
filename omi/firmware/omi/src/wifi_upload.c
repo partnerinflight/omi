@@ -20,6 +20,8 @@
 #include "lib/core/wifi_upload.h"
 
 #include <errno.h>
+#include <net/wifi_credentials.h>
+#include <stdio.h>
 #include <string.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/kernel.h>
@@ -33,6 +35,8 @@
 #include <zephyr/random/random.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
+
+#include "lib/core/wifi_config.h"
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
 #include <zephyr/sys/sys_heap.h>
 #endif
@@ -80,6 +84,11 @@ static K_SEM_DEFINE(trigger_sem, 0, 1);
 static K_SEM_DEFINE(connect_sem, 0, 1);
 static K_SEM_DEFINE(ip_sem, 0, 1);
 static atomic_t manual_req = ATOMIC_INIT(0);
+static K_MUTEX_DEFINE(config_lock);
+static atomic_t provision_req = ATOMIC_INIT(0);
+static atomic_t provisioning = ATOMIC_INIT(0);
+extern int omi_provision_run(void);
+
 static atomic_t active = ATOMIC_INIT(0);
 static atomic_t link_lost = ATOMIC_INIT(0);
 static int connect_status;
@@ -97,20 +106,7 @@ static void set_state(enum wifi_upload_state s)
 
 static bool cfg_valid(void)
 {
-    if (cfg.version != WIFI_UPLOAD_CONFIG_VERSION || !cfg.enabled) {
-        return false;
-    }
-    if (cfg.ssid_len == 0 || cfg.ssid_len > WIFI_UPLOAD_SSID_MAX || cfg.psk_len > WIFI_UPLOAD_PSK_MAX) {
-        return false;
-    }
-    if (cfg.port == 0 || (cfg.host[0] | cfg.host[1] | cfg.host[2] | cfg.host[3]) == 0) {
-        return false;
-    }
-    uint8_t acc = 0;
-    for (size_t i = 0; i < sizeof(cfg.secret); i++) {
-        acc |= cfg.secret[i];
-    }
-    return acc != 0;
+    return cfg.enabled && wifi_config_valid(&cfg);
 }
 
 /* --- net_mgmt events ------------------------------------------------------ */
@@ -131,7 +127,7 @@ static void ipv4_mgmt_event_handler(struct net_mgmt_event_callback *cb, uint32_t
 {
     ARG_UNUSED(cb);
     ARG_UNUSED(iface);
-    if (mgmt_event == NET_EVENT_IPV4_ADDR_ADD) {
+    if (mgmt_event == NET_EVENT_IPV4_DHCP_BOUND) {
         k_sem_give(&ip_sem);
     }
 }
@@ -315,7 +311,7 @@ static enum wifi_upload_result upload_records(int sock, bool manual, sd_ring_inf
 
     for (int pass = 0; pass < UP_MAX_PASSES; pass++) {
         while (seq < end) {
-            if (!manual && !is_charging) {
+            if (atomic_get(&provision_req) || (!manual && !is_charging)) {
                 *err = -ECANCELED;
                 return WIFI_UPLOAD_ERR_ABORTED;
             }
@@ -413,11 +409,10 @@ static enum wifi_upload_result run_session(bool manual, int *err)
         result = WIFI_UPLOAD_ERR_SD_NOT_READY;
         goto out;
     }
-    if (storage_transfer_active()) {
+    if (!storage_claim_upload()) {
         result = WIFI_UPLOAD_ERR_BUSY;
         goto out;
     }
-    storage_set_upload_busy(true);
     atomic_set(&active, 1);
 
     *err = sd_ring_get_info(&info);
@@ -425,7 +420,7 @@ static enum wifi_upload_result run_session(bool manual, int *err)
         result = WIFI_UPLOAD_ERR_RING_READ;
         goto out;
     }
-    if (info.write_seq == info.read_seq) {
+    if (!manual && info.write_seq == info.read_seq) {
         result = WIFI_UPLOAD_ERR_NOTHING_TO_DO;
         goto out;
     }
@@ -488,8 +483,17 @@ static enum wifi_upload_result run_session(bool manual, int *err)
     struct zsock_timeval tv = {.tv_sec = UP_SOCKET_TIMEOUT_S, .tv_usec = 0};
     (void) zsock_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     (void) zsock_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(cfg.port)};
-    memcpy(&sa.sin_addr, cfg.host, sizeof(cfg.host));
+    struct zsock_addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
+    struct zsock_addrinfo *resolved = NULL;
+    int dns = zsock_getaddrinfo(cfg.hostname, NULL, &hints, &resolved);
+    if (dns || !resolved) {
+        *err = -EHOSTUNREACH;
+        result = WIFI_UPLOAD_ERR_TCP_CONNECT;
+        goto out;
+    }
+    struct sockaddr_in sa = *(struct sockaddr_in *) resolved->ai_addr;
+    sa.sin_port = htons(cfg.port);
+    zsock_freeaddrinfo(resolved);
     if (zsock_connect(sock, (struct sockaddr *) &sa, sizeof(sa)) < 0) {
         *err = -errno;
         result = WIFI_UPLOAD_ERR_TCP_CONNECT;
@@ -516,7 +520,7 @@ out:
         (void) net_mgmt(NET_REQUEST_WIFI_DISCONNECT, iface, NULL, 0);
         (void) net_if_down(iface); /* powers the nRF7002 down */
     }
-    storage_set_upload_busy(false);
+    storage_release_upload();
     atomic_clear(&active);
     if (mic_in_aad_sleep() && !is_connected) {
         sd_request_power(false);
@@ -533,9 +537,21 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
 
     while (1) {
         k_sem_take(&trigger_sem, K_SECONDS(UP_POLL_INTERVAL_S));
+        if (atomic_cas(&provision_req, 1, 0)) {
+            k_mutex_lock(&config_lock, K_FOREVER);
+            atomic_set(&provisioning, 1);
+            set_state(WIFI_UPLOAD_PROVISIONING);
+            int ret = omi_provision_run();
+            status.last_errno = ret;
+            atomic_clear(&provisioning);
+            set_state(WIFI_UPLOAD_IDLE);
+            k_mutex_unlock(&config_lock);
+            if (!ret)
+                atomic_set(&manual_req, 1);
+        }
         bool manual = atomic_cas(&manual_req, 1, 0);
 
-        if (!cfg_valid()) {
+        if (!status.configured) {
             if (manual) {
                 status.last_result = WIFI_UPLOAD_ERR_NOT_CONFIGURED;
             }
@@ -557,7 +573,9 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
         last_attempt_ms = k_uptime_get();
         status.last_attempt_uptime_s = (uint32_t) (last_attempt_ms / 1000);
         int err = 0;
-        enum wifi_upload_result r = run_session(manual, &err);
+        k_mutex_lock(&config_lock, K_FOREVER);
+        enum wifi_upload_result r = cfg_valid() ? run_session(manual, &err) : WIFI_UPLOAD_ERR_NOT_CONFIGURED;
+        k_mutex_unlock(&config_lock);
         status.last_result = (uint8_t) r;
         status.last_errno = err;
         if (r == WIFI_UPLOAD_OK) {
@@ -574,12 +592,35 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
 int wifi_upload_init(void)
 {
     (void) app_settings_get_wifi_upload(&cfg);
+    if (cfg.version == 1) {
+        snprintf(cfg.hostname, sizeof(cfg.hostname), "%u.%u.%u.%u", cfg.host[0], cfg.host[1], cfg.host[2], cfg.host[3]);
+        cfg.version = WIFI_UPLOAD_CONFIG_VERSION;
+        /* Save credentials first; retain legacy blob if migration fails. */
+        if (wifi_config_valid(&cfg)) {
+            uint8_t enabled[] = {WIFI_UPLOAD_TLV_ENABLE, 1, cfg.enabled};
+            int ret = wifi_upload_apply_tlv(enabled, sizeof(enabled));
+            if (ret)
+                LOG_ERR("Wi-Fi configuration migration failed: %d", ret);
+        }
+    } else if (cfg.version == WIFI_UPLOAD_CONFIG_VERSION && cfg.ssid_len) {
+        struct wifi_credentials_personal creds;
+        int ret = wifi_credentials_get_by_ssid_personal_struct((char *) cfg.ssid, cfg.ssid_len, &creds);
+        if (!ret && creds.password_len <= sizeof(cfg.psk)) {
+            memcpy(cfg.psk, creds.password, creds.password_len);
+            cfg.psk_len = creds.password_len;
+        } else {
+            cfg.version = 0;
+        }
+        memset(&creds, 0, sizeof(creds));
+    }
     status.configured = cfg_valid() ? 1 : 0;
+    if (!wifi_config_valid(&cfg))
+        atomic_set(&provision_req, 1);
 
     net_mgmt_init_event_callback(
         &wifi_mgmt_cb, wifi_mgmt_event_handler, NET_EVENT_WIFI_CONNECT_RESULT | NET_EVENT_WIFI_DISCONNECT_RESULT);
     net_mgmt_add_event_callback(&wifi_mgmt_cb);
-    net_mgmt_init_event_callback(&ipv4_mgmt_cb, ipv4_mgmt_event_handler, NET_EVENT_IPV4_ADDR_ADD);
+    net_mgmt_init_event_callback(&ipv4_mgmt_cb, ipv4_mgmt_event_handler, NET_EVENT_IPV4_DHCP_BOUND);
     net_mgmt_add_event_callback(&ipv4_mgmt_cb);
 
     /* The nRF70 interface is NET_IF_NO_AUTO_START; make sure it is down (RPU
@@ -606,88 +647,97 @@ int wifi_upload_init(void)
 
 int wifi_upload_apply_tlv(const uint8_t *buf, size_t len)
 {
+    if (k_mutex_lock(&config_lock, K_NO_WAIT))
+        return -EBUSY;
     struct wifi_upload_config c = cfg;
-    bool forget = false;
-    size_t i = 0;
-
-    while (i + 2 <= len) {
-        uint8_t t = buf[i];
-        uint8_t l = buf[i + 1];
-        i += 2;
-        if (i + l > len) {
-            return -EINVAL;
-        }
-        const uint8_t *v = buf + i;
-        i += l;
-        switch (t) {
-        case WIFI_UPLOAD_TLV_SSID:
-            if (l == 0 || l > WIFI_UPLOAD_SSID_MAX) {
-                return -EINVAL;
-            }
-            memset(c.ssid, 0, sizeof(c.ssid));
-            memcpy(c.ssid, v, l);
-            c.ssid_len = l;
-            break;
-        case WIFI_UPLOAD_TLV_PSK:
-            if (l > WIFI_UPLOAD_PSK_MAX || (l != 0 && l < 8)) {
-                return -EINVAL;
-            }
-            memset(c.psk, 0, sizeof(c.psk));
-            memcpy(c.psk, v, l);
-            c.psk_len = l;
-            break;
-        case WIFI_UPLOAD_TLV_HOST:
-            if (l != 4) {
-                return -EINVAL;
-            }
-            memcpy(c.host, v, 4);
-            break;
-        case WIFI_UPLOAD_TLV_PORT:
-            if (l != 2) {
-                return -EINVAL;
-            }
-            c.port = sys_get_be16(v);
-            break;
-        case WIFI_UPLOAD_TLV_SECRET:
-            if (l != WIFI_UPLOAD_SECRET_LEN) {
-                return -EINVAL;
-            }
-            memcpy(c.secret, v, l);
-            break;
-        case WIFI_UPLOAD_TLV_ENABLE:
-            if (l != 1) {
-                return -EINVAL;
-            }
-            c.enabled = v[0] ? 1 : 0;
-            break;
-        case WIFI_UPLOAD_TLV_FORGET:
-            forget = true;
-            break;
-        default:
-            return -EINVAL;
-        }
+    int ret = wifi_config_parse(&c, buf, len);
+    if (ret)
+        goto out;
+    bool forget = len == 2 && buf[0] == WIFI_UPLOAD_TLV_FORGET;
+    if (!forget && !wifi_config_valid(&c)) {
+        ret = -EINVAL;
+        goto out;
     }
-    if (i != len) {
-        return -EINVAL;
+    struct wifi_credentials_personal old_creds;
+    bool had_old = !wifi_credentials_get_by_ssid_personal_struct((char *) c.ssid, c.ssid_len, &old_creds);
+    if (!forget) {
+        ret = wifi_credentials_set_personal((char *) c.ssid,
+                                            c.ssid_len,
+                                            c.psk_len ? WIFI_SECURITY_TYPE_PSK : WIFI_SECURITY_TYPE_NONE,
+                                            NULL,
+                                            0,
+                                            (char *) c.psk,
+                                            c.psk_len,
+                                            0,
+                                            0,
+                                            30000);
+        if (ret)
+            goto out;
     }
-    if (forget) {
-        memset(&c, 0, sizeof(c));
-    }
-    c.version = WIFI_UPLOAD_CONFIG_VERSION;
-
-    int ret = app_settings_save_wifi_upload(&c);
+    ret = app_settings_save_wifi_upload(&c);
     if (ret) {
-        return ret;
+        if (!forget) {
+            if (had_old)
+                wifi_credentials_set_personal_struct(&old_creds);
+            else
+                wifi_credentials_delete_by_ssid((char *) c.ssid, c.ssid_len);
+        }
+        goto out;
     }
+    if (cfg.ssid_len && (forget || cfg.ssid_len != c.ssid_len || memcmp(cfg.ssid, c.ssid, c.ssid_len)))
+        wifi_credentials_delete_by_ssid((char *) cfg.ssid, cfg.ssid_len);
     cfg = c;
-    status.configured = cfg_valid() ? 1 : 0;
-    LOG_INF("Wi-Fi upload config updated (%s)", status.configured ? "valid" : "incomplete/disabled");
+    status.configured = cfg_valid();
+out:
+    memset(&c, 0, sizeof(c));
+    k_mutex_unlock(&config_lock);
+    return ret;
+}
+
+int wifi_upload_provision(const uint8_t *dest,
+                          size_t len,
+                          const uint8_t *ssid,
+                          size_t ssid_len,
+                          const uint8_t *psk,
+                          size_t psk_len)
+{
+    uint8_t blob[408];
+    if (len > 300 || !ssid_len || ssid_len > 32 || psk_len > 64)
+        return -EINVAL;
+    memcpy(blob, dest, len);
+    blob[len++] = WIFI_UPLOAD_TLV_SSID;
+    blob[len++] = ssid_len;
+    memcpy(blob + len, ssid, ssid_len);
+    len += ssid_len;
+    blob[len++] = WIFI_UPLOAD_TLV_PSK;
+    blob[len++] = psk_len;
+    memcpy(blob + len, psk, psk_len);
+    len += psk_len;
+    blob[len++] = WIFI_UPLOAD_TLV_ENABLE;
+    blob[len++] = 1;
+    blob[len++] = 1;
+    int ret = wifi_upload_apply_tlv(blob, len);
+    memset(blob, 0, sizeof(blob));
+    return ret;
+}
+
+int wifi_upload_request_provisioning(void)
+{
+    if (atomic_get(&provisioning))
+        return -EALREADY;
+    atomic_set(&provision_req, 1);
+    k_sem_give(&trigger_sem);
     return 0;
+}
+
+bool wifi_upload_provisioning(void)
+{
+    return atomic_get(&provisioning);
 }
 
 int wifi_upload_request_now(void)
 {
-    if (!cfg_valid()) {
+    if (!status.configured) {
         return -ENOENT;
     }
     atomic_set(&manual_req, 1);
@@ -698,7 +748,7 @@ int wifi_upload_request_now(void)
 void wifi_upload_get_status(struct wifi_upload_status *out)
 {
     *out = status;
-    out->configured = cfg_valid() ? 1 : 0;
+    out->configured = status.configured;
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
     extern struct k_heap _system_heap;
     struct sys_memory_stats st;

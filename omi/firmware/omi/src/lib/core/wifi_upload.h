@@ -10,8 +10,8 @@
  * Wi-Fi upload of recordings to ONE pre-provisioned receiver on the local
  * network (omi-local serve), triggered while the device is on the charger.
  *
- * - Credentials + receiver are provisioned over BLE (storage.c config char)
- *   and stored in the settings subsystem ("omi/wifi_upload").
+ * - Nordic credentials store holds Wi-Fi secrets; omi/wifi_upload holds
+ *   the receiver and SSID. SoftAP and BLE share one configuration owner.
  * - The nRF7002 is powered only for the duration of an upload session.
  * - The receiver must prove knowledge of the shared secret before any audio
  *   is sent; the device proves itself too (mutual HMAC-SHA256 handshake).
@@ -19,7 +19,8 @@
  *   that it persisted them (the user opted into delete-after-verified-upload).
  */
 
-#define WIFI_UPLOAD_CONFIG_VERSION 1
+#define WIFI_UPLOAD_CONFIG_VERSION 2
+#define WIFI_UPLOAD_HOST_MAX 253
 #define WIFI_UPLOAD_SSID_MAX 32
 #define WIFI_UPLOAD_PSK_MAX 64
 #define WIFI_UPLOAD_SECRET_LEN 32
@@ -34,6 +35,7 @@ struct wifi_upload_config {
     uint8_t host[4]; /* receiver IPv4, network byte order */
     uint16_t port;   /* receiver TCP port, host byte order */
     uint8_t secret[WIFI_UPLOAD_SECRET_LEN];
+    char hostname[WIFI_UPLOAD_HOST_MAX + 1];
 } __packed;
 
 /* Status as exposed on the BLE config characteristic (little-endian). */
@@ -60,6 +62,7 @@ enum wifi_upload_state {
     WIFI_UPLOAD_AUTH,
     WIFI_UPLOAD_UPLOADING,
     WIFI_UPLOAD_TEARDOWN,
+    WIFI_UPLOAD_PROVISIONING,
 };
 
 enum wifi_upload_result {
@@ -81,15 +84,24 @@ enum wifi_upload_result {
 /* TLV types accepted by wifi_upload_apply_tlv() (BLE provisioning). */
 #define WIFI_UPLOAD_TLV_SSID 0x01
 #define WIFI_UPLOAD_TLV_PSK 0x02
-#define WIFI_UPLOAD_TLV_HOST 0x03   /* 4 bytes IPv4 */
-#define WIFI_UPLOAD_TLV_PORT 0x04   /* u16 big-endian */
-#define WIFI_UPLOAD_TLV_SECRET 0x05 /* 32 bytes */
-#define WIFI_UPLOAD_TLV_ENABLE 0x06 /* u8 0/1 */
-#define WIFI_UPLOAD_TLV_FORGET 0x7F /* erase the configuration */
+#define WIFI_UPLOAD_TLV_HOST 0x03     /* 4 bytes IPv4 */
+#define WIFI_UPLOAD_TLV_PORT 0x04     /* u16 big-endian */
+#define WIFI_UPLOAD_TLV_SECRET 0x05   /* 32 bytes */
+#define WIFI_UPLOAD_TLV_ENABLE 0x06   /* u8 0/1 */
+#define WIFI_UPLOAD_TLV_HOSTNAME 0x07 /* UTF-8/ASCII hostname or IPv4 string */
+#define WIFI_UPLOAD_TLV_FORGET 0x7F   /* erase the configuration */
 
 #ifdef CONFIG_OMI_WIFI_UPLOAD
 
 int wifi_upload_init(void);
+int wifi_upload_request_provisioning(void);
+bool wifi_upload_provisioning(void);
+int wifi_upload_provision(const uint8_t *dest,
+                          size_t len,
+                          const uint8_t *ssid,
+                          size_t ssid_len,
+                          const uint8_t *psk,
+                          size_t psk_len);
 
 /** Parse a TLV blob written over BLE and persist the resulting config. */
 int wifi_upload_apply_tlv(const uint8_t *buf, size_t len);
@@ -103,6 +115,11 @@ void wifi_upload_get_status(struct wifi_upload_status *out);
 bool wifi_upload_active(void);
 
 #else
+
+static inline bool wifi_upload_provisioning(void)
+{
+    return false;
+}
 
 static inline bool wifi_upload_active(void)
 {

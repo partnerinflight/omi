@@ -557,7 +557,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("wifi-setup", help="provision Wi-Fi upload (requires the Wi-Fi firmware build)")
     s.add_argument("--ssid", required=True)
     s.add_argument("--password", default="", help="WPA2 password (omit for an open network)")
-    s.add_argument("--host", required=True, help="IPv4 address of the machine running `omi-local serve`")
+    s.add_argument("--host", required=True, help="Hostname or IPv4 address of the machine running `omi-local serve`")
     s.add_argument("--port", type=int, default=7331)
     s.add_argument("--secret-file", help="shared secret file (default ~/.omi-local/upload-secret.hex, created if missing)")
     s.add_argument("--disabled", action="store_true", help="store the config but keep uploads off")

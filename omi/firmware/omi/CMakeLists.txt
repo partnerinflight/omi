@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.20.0)
+# Nordic 2.9.0's macOS bundle ships an Intel-only protoc. Allow a native
+# generator without changing the Nordic compiler/Python installation.
+if(DEFINED ENV{OMI_PROTOC})
+    set(PROTOBUF_PROTOC_EXECUTABLE "$ENV{OMI_PROTOC}" CACHE FILEPATH "Native protoc" FORCE)
+endif()
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 enable_language(C ASM) # OPUS
 
@@ -36,7 +41,22 @@ if(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
 endif()
 
 if(CONFIG_OMI_WIFI_UPLOAD)
-    list(APPEND app_sources src/wifi_upload.c)
+    # Keep Nordic's library target and generated protocol; replace only its
+    # one-shot sample lifecycle with the CV1 browser/lifecycle adaptation.
+    set(portal_header ${CMAKE_CURRENT_BINARY_DIR}/portal_page.h)
+    add_custom_command(OUTPUT ${portal_header}
+        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/embed-portal.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/portal.html ${portal_header}
+        DEPENDS src/portal.html ../scripts/embed-portal.py)
+    add_custom_target(omi_portal_page DEPENDS ${portal_header})
+    add_dependencies(softap_wifi_provision omi_portal_page)
+    target_include_directories(softap_wifi_provision PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+    get_target_property(provision_sources softap_wifi_provision SOURCES)
+    list(FILTER provision_sources EXCLUDE REGEX "(^|/)softap_wifi_provision\\.c$")
+    set_property(TARGET softap_wifi_provision PROPERTY SOURCES "${provision_sources}")
+    target_sources(softap_wifi_provision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/provisioning.c)
+    target_include_directories(softap_wifi_provision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    list(APPEND app_sources src/wifi_upload.c src/wifi_config.c)
     list(APPEND core_sources src/lib/core/local_auth.c)
 endif()
 

@@ -143,6 +143,12 @@ void set_led_state()
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Uploading over Wi-Fi (only ever on the charger): solid green + blue blink.
+    if (wifi_upload_provisioning()) {
+        set_led_green(false);
+        set_led_blue(blink_toggle);
+        set_led_red(false);
+        return;
+    }
     if (wifi_upload_active()) {
         set_led_green(true);
         set_led_blue(blink_toggle);

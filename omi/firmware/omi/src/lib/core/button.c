@@ -12,6 +12,7 @@
 #include <zephyr/pm/device_runtime.h>
 #include <zephyr/sys/poweroff.h>
 
+#include "button_hold.h"
 #include "haptic.h"
 #include "imu.h"
 #include "led.h"
@@ -19,6 +20,7 @@
 #include "speaker.h"
 #include "transport.h"
 #include "wdog_facade.h"
+#include "wifi_upload.h"
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 #include "sd_card.h"
 #endif
@@ -150,7 +152,6 @@ static inline void notify_long_tap()
 
 #define TAP_THRESHOLD 300     // 300 ms for single tap
 #define DOUBLE_TAP_WINDOW 600 // 600 ms maximum for double-tap
-#define LONG_PRESS_TIME 3000  // 3000 ms for long press (power off)
 
 typedef enum {
     BUTTON_EVENT_NONE,
@@ -162,6 +163,7 @@ typedef enum {
 
 static uint32_t current_time = 0;
 static uint32_t btn_press_start_time;
+static bool hold_handled;
 static uint32_t btn_release_time;
 static uint32_t btn_last_tap_time;
 static bool btn_is_pressed;
@@ -170,7 +172,7 @@ static u_int8_t btn_last_event = BUTTON_EVENT_NONE;
 
 void check_button_level(struct k_work *work_item)
 {
-    current_time = current_time + 1;
+    current_time = k_uptime_get_32();
 
     u_int8_t btn_state = was_pressed ? BUTTON_PRESSED : BUTTON_RELEASED;
 
@@ -180,15 +182,15 @@ void check_button_level(struct k_work *work_item)
     if (btn_state == BUTTON_PRESSED && !btn_is_pressed) {
         btn_is_pressed = true;
         btn_press_start_time = current_time;
+        hold_handled = false;
     } else if (btn_state == BUTTON_RELEASED && btn_is_pressed) {
         btn_is_pressed = false;
         btn_release_time = current_time;
 
         // Check for double tap
-        uint32_t press_duration = (btn_release_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL;
+        uint32_t press_duration = (btn_release_time - btn_press_start_time);
         if (press_duration < TAP_THRESHOLD) {
-            if (btn_last_tap_time > 0 &&
-                (current_time - btn_last_tap_time) * BUTTON_CHECK_INTERVAL < DOUBLE_TAP_WINDOW) {
+            if (btn_last_tap_time > 0 && (current_time - btn_last_tap_time) < DOUBLE_TAP_WINDOW) {
                 event = BUTTON_EVENT_DOUBLE_TAP;
                 btn_last_tap_time = 0; // Reset double-tap / single-tap detection
             } else {
@@ -199,19 +201,33 @@ void check_button_level(struct k_work *work_item)
 
     // Check for single tap
     if (btn_state == BUTTON_RELEASED && !btn_is_pressed) {
-        uint32_t press_duration = (btn_release_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL;
+        uint32_t press_duration = (btn_release_time - btn_press_start_time);
         if (press_duration < TAP_THRESHOLD && btn_last_tap_time > 0 &&
-            (current_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL > TAP_THRESHOLD) {
+            (current_time - btn_press_start_time) > TAP_THRESHOLD) {
             event = BUTTON_EVENT_SINGLE_TAP;
             btn_last_tap_time = 0;
-        } else if ((current_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL > TAP_THRESHOLD) {
+        } else if ((current_time - btn_press_start_time) > TAP_THRESHOLD) {
             event = BUTTON_EVENT_RELEASE;
         }
     }
 
-    // Check for long press
-    if (btn_is_pressed && (current_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL >= LONG_PRESS_TIME) {
-        event = BUTTON_EVENT_LONG_PRESS;
+    if (!hold_handled && (btn_is_pressed || btn_release_time == current_time)) {
+        enum button_hold_action action = button_hold_action(
+            current_time - btn_press_start_time, !btn_is_pressed, IS_ENABLED(CONFIG_OMI_WIFI_UPLOAD));
+        if (action == HOLD_POWER_OFF) {
+            hold_handled = true;
+            turnoff_all();
+        }
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+        else if (action == HOLD_SETUP) {
+            hold_handled = true;
+            wifi_upload_request_provisioning();
+            notify_long_tap();
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+            play_haptic_milli(100);
+#endif
+        }
+#endif
     }
 
     // Single tap
@@ -229,13 +245,6 @@ void check_button_level(struct k_work *work_item)
         notify_double_tap();
     }
 
-    // Long press, one time event
-    if (event == BUTTON_EVENT_LONG_PRESS && btn_last_event != BUTTON_EVENT_LONG_PRESS) {
-        LOG_INF("long press detected\n");
-        btn_last_event = event;
-        turnoff_all();
-    }
-
     // Releases, one time event
     if (event == BUTTON_EVENT_RELEASE && btn_last_event != BUTTON_EVENT_RELEASE) {
         LOG_PRINTK("release detected\n");
@@ -243,7 +252,7 @@ void check_button_level(struct k_work *work_item)
         notify_unpress();
 
         // Reset
-        current_time = 0;
+
         btn_press_start_time = 0;
         btn_release_time = 0;
         btn_last_tap_time = 0;
@@ -253,7 +262,7 @@ void check_button_level(struct k_work *work_item)
     }
 
     k_work_reschedule(&button_work, K_MSEC(BUTTON_CHECK_INTERVAL));
-    return 0;
+    return;
 }
 
 static ssize_t button_data_read_characteristic(struct bt_conn *conn,

@@ -56,6 +56,7 @@ UPLOAD_CONFIG_UUID = "7d2c0004-9a6b-4e2f-b1c3-5a0f0c41ed10"
 CMD_UPLOAD_NOW = 0x20
 TLV_SSID = 0x01
 TLV_PSK = 0x02
+TLV_HOSTNAME = 0x07
 TLV_HOST = 0x03
 TLV_PORT = 0x04
 TLV_SECRET = 0x05
@@ -187,10 +188,11 @@ def encode_wifi_config(*, ssid: str | None = None, password: str | None = None, 
             raise ValueError("WPA2 password must be 8..64 bytes (or empty for an open network)")
         tlv(TLV_PSK, b)
     if host is not None:
-        parts = host.split(".")
-        if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-            raise ValueError("host must be a dotted IPv4 address (the firmware has no DNS)")
-        tlv(TLV_HOST, bytes(int(p) for p in parts))
+        import re
+        if len(host) > 253 or not all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                                      for label in host.split(".")):
+            raise ValueError("host must be an IPv4 address or DNS hostname (no URL/port)")
+        tlv(TLV_HOSTNAME, host.encode("ascii"))
     if port is not None:
         if not 1 <= port <= 65535:
             raise ValueError("port out of range")
@@ -206,7 +208,7 @@ def encode_wifi_config(*, ssid: str | None = None, password: str | None = None, 
     return bytes(out)
 
 
-UPLOAD_STATES = ["idle", "wait-sd", "wifi-up", "connecting", "dhcp", "tcp", "auth", "uploading", "teardown"]
+UPLOAD_STATES = ["idle", "wait-sd", "wifi-up", "connecting", "dhcp", "tcp", "auth", "uploading", "teardown", "setup"]
 UPLOAD_RESULTS = ["ok", "not configured", "sd not ready", "wifi connect failed", "dhcp timeout",
                   "tcp connect failed", "receiver auth failed", "protocol error", "ring read error",
                   "link lost", "aborted (charger removed / busy)", "busy", "nothing to upload"]

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Only the generator runs here; firmware compilation stays in Nordic's SDK.
+set -eu
+exec "${OMI_PROTOC_PYTHON:?Set OMI_PROTOC_PYTHON to the native venv Python}" -m grpc_tools.protoc "$@"

@@ -12,6 +12,7 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
 
+#include "bulk_owner.h"
 #include "config.h"
 #include "rtc.h"
 #include "sd_card.h"
@@ -158,25 +159,31 @@ struct bt_gatt_service storage_service = BT_GATT_SERVICE(storage_service_attr);
 
 /* While a Wi-Fi upload session owns the bulk buffer / SD, BLE READ/ADVANCE/
  * CLEAR are answered with STORAGE_NOT_READY instead of racing the uploader. */
-static bool upload_busy;
+static atomic_int bulk_owner;
 
-void storage_set_upload_busy(bool busy)
+bool storage_claim_upload(void)
 {
-    upload_busy = busy;
+    return bulk_claim(&bulk_owner, BULK_WIFI);
+}
+void storage_release_upload(void)
+{
+    bulk_release(&bulk_owner, BULK_WIFI);
 }
 
 #ifdef CONFIG_OMI_WIFI_UPLOAD
 /* Provisioning writes arrive on the BT RX thread; parse + persist on the
  * system workqueue so settings/flash I/O never runs on the BT stack. */
-static uint8_t upload_cfg_pending[192];
+static uint8_t upload_cfg_pending[408];
 static uint16_t upload_cfg_pending_len;
 static int8_t upload_cfg_last_err;
+static atomic_t upload_cfg_busy;
 static void upload_cfg_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
     int ret = wifi_upload_apply_tlv(upload_cfg_pending, upload_cfg_pending_len);
     upload_cfg_last_err = (int8_t) ret;
     memset(upload_cfg_pending, 0, sizeof(upload_cfg_pending)); /* PSK/secret */
+    atomic_clear(&upload_cfg_busy);
 }
 static K_WORK_DEFINE(upload_cfg_work, upload_cfg_work_handler);
 
@@ -193,7 +200,7 @@ static ssize_t upload_config_write_handler(struct bt_conn *conn,
     if (offset != 0 || len == 0 || len > sizeof(upload_cfg_pending)) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
-    if (k_work_is_pending(&upload_cfg_work)) {
+    if (!atomic_cas(&upload_cfg_busy, 0, 1)) {
         return BT_GATT_ERR(BT_ATT_ERR_PROCEDURE_IN_PROGRESS);
     }
     memcpy(upload_cfg_pending, buf, len);
@@ -487,6 +494,7 @@ static int send_ring_info_response(struct bt_conn *conn)
 static void reset_transfer_state(void)
 {
     transfer_active = false;
+    bulk_release(&bulk_owner, BULK_BLE);
     read_begin_sent = false;
     done_pending = false;
     transfer_start_seq = 0;
@@ -536,6 +544,8 @@ static int start_pending_read(struct bt_conn *conn)
         requested_packets = (available_packets > UINT32_MAX) ? UINT32_MAX : (uint32_t) available_packets;
     }
 
+    if (!bulk_claim(&bulk_owner, BULK_BLE))
+        return -EBUSY;
     transfer_active = true;
     read_begin_sent = false;
     done_pending = false;
@@ -785,11 +795,12 @@ static void storage_write(void)
 
         if (clear_requested) {
             clear_requested = 0;
-            if (conn && upload_busy) {
+            if (conn && !bulk_claim(&bulk_owner, BULK_BLE)) {
                 (void) send_ack(conn, STORAGE_NOT_READY);
             } else if (conn) {
                 LOG_INF("Explicit delete: clearing the whole ring");
                 int ret = sd_ring_clear();
+                bulk_release(&bulk_owner, BULK_BLE);
                 if (ret >= 0) {
                     storage_status_cache_maybe_refresh(true);
                 }
@@ -799,12 +810,13 @@ static void storage_write(void)
 
         if (advance_request_pending) {
             advance_request_pending = 0;
-            if (conn && upload_busy) {
+            if (conn && !bulk_claim(&bulk_owner, BULK_BLE)) {
                 (void) send_ack(conn, STORAGE_NOT_READY);
             } else if (conn) {
                 LOG_INF("Explicit delete: advancing ring read pointer to seq %llu",
                         (unsigned long long) pending_advance_seq);
                 int ret = sd_ring_advance(pending_advance_seq);
+                bulk_release(&bulk_owner, BULK_BLE);
                 if (ret >= 0) {
                     storage_status_cache_maybe_refresh(true);
                 }
@@ -816,7 +828,7 @@ static void storage_write(void)
             if (!conn) {
                 read_request_pending = 0;
                 read_deadline = 0;
-            } else if (upload_busy) {
+            } else if (atomic_load(&bulk_owner) == BULK_WIFI) {
                 (void) send_ack(conn, STORAGE_NOT_READY);
                 read_request_pending = 0;
                 read_deadline = 0;

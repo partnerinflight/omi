@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Omi setup</title>
+<style>body{font:17px system-ui;max-width:32rem;margin:2rem auto;padding:0 1rem;color:#17202a;background:#fafafa}label{display:block;margin-top:1rem}input,select,button{box-sizing:border-box;width:100%;font:inherit;padding:.7rem;border:1px solid #aab1b8;border-radius:8px}button{margin-top:1.5rem;background:#162b3e;color:white}small{display:block;color:#4b5563}#status{white-space:pre-wrap}</style>
+<h1>Omi setup</h1><p>Record locally. Send audio to your own receiver.</p><p>This setup network closes after five minutes. Hold the button for five seconds to reopen it.</p>
+<small>Use in a trusted place: this temporary open Wi-Fi network uses HTTP. Anyone nearby could observe setup credentials. Audio upload authenticates your receiver but is not encrypted.</small>
+<form id="setup"><label>Nearby networks<select id="networks"><option value="">Enter a network below</option></select></label>
+<label>Wi-Fi SSID<input id="ssid" maxlength="32" required autocomplete="off"></label><label>Wi-Fi password<input id="password" type="password" maxlength="64" autocomplete="new-password"></label><small>Leave blank only for an open network. WPA2 personal networks are supported.</small>
+<label>Receiver hostname or IPv4<input id="host" placeholder="secondbrain.local" required maxlength="253" autocapitalize="none" spellcheck="false"></label>
+<label>Receiver port<input id="port" type="number" min="1" max="65535" value="7331" required></label>
+<label>Receiver pairing key<input id="key" type="password" minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" required autocomplete="off"></label><small>Paste the 64 hex characters from your receiver's upload-secret.hex file. This keeps audio from being sent to an untrusted receiver.</small>
+<button id="save">Save &amp; connect</button></form><p id="status" role="status"></p>
+<script>
+const $=id=>document.getElementById(id), enc=new TextEncoder(), dec=new TextDecoder();
+function varint(n){const r=[];do{let b=n&127;n>>>=7;r.push(b|(n?128:0));}while(n);return r;}
+function bytes(tag,b){return [(tag<<3)|2,...varint(b.length),...b];}
+function fields(b){let i=0,r=[];function v(){let n=0,s=0,x;do{if(i>=b.length||s>63)throw Error('Invalid scan data');x=b[i++];if(s<32)n|=(x&127)<<s;s+=7;}while(x&128);return n>>>0;}while(i<b.length){let t=v(),w=t&7;if(w===2){let n=v();if(i+n>b.length)throw Error('Invalid scan length');r.push([t>>>3,b.slice(i,i+n)]);i+=n;}else if(w===0)r.push([t>>>3,v()]);else throw Error('Invalid scan field');}return r;}
+function wifiMessage(ssid,password){const info=[...bytes(1,enc.encode(ssid)),...bytes(2,[]),32,0,40,password?4:0];return new Uint8Array([...bytes(1,info),...bytes(2,enc.encode(password))]);}
+function tlv(t,b){return [t,b.length,...b];}
+async function post(url,data){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:data});if(!r.ok)throw Error(await r.text());return r;}
+fetch('/prov/networks').then(r=>r.arrayBuffer()).then(b=>{for(const [t,record] of fields(new Uint8Array(b))){if(t!==1)continue;const wifi=fields(record).find(x=>x[0]===1);if(!wifi)continue;const ssid=fields(wifi[1]).find(x=>x[0]===1);if(!ssid)continue;let name=dec.decode(ssid[1]);if(name)$('networks').add(new Option(name,name));}}).catch(()=>{$('status').textContent='Scan unavailable. Enter the SSID manually.';});
+$('networks').onchange=()=>{$('ssid').value=$('networks').value;};
+$('setup').onsubmit=async e=>{e.preventDefault();$('save').disabled=true;try{let s=$('ssid').value,p=$('password').value,h=$('host').value.trim(),port=Number($('port').value),key=$('key').value;
+if(enc.encode(s).length<1||enc.encode(s).length>32)throw Error('SSID must be 1–32 bytes.');if(p&&(enc.encode(p).length<8||enc.encode(p).length>64))throw Error('Password must be 8–64 bytes.');
+if(!/^[A-Za-z0-9.-]+$/.test(h)||!Number.isInteger(port)||port<1||port>65535||!/[1-9a-f]/i.test(key))throw Error('Check hostname, port and pairing key.');
+const k=key.match(/../g).map(x=>parseInt(x,16));$('status').textContent='Saving…';
+await post('/omi/destination',new Uint8Array([...tlv(7,enc.encode(h)),...tlv(4,[port>>8,port&255]),...tlv(5,k)]));
+const r=await post('/prov/configure',wifiMessage(s,p));$('status').textContent=await r.text();$('password').value='';$('key').value='';
+}catch(err){$('status').textContent=err.message+' If setup closed, reconnect to OMI-Setup or check BLE wifi-status.';$('save').disabled=false;}};
+</script></html>

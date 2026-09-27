@@ -15,6 +15,8 @@ Build logic lives in `omi/firmware/scripts/ci/`.
 For the local recorder fork on macOS, use `MAC_BUILD.md` and
 `scripts/build-cv1-macos.sh` with NCS 2.9.0. Host protocol tests run with
 `python -m unittest discover -s tests -t .` in `scripts/omi-local`.
+The Wi-Fi portal uses a documented adaptation of Nordic provisioning; see
+`PROVISIONING.md`. Keep its native C tests in the same host test discovery suite.
 Keep SDK workspaces and toolchain downloads outside the repository.
 
 ## Formatting

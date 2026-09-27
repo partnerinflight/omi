@@ -133,13 +133,13 @@ class ProtocolCodecTests(unittest.TestCase):
         blob = U.encode_wifi_config(ssid="Home", password="hunter22", host="192.168.1.20", port=7331,
                                     secret=b"\x01" * 32, enabled=True)
         self.assertEqual(blob[:6], bytes([U.TLV_SSID, 4]) + b"Home")
-        self.assertIn(bytes([U.TLV_HOST, 4, 192, 168, 1, 20]), blob)
+        self.assertIn(bytes([U.TLV_HOSTNAME, 12]) + b"192.168.1.20", blob)
         self.assertIn(bytes([U.TLV_PORT, 2]) + (7331).to_bytes(2, "big"), blob)
         self.assertTrue(blob.endswith(bytes([U.TLV_ENABLE, 1, 1])))
         self.assertLessEqual(len(blob), 192)  # fits the firmware's pending buffer
         self.assertEqual(U.encode_wifi_config(forget=True), bytes([U.TLV_FORGET, 0]))
         with self.assertRaises(ValueError):
-            U.encode_wifi_config(host="receiver.local")
+            U.encode_wifi_config(host="http://receiver.local")
         with self.assertRaises(ValueError):
             U.encode_wifi_config(password="short")
 
