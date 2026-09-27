@@ -5,7 +5,8 @@ accepted loss of the stock LittleFS recordings. App and network images were
 uploaded, their secondary-slot digests verified, marked permanent and rebooted.
 No chip erase or SWD was used. Offline recording and repeated BLE OTA work.
 The setup AP `OMI-Setup-CE3B` now broadcasts and macOS successfully associates
-with it. Temporary diagnostic images are not release artifacts.
+with it. DHCP assigns the Mac `192.168.4.2`; the real page renders in Safari.
+Temporary diagnostic images are not release artifacts.
 
 Recovered `partnerinflight/omi`, branch `feature/local-only-recorder`, commit
 `42a433de2d20ff3ab242476baab6a099be8c4cef`. Its three commits preserve offline
@@ -49,8 +50,13 @@ Build artifacts and SDK files are ignored/untracked, not committed.
 The recovered baseline completed a clean native sysbuild **before** feature
 implementation: flash 629,928 / 949,760 bytes; RAM 429,200 / 450,560 bytes.
 The feature build also completed a pristine sysbuild; exact memory use and
-artifact hashes are in the local build logs and final task report. A final
-pristine build after commit binds the delivered images to the reported revision.
+artifact hashes are in the local build logs and final task report. The final
+pristine Wi-Fi build at `c96c906c40dc7b6098bb702d79b246b6420cf4d8` uses
+870,676 / 949,760 flash bytes and 424,536 / 450,560 RAM bytes. The BLE-only
+recorder also passed a pristine build (246,964 flash; 335,336 RAM bytes).
+Both final OTA images pass imgtool RSA-signature/digest verification. The
+Wi-Fi ZIP SHA-256 is
+`878fe98c38b1050f26aaa2d9049ddf186b736f42624f0987f35874a445a82055`.
 
 Host suite: 49 tests passed, including real loopback receiver tests, native
 firmware parser/hold/ownership tests and execution of the page JavaScript.
@@ -68,7 +74,10 @@ SD sequence growth with no dropped records. An inherited packing bug initially
 produced truncated Opus frames; commit `7ede982d7` fixes whole-frame boundaries
 and zero padding. A fresh 50-record sample contained 255 Opus frames (5.1 seconds)
 and decoded with ffmpeg without errors. The BLE MCUboot service remained
-usable through repeated updates.
+usable through repeated updates, including the final two-image production OTA.
+Both staged image digests matched the signed ZIP before activation. A transient
+image-list read immediately after reconnect omitted the external-flash slots;
+a fresh read recovered them and activation proceeded only after re-verification.
 
 Hardware startup exposed an all-zero OTP MAC read, CV1 power-switch timing that
 differs from the DK, and an undersized socket poll table that terminated Nordic's
@@ -80,6 +89,15 @@ usage was 86,076 / 120,000 bytes. Native tests execute the production power/MAC/
 lifecycle code, and negative compile tests reject the measured bad limits.
 Temporary disabled synthetic settings survived reboot without opening an AP.
 They contained no user credentials and were cleared before AP testing.
+
+A real Safari Save test accepted a disposable SSID/password, receiver hostname,
+port 17331 and pairing key. The page displayed its Saved confirmation and the
+AP closed. BLE reported configured with no configuration error. The nonexistent
+SSID timed out, left the read sequence at zero and did not drop queued records.
+After reboot, configuration remained valid, the AP stayed off and SD write
+sequence grew from 84,744 to 84,792. The complete fresh-page-to-Save sequence was repeated successfully on the
+final production image with its original socket pool sizes. Disposable settings
+were cleared after validation, and the Mac was restored to its normal network.
 
 ## BLE OTA procedure
 
@@ -122,13 +140,21 @@ recovery decision. No SWD probe was detected on this Mac.
 
 Verified: boot, microphone/Opus decode, persistent SD ring growth, BLE control,
 repeated app OTA, initial two-core OTA, configuration survival after reset,
-setup AP broadcasting and macOS association.
-Queue samples were read without advancing their read pointer.
+setup AP broadcasting, macOS association, DHCP, HTTP 200 for the actual HTML
+and Nordic scan protobuf, and browser Save with disposable settings.
+Queue samples were read without advancing their read pointer. After validation,
+the damaged pre-fix bring-up prefix before sequence 6944 was deliberately
+discarded; the remaining valid audio was retained. The final 50-record sample
+contained 247 Opus frames and decoded with ffmpeg without errors.
 
-Still required: real portal HTTP requests, station Wi-Fi association,
-DNS/mDNS, real receiver upload, failed destination/retry on hardware, and physical
-button gestures. Host tests cover authentication, disconnect/resume, queue safety,
+Still required: station Wi-Fi association with the owner’s network, DNS/mDNS,
+real receiver upload, receiver failure followed by successful retry, and physical
+button gestures. Failed association with a nonexistent test SSID retained the queue. Host tests cover authentication, disconnect/resume, queue safety,
 portal JavaScript and button timing, but do not establish those hardware results.
+
+The final setup configuration is empty, ready for the owner to enter Wi-Fi and
+receiver settings. The temporary network was removed from the Mac’s preferred
+network list, its normal Wi-Fi restored, and the Safari test tab closed.
 
 The local `.inspection/` directory contains OTA logs, status snapshots, decoded
 audio evidence and temporary diagnostics. No personal audio or credentials are
