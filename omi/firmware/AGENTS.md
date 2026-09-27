@@ -12,6 +12,11 @@ Firmware releases are manual via `.github/workflows/firmware_release.yml`:
 
 Build logic lives in `omi/firmware/scripts/ci/`.
 
+For the local recorder fork on macOS, use `MAC_BUILD.md` and
+`scripts/build-cv1-macos.sh` with NCS 2.9.0. Host protocol tests run with
+`python -m unittest discover -s tests -t .` in `scripts/omi-local`.
+Keep SDK workspaces and toolchain downloads outside the repository.
+
 ## Formatting
 
 C/C++ files: `clang-format -i <files>` (the repo pre-commit hook covers this).

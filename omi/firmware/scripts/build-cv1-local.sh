@@ -12,16 +12,24 @@ set -euo pipefail
 
 FW="$(cd "$(dirname "$0")/.." && pwd)"
 BOARD=omi/nrf5340/cpuapp
-BUILD_DIR="${BUILD_DIR:-$FW/build/local}"
 EXTRA=()
 
 if [ "${1:-}" = "--wifi" ]; then
-  BUILD_DIR="${BUILD_DIR%/local}/local-wifi"
+  BUILD_DIR="${BUILD_DIR:-$FW/build/local-wifi}"
   EXTRA=(-DEXTRA_CONF_FILE=overlay-wifi-upload.conf -DSB_EXTRA_CONF_FILE=sysbuild-wifi.conf)
+elif [ "$#" -eq 0 ]; then
+  BUILD_DIR="${BUILD_DIR:-$FW/build/local}"
+else
+  echo "Usage: $0 [--wifi]" >&2
+  exit 2
+fi
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [--wifi]" >&2
+  exit 2
 fi
 
 west build -b "$BOARD" "$FW/omi" --sysbuild -d "$BUILD_DIR" --pristine always \
-  -- -DBOARD_ROOT="$FW" -DCONF_FILE=omi.conf "${EXTRA[@]}"
+  -- -DBOARD_ROOT="$FW" -DCONF_FILE=omi.conf ${EXTRA[@]+"${EXTRA[@]}"}
 
 test -s "$BUILD_DIR/dfu_application.zip"
 test -s "$BUILD_DIR/merged.hex"
