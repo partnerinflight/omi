@@ -22,3 +22,7 @@ Keep SDK workspaces and toolchain downloads outside the repository.
 ## Formatting
 
 C/C++ files: `clang-format -i <files>` (the repo pre-commit hook covers this).
+
+The host suite is registered as `cv1-local-recorder-tests` in the shared checks
+manifest (local and CI). CV1 NVS stays at `0xf8000`, size `0x2000`; preserve
+that persistent ABI when changing SDK dependencies.

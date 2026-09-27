@@ -6,6 +6,12 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 
+#if defined(CONFIG_SOC_NRF5340_CPUAPP)
+#include <pm_config.h>
+
+#include "lib/core/settings_layout.h"
+#endif
+
 LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 
 // Default values if not found in flash

@@ -4,6 +4,11 @@
 # Checks that consume PR metadata declare `requires_pr_body: true`; post-merge
 # push runs exclude only that category because no authoritative PR body is available.
 checks:
+  - id: cv1-local-recorder-tests
+    command: ["python", "-m", "unittest", "discover", "-s", "omi/firmware/scripts/omi-local/tests", "-t", "omi/firmware/scripts/omi-local"]
+    triggers: ["omi/firmware/**", ".github/checks-manifest.yaml"]
+    lanes: ["local", "ci"]
+    reason: "CV1 local recorder migration found settings layout drift and shared BLE/Wi-Fi buffer ownership hazards; run the existing protocol suite plus native C and portal regression tests before firmware changes land"
   - id: dev-harness-unit-tests
     command: ["bash", "scripts/dev-harness/run-tests.sh"]
     triggers: ["Makefile", "scripts/dev-harness/**", "desktop/macos/scripts/omi-fault-inject.sh", ".github/checks-manifest.yaml"]

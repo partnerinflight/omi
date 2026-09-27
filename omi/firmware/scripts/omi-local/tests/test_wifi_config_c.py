@@ -48,7 +48,7 @@ class WifiConfigTests(unittest.TestCase):
         (d/'lib/core').mkdir(parents=True)
         (d/'zephyr').mkdir()
         (d/'zephyr/toolchain.h').write_text('#define __packed __attribute__((packed))\n')
-        for name in ['wifi_config.h','wifi_upload.h','button_hold.h','bulk_owner.h']:
+        for name in ['wifi_config.h','wifi_upload.h','button_hold.h','bulk_owner.h','settings_layout.h']:
             shutil.copy(SRC/'lib/core'/name, d/'lib/core'/name)
         shutil.copy(SRC/'wifi_config.c', d/'wifi_config.c')
         (d/'harness.c').write_text(HARNESS)
@@ -77,3 +77,15 @@ class WifiConfigTests(unittest.TestCase):
 
     def test_bulk_ownership_survives_rejected_claim(self):
         self.assertEqual(self.run_c('owner'), 'ok')
+
+    def test_compiler_rejects_settings_partition_drift(self):
+        # Real integration regression: enabling the Nordic credential library
+        # moved NVS from 0xf8000 to 0xfc000 in the unpinned sysbuild layout.
+        d = Path(self.tmp.name)
+        source = d/'layout.c'
+        source.write_text('#include "lib/core/settings_layout.h"\nint main(void) {return 0;}\n')
+        for address, success in [('0xf8000', True), ('0xfc000', False)]:
+            result = subprocess.run(['cc', '-I', str(d), '-DPM_SETTINGS_STORAGE_SIZE=0x2000',
+                                     '-DPM_SETTINGS_STORAGE_ADDRESS='+address, '-c', str(source),
+                                     '-o', str(d/'layout.o')], capture_output=True, text=True)
+            self.assertEqual(result.returncode == 0, success, result.stderr)

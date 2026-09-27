@@ -99,3 +99,15 @@ sram_primary:
   end_address: 0x20070000
   region: sram_primary
   size: 0x6e000
+# Persistent ABI of feature/local-only-recorder (42a433de2). Do not let new
+# SDK module dependencies reorder these partitions during an OTA upgrade.
+settings_storage:
+  address: 0xf8000
+  end_address: 0xfa000
+  region: flash_primary
+  size: 0x2000
+littlefs_storage:
+  address: 0xfa000
+  end_address: 0x100000
+  region: flash_primary
+  size: 0x6000

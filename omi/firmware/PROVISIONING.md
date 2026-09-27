@@ -57,7 +57,8 @@ This backend is **not encrypted at rest** on this non-TF-M build. The app's
 `omi/wifi_upload` setting contains SSID, hostname, port and receiver pairing
 key; its legacy password field is zeroed on disk. The previous version-1 blob
 is migrated after loading, with credentials saved before replacing the old
-blob. No SD partitions or record format change. This upgrade preserves the old
+blob. The original raw-ring SD format is unchanged. CV1 NVS is pinned at flash
+`0xf8000..0xfa000` and compile-time assertions reject layout drift. This upgrade preserves the old
 IPv4 BLE TLV for already-installed external clients; the in-tree CLI sends the
 new hostname TLV. Hostnames including `secondbrain.local` use DNS/mDNS IPv4
 resolution. URLs, paths, IPv6 and enterprise/WPA3-only networks are not supported.

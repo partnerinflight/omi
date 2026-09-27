@@ -52,7 +52,7 @@ The feature build also completed a pristine sysbuild; exact memory use and
 artifact hashes are in the local build logs and final task report. A final
 pristine build after commit binds the delivered images to the reported revision.
 
-Host suite: 45 tests passed, including real loopback receiver tests, native
+Host suite: 46 tests passed, including real loopback receiver tests, native
 firmware parser/hold/ownership tests and execution of the page JavaScript.
 The setup page was also rendered and inspected at a narrow mobile viewport.
 The local preview uses the actual HTML; this does not prove AP reachability.
@@ -112,3 +112,8 @@ on hardware. Build/unit-test results must not be described as those tests.
 
 Device file-list evidence: `/Users/eugenepolonsky/code/SecondBrain/.inspection/stock-file-list.json`.
 No personal audio or credentials are committed to Git.
+
+A clean configure of the untouched recovered branch placed NVS at `0xf8000`
+(size `0x2000`). New dependencies initially reordered dynamic partitions.
+Both persistent partitions are now pinned in the board static layout, and
+compiler assertions plus a negative compile test prevent accidental NVS drift.
