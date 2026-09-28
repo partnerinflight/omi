@@ -60,9 +60,12 @@ Copy `config\pipeline.example.json` to a private configuration file, then set
 MOSS binary/model paths and VibeVoice's environment/local model directory to
 match the Windows machine. Existing working MOSS binaries can be copied using
 `windows\setup-engines.ps1 -Config <file>`; it also prepares the VibeVoice Python
-environment. Model weights are not bundled. Download the VibeVoice checkpoint
-before installing an unattended service; use a **local directory** for
-`vibe_7b_model`. The service runs with Hugging Face offline mode enabled.
+environment. Model weights are not bundled. Set `vibe_7b_model` to a **local
+absolute directory**; if it does not exist, `install.ps1` downloads
+`microsoft/VibeVoice-ASR-Streaming-7B` (override with `-VibeModelRepo`) into it
+once, using the VibeVoice environment. An interrupted download stays in
+`<dir>.partial` and resumes on the next run. The service itself runs with
+Hugging Face offline mode enabled and never downloads models.
 
 The imported policy uses MOSS for the first pass, optional Hermes scoring
 (disabled by default), and selective VibeVoice 7B refinement. `-SkipVibe7` can

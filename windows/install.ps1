@@ -12,6 +12,7 @@ param(
     [string]$ReviewUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [ValidatePattern("^[A-Za-z][A-Za-z0-9]{0,48}$")][string]$ServiceName = "SecondBrain",
     [ValidateRange(1,65535)][int]$Port = 7331,
+    [string]$VibeModelRepo = 'microsoft/VibeVoice-ASR-Streaming-7B',
     [switch]$SkipVibe7,
     [switch]$NoStart
 )
@@ -49,6 +50,19 @@ if ((Test-Path $targetKey) -and (Get-Content $targetKey -Raw).Trim() -ne $key) {
 [IO.File]::WriteAllText($targetKey, $key + "`n")
 $pipelineTarget = "$DataRoot\config\pipeline.json"
 if ([IO.Path]::GetFullPath($PipelineConfig) -ne [IO.Path]::GetFullPath($pipelineTarget)) { Copy-Item $PipelineConfig $pipelineTarget -Force }
+# One-time install-time download; the service itself runs offline and never fetches models.
+$pipeline = Get-Content $pipelineTarget -Raw | ConvertFrom-Json
+$vibeModel = $pipeline.vibe_7b_model
+if (-not $SkipVibe7 -and $vibeModel -and [IO.Path]::IsPathRooted($vibeModel) -and -not (Test-Path $vibeModel)) {
+    $vibePython = if ($pipeline.vibe_python) { $pipeline.vibe_python } else { Join-Path $pipeline.vibe_repo '.venv\Scripts\python.exe' }
+    if (-not (Test-Path $vibePython)) { throw 'VibeVoice Python environment is missing; run windows/setup-engines.ps1 first.' }
+    # Download into a staging folder so an interrupted download is never mistaken for a complete model.
+    $staging = $vibeModel + '.partial'
+    New-Item -ItemType Directory -Force (Split-Path -Parent $vibeModel) | Out-Null
+    Write-Host "Downloading $VibeModelRepo to $vibeModel (several GB, one time; rerun resumes)..."
+    Run $vibePython @('-c', 'import sys; from huggingface_hub import snapshot_download; snapshot_download(sys.argv[1], local_dir=sys.argv[2])', $VibeModelRepo, $staging)
+    Move-Item $staging $vibeModel
+}
 $cfg = [ordered]@{
     data_dir = "$DataRoot\data"; incoming_dir = [IO.Path]::GetFullPath($IncomingDir)
     secret_file = $targetKey; pipeline_config = $pipelineTarget
@@ -58,11 +72,21 @@ $cfg = [ordered]@{
     skip_vibe7 = [bool]$SkipVibe7; no_hermes = $false; ffmpeg_dir = $FfmpegDir
 }
 $cfg | ConvertTo-Json | Set-Content "$DataRoot\config\service.json" -Encoding UTF8
-Run $workerPython @('-m', 'second_brain.cli', 'check', '--config', "$DataRoot\config\service.json")
+# Surface the preflight's own reasons instead of a bare exit code.
+$checkOutput = & $workerPython -m second_brain.cli check --config "$DataRoot\config\service.json"
+if ($LASTEXITCODE -ne 0) {
+    $report = try { ($checkOutput -join "`n") | ConvertFrom-Json } catch { $null }
+    if ($report -and $report.errors) { throw ("Preflight check failed:`n" + (($report.errors | ForEach-Object { "  - $_" }) -join "`n")) }
+    throw ("Preflight check failed with exit code ${LASTEXITCODE}:`n" + ($checkOutput -join "`n"))
+}
 $binary = '"' + "$InstallDir\service\SecondBrain.Service.exe" + '" --python "' + $workerPython + '" --config "' + "$DataRoot\config\service.json" + '" --service-name ' + $ServiceName
 if (-not [System.Diagnostics.EventLog]::SourceExists($ServiceName)) { [System.Diagnostics.EventLog]::CreateEventSource($ServiceName, 'Application') }
 # Virtual service account: no stored user password and no interactive login.
-Run sc.exe @('create', $ServiceName, 'binPath=', $binary, 'start=', 'delayed-auto', 'obj=', ('NT SERVICE\' + $ServiceName), 'DisplayName=', 'Second Brain')
+# binPath contains quotes, which Windows PowerShell 5.1 does not escape for native
+# commands, so pass sc.exe a pre-escaped command line verbatim.
+$createArgs = 'create ' + $ServiceName + ' binPath= "' + $binary.Replace('"', '\"') + '" start= delayed-auto obj= "NT SERVICE\' + $ServiceName + '" DisplayName= "Second Brain"'
+$create = Start-Process sc.exe -ArgumentList $createArgs -NoNewWindow -Wait -PassThru
+if ($create.ExitCode -ne 0) { throw "sc.exe create failed with exit code $($create.ExitCode)" }
 try {
     Run sc.exe @('description', $ServiceName, 'Omi receiver, adaptive transcription and Obsidian delivery')
     Run sc.exe @('failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/15000/restart/60000/restart/300000')
@@ -77,8 +101,10 @@ try {
     Run icacls.exe @("$DataRoot\review", '/reset', '/T', '/Q')
     Run icacls.exe @("$DataRoot\review", '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "${principal}:(OI)(CI)M", "${reviewPrincipal}:(OI)(CI)RX")
     Run icacls.exe @("$DataRoot\review\requests", '/grant:r', "${reviewPrincipal}:(OI)(CI)M", '/T', '/Q')
-    Run icacls.exe @($InstallDir, '/grant:r', "${principal}:(OI)(CI)RX", '/T', '/Q')
-    Run icacls.exe @($Vault, '/grant', "${principal}:(OI)(CI)RX", '/T', '/Q')
+    # Read-only grants rely on (OI)(CI) inheritance instead of /T, which would stamp
+    # an explicit entry on every file in large Python/model trees.
+    Run icacls.exe @($InstallDir, '/grant:r', "${principal}:(OI)(CI)RX", '/Q')
+    Run icacls.exe @($Vault, '/grant', "${principal}:(OI)(CI)RX", '/Q')
     Run icacls.exe @("$Vault\Omi\Conversations", '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
     $pipeline = Get-Content $pipelineTarget -Raw | ConvertFrom-Json
     $pythonBase = (& $Python -c 'import sys; print(sys.base_prefix)').Trim()
@@ -100,8 +126,13 @@ try {
     foreach ($path in $enginePaths) {
         if ([IO.Path]::GetPathRoot($path) -eq $path) { throw 'Refusing read access to an entire drive for an engine' }
         if (-not (Test-Path $path)) { throw "Engine/model path unavailable: $path" }
-        Run icacls.exe @($path, '/grant', "${principal}:(OI)(CI)RX", '/T', '/Q')
     }
+    # Engines often share a base interpreter or nest a venv in their repo; grant each tree once.
+    $grantRoots = @()
+    foreach ($path in ($enginePaths | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') } | Sort-Object -Unique)) {
+        if (-not ($grantRoots | Where-Object { $path.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) })) { $grantRoots += $path }
+    }
+    foreach ($path in $grantRoots) { Run icacls.exe @($path, '/grant', "${principal}:(OI)(CI)RX", '/Q') }
     # Pin caches to machine state; normal service operation never downloads models.
     New-ItemProperty ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $ServiceName) -Name Environment -PropertyType MultiString -Value @("HF_HOME=$DataRoot\data\model-cache", 'HF_HUB_OFFLINE=1', 'TRANSFORMERS_OFFLINE=1') -Force | Out-Null
     if (-not (Get-NetFirewallRule -DisplayName ($ServiceName + ' Omi receiver') -ErrorAction SilentlyContinue)) {
