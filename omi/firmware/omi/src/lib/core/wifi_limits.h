@@ -7,4 +7,6 @@ _Static_assert(CONFIG_NET_SOCKETS_POLL_MAX >= 6, "Nordic supplicant needs at lea
 /* Real CV1 startup fault: mgmt_work_q_obj exhausted the SDK's 4200 bytes
  * while adding the supplicant interface. Keep room for its control calls. */
 _Static_assert(CONFIG_NET_MGMT_EVENT_STACK_SIZE >= 8192, "CV1 supplicant startup needs an 8 KiB management stack");
+_Static_assert(CONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE >= 3 * CONFIG_NET_TCP_MAX_SEND_WINDOW_SIZE,
+               "TCP transmit pool must cover the SDK's three-copy window budget");
 #endif

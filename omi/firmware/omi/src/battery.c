@@ -9,6 +9,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "lib/core/battery_filter.h"
+
 LOG_MODULE_REGISTER(battery, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define BATTERY_STATES_COUNT 16
@@ -23,15 +25,9 @@ int16_t sample_buffer[ADC_TOTAL_SAMPLES + 1];
 #define ADC_ACQUISITION_TIME ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)
 #define ADC_1ST_CHANNEL_ID 0
 #define ADC_1ST_CHANNEL_INPUT NRF_SAADC_INPUT_AIN0
-#define BATTERY_FILTER_ALPHA_U16 (uint16_t)(65535/(5+1))
-#define FILTER_INIT_CYCLES 5
 #define BATTERY_STATES(is_charging) ((is_charging) ? battery_charging_states : battery_discharge_states)
-
-// Static variable to store previous EMA value for battery percentage
-static uint8_t battery_percentage_ema = 0;
-static bool ema_initialized = false;
+static struct battery_filter percentage_filter;
 static bool is_first_measurement = true;
-static uint8_t ema_init_counter = 0;
 
 static const struct device *const adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
 static const struct gpio_dt_spec power_pin = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(power_pin), gpios, {0});
@@ -105,29 +101,6 @@ struct adc_sequence sequence = {
     .buffer_size = sizeof(sample_buffer),
     .resolution = ADC_RESOLUTION,
 };
-
-uint8_t update_ema_filter(uint32_t current_ema, uint8_t new_value)
-{
-    // handle edge case transitions directly
-    if ((!is_charging && (current_ema <= 5)) || (is_charging && (current_ema >= 95))) {
-        if (is_charging) {
-            return (new_value > current_ema) ? current_ema + 1 : current_ema;
-        } else {
-            return (new_value < current_ema) ? current_ema - 1 : current_ema;
-        }
-    }
-
-    // Constant coefficient Alpha for EMA calculation, scaled to 16 bit.
-    // Alpha = 65535/(N+1) where N is the averaging window
-    const uint32_t alpha = BATTERY_FILTER_ALPHA_U16;
-    const uint32_t alpha_complement = UINT16_MAX - BATTERY_FILTER_ALPHA_U16;
-
-    // Calculate new EMA: new_ema = (alpha * new_value + alpha_complement * current_ema) / 65535
-    uint64_t new_ema = (alpha * new_value) + (alpha_complement * current_ema);
-
-    // Scale result back to 8-bit, with rounding up
-    return (uint8_t)((new_ema + 32768) >> 16);
-}
 
 static void battery_charging_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
@@ -233,7 +206,7 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
     // Calculate battery voltage using the voltage divider formula
     *battery_millivolt = (uint16_t) (adc_raw_val * ((float) (R1 + R2) / R2));
     LOG_INF("Battery voltage (mV): %d", *battery_millivolt);
-    
+
     // Restore bat_read_pin to INPUT state to save power/avoid affecting other circuits
     err = gpio_pin_configure_dt(&bat_read_pin, GPIO_INPUT);
     if (err < 0) {
@@ -241,7 +214,7 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
         k_mutex_unlock(&battery_mut);
         return err;
     }
-    
+
     if (is_first_measurement) {
         LOG_INF("First measurement, skipping to allow voltage to stabilize");
         is_first_measurement = false;
@@ -267,44 +240,21 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
     } else {
         // Find the appropriate range in the battery profile
         for (int i = 0; i < BATTERY_STATES_COUNT - 1; i++) {
-            if (battery_millivolt <= battery_states[i].millivolts && battery_millivolt > battery_states[i + 1].millivolts) {
-    
+            if (battery_millivolt <= battery_states[i].millivolts &&
+                battery_millivolt > battery_states[i + 1].millivolts) {
+
                 // Linear interpolation between the two closest points
                 uint16_t voltage_range = battery_states[i].millivolts - battery_states[i + 1].millivolts;
                 uint8_t percentage_range = battery_states[i].percentage - battery_states[i + 1].percentage;
                 uint16_t voltage_diff = battery_states[i].millivolts - battery_millivolt;
-    
+
                 raw_percentage = battery_states[i].percentage - (voltage_diff * percentage_range) / voltage_range;
                 break;
             }
         }
     }
 
-    // Prevent sudden jumps in percentage
-    if (battery_percentage_ema != 0) {
-        if (is_charging && raw_percentage < battery_percentage_ema) {
-            raw_percentage = battery_percentage_ema;
-        } else if (!is_charging && raw_percentage > battery_percentage_ema) {
-            raw_percentage = battery_percentage_ema;
-        }
-    }
-
-    // Initialize EMA with first reading
-    if (!ema_initialized) {
-        battery_percentage_ema = raw_percentage;
-        ema_init_counter++;
-        
-        // Run filter for FILTER_INIT_CYCLES to stabilize
-        if (ema_init_counter >= FILTER_INIT_CYCLES) {
-            ema_initialized = true;
-        }
-        
-        *battery_percentage = raw_percentage;
-    } else {
-        // Apply EMA filter to smooth out percentage changes
-        battery_percentage_ema = update_ema_filter(battery_percentage_ema, raw_percentage);
-        *battery_percentage = battery_percentage_ema;
-    }
+    *battery_percentage = battery_filter_update(&percentage_filter, raw_percentage, is_charging);
 
     return 0;
 }

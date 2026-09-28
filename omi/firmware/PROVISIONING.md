@@ -123,3 +123,19 @@ button hold policy and transfer ownership. A clean CV1 sysbuild checks all
 images and partition sizes. Hardware validation results and exact artifacts
 are recorded separately in `VALIDATION_MAC.md`; unit tests do not establish
 radio, microphone, SD or power performance.
+
+## NCS 2.9 DHCP DNS-list correction
+
+The pinned SDK DHCP client allocates exactly `CONFIG_DNS_RESOLVER_MAX_SERVERS`
+pointers without a terminator, while its DNS resolver iterates over that count
+plus multicast slots. With mDNS enabled and a full DNS option, it reads beyond
+the list. On the actual CV1 this rejected real router offers with DNS errors
+`-106` (unsupported address family), followed by `-120` (already registered),
+and surfaced as an upload DHCP timeout.
+
+The Wi-Fi CMake integration generates a corrected `omi_dhcpv4.c` in the build
+directory. `scripts/patch-ncs290-dhcp.py` accepts only the reviewed NCS 2.9 source
+SHA256, adds a zero-initialized terminating entry, and supplies mDNS addresses
+alongside the DHCP DNS servers. The installed SDK is never edited. An SDK update
+must review this patch; a source mismatch fails the build. Native sanitizer
+regressions cover full one- and two-server lists with the multicast slot enabled.

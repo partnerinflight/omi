@@ -19,6 +19,7 @@ LOCAL_STORAGE_STATUS_UUID = "7d2c0003-9a6b-4e2f-b1c3-5a0f0c41ed10"  # read 16-by
 # Unchanged upstream services that the CLI also uses.
 TIME_SYNC_WRITE_UUID = "19b10031-e8f2-537e-4f6c-d104768a1214"  # u32 LE epoch seconds
 TIME_SYNC_READ_UUID = "19b10032-e8f2-537e-4f6c-d104768a1214"
+BATTERY_DIAGNOSTICS_UUID = "19b10014-e8f2-537e-4f6c-d104768a1214"
 BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 DIS_FIRMWARE_REV_UUID = "00002a26-0000-1000-8000-00805f9b34fb"
 DIS_MODEL_UUID = "00002a24-0000-1000-8000-00805f9b34fb"
@@ -308,3 +309,19 @@ def split_sessions(records: Iterable[Record], gap_s: int = 60) -> list[Session]:
         s.audio_ms += sum(opus_packet_duration_ms(f) for f in rec.frames)
         prev = rec
     return sessions
+
+
+@dataclass(frozen=True)
+class BatteryDiagnostics:
+    millivolts: int
+    percentage: int
+    charging: bool
+    sample_age_ms: int
+    error: int
+
+
+def parse_battery_diagnostics(value: bytes) -> BatteryDiagnostics:
+    if len(value) != 12:
+        raise ProtocolError("battery diagnostics must be 12 bytes")
+    mv, percent, charging, age, error = struct.unpack("<HBBIi", value)
+    return BatteryDiagnostics(mv, percent, bool(charging), age, error)

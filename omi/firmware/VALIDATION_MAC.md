@@ -8,6 +8,49 @@ The setup AP `OMI-Setup-CE3B` now broadcasts and macOS successfully associates
 with it. DHCP assigns the Mac `192.168.4.2`; the real page renders in Safari.
 Temporary diagnostic images are not release artifacts.
 
+## Follow-up: battery freshness and Windows uploads
+
+The original Bluetooth battery value was only refreshed while connected,
+which made a reconnect expose an old 1% before the next sample. The gauge also
+rounded away small percentage increases. Regression tests now execute the
+disconnected work handler and fractional filter. The diagnostic characteristic
+reports sample age and voltage; hardware samples refreshed normally, initially
+4190–4209 mV with charging asserted, later 4250–4276 mV with it deasserted.
+The inherited voltage calibration changes with the charger flag; these are
+firmware estimates, not an independent measurement of charging current.
+
+The router's DHCP offer exposed an unterminated DNS list in the pinned NCS 2.9
+DHCP client when mDNS is enabled. On-device logs showed EAFNOSUPPORT/EALREADY
+while applying DNS. A hash-checked generated source correction, leaving the SDK
+unchanged, now gets a bound lease at 192.168.1.40 and authenticates to the user's
+Windows receiver at 192.168.1.85:7331. The host can also reach that TCP port.
+
+The upload path now bounds socket writes and budgets its transmit memory.
+A successful association clears the previous session's disconnect event,
+preventing that stale event from aborting a retry. Native tests exercise this
+event sequence and real later disconnects. Receiver commit `d14eb687f` fixes
+Windows progress-file flushing through a writable handle; it is pushed, but
+the running Windows process must be updated and restarted separately.
+
+On firmware `.7`, the receiver resume pointer advanced from 6944 to 6980, but
+no DATA acknowledgements or complete sessions were observed. Retained storage
+continued growing with zero dropped records. End-to-end upload remains
+unverified pending the restarted receiver and a successful acknowledged run.
+Automatic upload is still gated by active charging; a full battery may clear
+that signal while externally powered. Manual `upload-now` bypasses the gate.
+
+The host suite now passes 59 tests, including loopback receiver, native C,
+Windows flush-permission seams, DHCP bounds, and TCP backpressure tests.
+Clean Wi-Fi and BLE-only builds passed for `.6`; the final clean Wi-Fi build
+`.8` uses 871208 flash bytes and 428720 RAM bytes. Its application digest is
+`f43b0b92295bd4b011429bdf5518026c2e2972c3817cca86add266e1fcdb74dc`,
+identical to the signed application installed over BLE; the network core was
+left unchanged. The clean ZIP SHA-256 is
+`505c9861e96437a12e63f5a9d1b0cd67dd8249082368a06d3ed8ac5ea9f709d2`.
+The broad monorepo preflight
+is unavailable in this sparse checkout because unrelated registered artifacts
+are absent; scoped firmware tests and builds are the validation evidence.
+
 Recovered `partnerinflight/omi`, branch `feature/local-only-recorder`, commit
 `42a433de2d20ff3ab242476baab6a099be8c4cef`. Its three commits preserve offline
 Opus recording, authenticated Wi-Fi upload and resume. Current upstream has no

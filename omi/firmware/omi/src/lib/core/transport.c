@@ -100,6 +100,11 @@ static ssize_t settings_charging_status_read_handler(struct bt_conn *conn,
                                                      uint16_t len,
                                                      uint16_t offset);
 static int notify_charging_status(struct bt_conn *conn, bool force_notify);
+static ssize_t battery_diagnostics_read(struct bt_conn *conn,
+                                        const struct bt_gatt_attr *attr,
+                                        void *buf,
+                                        uint16_t len,
+                                        uint16_t offset);
 static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset);
 
@@ -138,6 +143,9 @@ static struct bt_uuid_128 settings_mic_gain_characteristic_uuid =
 static struct bt_uuid_128 settings_charging_status_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10013, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 
+static struct bt_uuid_128 battery_diagnostics_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10014, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
 static struct bt_gatt_attr settings_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&settings_service_uuid),
     BT_GATT_CHARACTERISTIC(&settings_dim_ratio_characteristic_uuid.uuid,
@@ -159,6 +167,12 @@ static struct bt_gatt_attr settings_service_attr[] = {
                            NULL,
                            NULL),
     BT_GATT_CCC(charging_status_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CHARACTERISTIC(&battery_diagnostics_uuid.uuid,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           battery_diagnostics_read,
+                           NULL,
+                           NULL),
 };
 
 static struct bt_gatt_service settings_service = BT_GATT_SERVICE(settings_service_attr);
@@ -428,6 +442,33 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #define CONFIG_OMI_BATTERY_CRITICAL_MV 3500         // mV
 uint8_t battery_percentage = 0;
 static int8_t charging_status_last_notified = -1;
+static struct k_spinlock battery_snapshot_lock;
+static uint16_t battery_last_mv;
+static int64_t battery_sample_ms = -1;
+static int32_t battery_sample_error = -EAGAIN;
+
+/* LE: mV:u16, percent:u8, charging:u8, sample_age_ms:u32, error:i32. */
+static ssize_t battery_diagnostics_read(struct bt_conn *conn,
+                                        const struct bt_gatt_attr *attr,
+                                        void *buf,
+                                        uint16_t len,
+                                        uint16_t offset)
+{
+    struct {
+        uint16_t mv;
+        uint8_t percent, charging;
+        uint32_t age;
+        int32_t error;
+    } __packed st;
+    k_spinlock_key_t key = k_spin_lock(&battery_snapshot_lock);
+    st.mv = battery_last_mv;
+    st.percent = battery_percentage;
+    st.charging = is_charging;
+    st.age = battery_sample_ms < 0 ? UINT32_MAX : (uint32_t) (k_uptime_get() - battery_sample_ms);
+    st.error = battery_sample_error;
+    k_spin_unlock(&battery_snapshot_lock, key);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &st, sizeof(st));
+}
 void broadcast_battery_level(struct k_work *work_item);
 
 static int notify_charging_status(struct bt_conn *conn, bool force_notify)
@@ -466,24 +507,28 @@ void broadcast_battery_level(struct k_work *work_item)
                                          ? BATTERY_REFRESH_INTERVAL_CONNECTED
                                          : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
 
-    if (battery_get_millivolt(&battery_millivolt) == 0 &&
-        battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
+    int sample_error = battery_get_millivolt(&battery_millivolt);
+    uint8_t measured_percentage = battery_percentage;
+    if (!sample_error)
+        sample_error = battery_get_percentage(&measured_percentage, battery_millivolt);
+    k_spinlock_key_t key = k_spin_lock(&battery_snapshot_lock);
+    battery_sample_error = sample_error;
+    if (!sample_error) {
+        battery_last_mv = battery_millivolt;
+        battery_percentage = measured_percentage;
+        battery_sample_ms = k_uptime_get();
+    }
+    k_spin_unlock(&battery_snapshot_lock, key);
+    if (!sample_error) {
 
         LOG_PRINTK("Battery at %d mV (capacity %d%%)\n", battery_millivolt, battery_percentage);
 
+        /* BAS owns its readable value even with no subscribed connection. */
+        int err = bt_bas_set_battery_level(battery_percentage);
+        if (err)
+            LOG_ERR("Error updating battery level: %d", err);
         if (is_connected && current_connection != NULL) {
-            /* Report battery even during an SD sync. It's 1 byte at most every few
-             * seconds and AUDIO_TX_RESERVED_SLOTS keeps TX buffers free for
-             * non-audio notifications, so it can't starve the sync/audio stream.
-             * The old storage_transfer_active() early-return meant the app never
-             * got a battery update for the whole (often long) duration of a sync. */
             (void) notify_charging_status(current_connection, false);
-
-            // Use the Zephyr BAS function to set (and notify) the battery level
-            int err = bt_bas_set_battery_level(battery_percentage);
-            if (err) {
-                LOG_ERR("Error updating battery level: %d", err);
-            }
         }
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);

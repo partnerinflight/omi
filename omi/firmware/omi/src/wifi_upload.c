@@ -38,6 +38,7 @@
 
 #include "lib/core/wifi_config.h"
 #include "lib/core/wifi_radio.h"
+#include "lib/core/wifi_socket.h"
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
 #include <zephyr/sys/sys_heap.h>
 #endif
@@ -118,6 +119,10 @@ static void wifi_mgmt_event_handler(struct net_mgmt_event_callback *cb, uint32_t
     if (mgmt_event == NET_EVENT_WIFI_CONNECT_RESULT) {
         const struct wifi_status *st = cb->info;
         connect_status = st ? st->status : -1;
+        /* Radio startup tears down an old interface and can emit DISCONNECT.
+         * A successful new association supersedes that old-session event. */
+        if (connect_status == 0)
+            atomic_clear(&link_lost);
         k_sem_give(&connect_sem);
     } else if (mgmt_event == NET_EVENT_WIFI_DISCONNECT_RESULT) {
         atomic_set(&link_lost, 1);
@@ -134,19 +139,6 @@ static void ipv4_mgmt_event_handler(struct net_mgmt_event_callback *cb, uint32_t
 }
 
 /* --- socket helpers -------------------------------------------------------- */
-
-static int send_all(int sock, const uint8_t *p, size_t n)
-{
-    while (n > 0) {
-        ssize_t w = zsock_send(sock, p, n, 0);
-        if (w <= 0) {
-            return -EIO;
-        }
-        p += w;
-        n -= (size_t) w;
-    }
-    return 0;
-}
 
 static int recv_all(int sock, uint8_t *p, size_t n)
 {
@@ -166,9 +158,9 @@ static int send_frame(int sock, uint8_t type, const uint8_t *payload, uint32_t l
     uint8_t hdr[UP_HDR_LEN];
     hdr[0] = type;
     sys_put_be32(len, hdr + 1);
-    int ret = send_all(sock, hdr, sizeof(hdr));
+    int ret = wifi_socket_send_all(sock, hdr, sizeof(hdr));
     if (ret == 0 && len > 0) {
-        ret = send_all(sock, payload, len);
+        ret = wifi_socket_send_all(sock, payload, len);
     }
     return ret;
 }
@@ -339,9 +331,12 @@ static enum wifi_upload_result upload_records(int sock, bool manual, sd_ring_inf
             uint8_t hdr[UP_HDR_LEN];
             hdr[0] = MSG_DATA;
             sys_put_be32(sizeof(prefix) + bytes_read, hdr + 1);
-            if (send_all(sock, hdr, sizeof(hdr)) || send_all(sock, prefix, sizeof(prefix)) ||
-                send_all(sock, buf, bytes_read)) {
-                *err = -EIO;
+            *err = wifi_socket_send_all(sock, hdr, sizeof(hdr));
+            if (!*err)
+                *err = wifi_socket_send_all(sock, prefix, sizeof(prefix));
+            if (!*err)
+                *err = wifi_socket_send_all(sock, buf, bytes_read);
+            if (*err) {
                 return WIFI_UPLOAD_ERR_LINK_LOST;
             }
 
@@ -517,6 +512,9 @@ out:
         (void) zsock_close(sock);
     }
     if (wifi_up) {
+        status.dhcp_state = iface->config.dhcpv4.state;
+        status.dhcp_attempts = iface->config.dhcpv4.attempts;
+        memcpy(status.ipv4, &iface->config.dhcpv4.requested_ip, sizeof(status.ipv4));
         net_dhcpv4_stop(iface);
         (void) net_mgmt(NET_REQUEST_WIFI_DISCONNECT, iface, NULL, 0);
         wifi_radio_stop(iface); /* powers the nRF7002 down */
@@ -750,6 +748,12 @@ void wifi_upload_get_status(struct wifi_upload_status *out)
 {
     *out = status;
     out->configured = status.configured;
+    struct net_if *iface = net_if_get_first_wifi();
+    if (iface && wifi_upload_active()) {
+        out->dhcp_state = iface->config.dhcpv4.state;
+        out->dhcp_attempts = iface->config.dhcpv4.attempts;
+        memcpy(out->ipv4, &iface->config.dhcpv4.requested_ip, sizeof(out->ipv4));
+    }
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
     extern struct k_heap _system_heap;
     struct sys_memory_stats st;

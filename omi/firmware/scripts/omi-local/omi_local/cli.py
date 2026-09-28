@@ -271,6 +271,19 @@ async def cmd_info(args) -> int:
         await client.close()
 
 
+async def cmd_battery_status(args) -> int:
+    client, t = await _connect(args)
+    try:
+        st = P.parse_battery_diagnostics(await t.read_gatt(P.BATTERY_DIAGNOSTICS_UUID))
+        print(f"battery        : {st.percentage}%")
+        print(f"voltage        : {st.millivolts} mV")
+        print(f"charging signal: {'active' if st.charging else 'inactive'}")
+        print(f"sample age     : {st.sample_age_ms} ms; error={st.error}")
+        return 0 if st.error == 0 else 1
+    finally:
+        await client.close()
+
+
 async def cmd_list(args) -> int:
     client, t = await _connect(args)
     try:
@@ -427,6 +440,8 @@ def _print_upload_status(st: U.UploadStatus) -> None:
     print(f"sessions ok    : {st.sessions_ok}, packets uploaded: {st.packets_uploaded}")
     if st.last_attempt_uptime_s:
         print(f"last attempt   : {st.last_attempt_uptime_s}s after boot")
+    if st.dhcp_state is not None:
+        print(f"DHCP           : state={st.dhcp_state}, attempts={st.dhcp_attempts}, IPv4={st.ipv4}")
     if st.heap_free or st.heap_max_used:
         print(f"heap           : {st.heap_free} B free, {st.heap_max_used} B max used (Wi-Fi stack tuning)")
 
@@ -534,6 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("scan", help="find local-only recorders nearby")
     sub.add_parser("info", help="device / storage status")
+    sub.add_parser("battery-status", help="battery voltage, charging signal and sample freshness")
     s = sub.add_parser("list", help="what is on the device (and what has been pulled)")
     s.add_argument("dest", nargs="?", help="destination directory to compare download state against")
     s = sub.add_parser("pull", help="download recordings (never deletes)")
@@ -579,7 +595,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "verify":
         return cmd_verify(args)
     handler = {"scan": cmd_scan, "info": cmd_info, "list": cmd_list, "pull": cmd_pull, "delete": cmd_delete,
-               "time-sync": cmd_time_sync, "wifi-setup": cmd_wifi_setup, "wifi-status": cmd_wifi_status,
+               "battery-status": cmd_battery_status, "time-sync": cmd_time_sync, "wifi-setup": cmd_wifi_setup, "wifi-status": cmd_wifi_status,
                "wifi-forget": cmd_wifi_forget, "upload-now": cmd_upload_now, "serve": cmd_serve}[args.cmd]
     try:
         return asyncio.run(handler(args))

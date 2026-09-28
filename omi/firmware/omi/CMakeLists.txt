@@ -41,6 +41,7 @@ if(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
 endif()
 
 if(CONFIG_OMI_WIFI_UPLOAD)
+    include(cmake/ncs290-dhcp.cmake)
     # Keep Nordic's library target and generated protocol; replace only its
     # one-shot sample lifecycle with the CV1 browser/lifecycle adaptation.
     set(portal_header ${CMAKE_CURRENT_BINARY_DIR}/portal_page.h)

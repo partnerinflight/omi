@@ -50,6 +50,10 @@ struct wifi_upload_status {
     uint32_t last_attempt_uptime_s;
     uint32_t heap_free;
     uint32_t heap_max_used;
+    uint8_t dhcp_state;
+    uint8_t dhcp_attempts;
+    uint16_t diagnostic_reserved;
+    uint8_t ipv4[4];
 } __packed;
 
 enum wifi_upload_state {

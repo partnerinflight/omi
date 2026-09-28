@@ -13,6 +13,8 @@ STUB = r'''
 #include <stddef.h>
 #include <sys/types.h>
 #define CONFIG_NET_SOCKETS_POLL_MAX 16
+#define CONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE 8192
+#define CONFIG_NET_TCP_MAX_SEND_WINDOW_SIZE 2048
 #define CONFIG_NET_MGMT_EVENT_STACK_SIZE 8192
 struct device {int unused;};
 struct gpio_dt_spec {int pin;};
@@ -105,8 +107,10 @@ class WifiRadioTests(unittest.TestCase):
             root = Path(tmp)
             source = root / 'limits.c'
             source.write_text('#include "lib/core/wifi_limits.h"\n')
-            for count, stack, success in [(4,8192,False), (6,8192,True), (16,8192,True), (16,4200,False)]:
+            for count, stack, pool, success in [(4,8192,8192,False), (6,8192,8192,True),
+                    (16,8192,8192,True), (16,4200,8192,False), (16,8192,4096,False)]:
                 result = subprocess.run(['cc', '-I', str(SRC),
+                    '-DCONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE=' + str(pool), '-DCONFIG_NET_TCP_MAX_SEND_WINDOW_SIZE=2048',
                     '-DCONFIG_NET_SOCKETS_POLL_MAX=' + str(count),
                     '-DCONFIG_NET_MGMT_EVENT_STACK_SIZE=' + str(stack), '-c', str(source),
                     '-o', str(root / 'limits.o')], capture_output=True, text=True)

@@ -226,6 +226,9 @@ class UploadStatus:
     last_attempt_uptime_s: int
     heap_free: int
     heap_max_used: int
+    dhcp_state: int | None = None
+    dhcp_attempts: int | None = None
+    ipv4: str | None = None
 
     @property
     def state_name(self) -> str:
@@ -241,4 +244,9 @@ def parse_upload_status(value: bytes) -> UploadStatus:
         raise UploadProtocolError("short upload status")
     configured, state, result, cfg_err, errno_, ok, pkts, last, heap_free, heap_max = struct.unpack_from(
         "<BBBbiIIIII", value, 0)
-    return UploadStatus(bool(configured), state, result, cfg_err, errno_, ok, pkts, last, heap_free, heap_max)
+    dhcp_state = dhcp_attempts = ipv4 = None
+    if len(value) >= 36:
+        dhcp_state, dhcp_attempts = struct.unpack_from("<BB", value, 28)
+        ipv4 = ".".join(str(b) for b in value[32:36])
+    return UploadStatus(bool(configured), state, result, cfg_err, errno_, ok, pkts, last, heap_free, heap_max,
+                        dhcp_state, dhcp_attempts, ipv4)

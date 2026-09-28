@@ -26,3 +26,7 @@ C/C++ files: `clang-format -i <files>` (the repo pre-commit hook covers this).
 The host suite is registered as `cv1-local-recorder-tests` in the shared checks
 manifest (local and CI). CV1 NVS stays at `0xf8000`, size `0x2000`; preserve
 that persistent ABI when changing SDK dependencies.
+
+Battery reports must stay fresh without a BLE connection. `battery-status`
+exposes voltage and sample age; the charging GPIO alone does not prove current
+flow. Native tests execute the battery work handler and fractional gauge filter.
