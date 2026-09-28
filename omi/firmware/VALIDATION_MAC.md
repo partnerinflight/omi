@@ -257,3 +257,26 @@ ffmpeg without errors. Controlled sound-to-wake/new-recording testing remains
 pending physical test conditions; automated tests cover the split independently
 of timestamps. Evidence is retained locally in `.inspection/vox-hardware.log`
 and `.inspection/vox-audio/`.
+
+## Recorder LED meanings — 2026-09-28
+
+Firmware candidate `3.0.22-localwifi.10` turns all normal-state LEDs off while
+recording and shows solid red while the microphone is in VOX silence sleep.
+Normal charging/BLE colours no longer override those two states. Existing off,
+boot, setup, upload, full-storage and invalid-clock indications retain priority.
+The existing main loop refreshes the indicator once per second.
+
+Validation: 65 host tests pass. The new native test executes the production
+`set_led_state` function across recording/sleep transitions, both charge and
+connection states, low/full battery, and each existing higher-priority status.
+Both Wi-Fi and BLE-only NCS 2.9 incremental sysbuilds pass. The signed Wi-Fi app
+uses 871788 flash bytes and 428784 RAM bytes and passes imgtool verification.
+App digest: `b7b24dcf37379aab85e1df798bf78f46dffaf1247b65a77c2faba0b1c929bfde`.
+ZIP SHA-256: `a696a7f16a0934409fc43f3bc13cc12989d608fc2e20d15f3c8c28e078432ba4`.
+
+Deployment is pending: a 30-second scan briefly connected and confirmed idle,
+configured firmware, but OTA then timed out connecting. A retry using a fresh
+scan found no advertising device. Neither attempt began the image upload; the
+last deployed firmware remains `.9`. Physical LED appearance has not been
+observed. Bring Omi within this Mac's BLE range and disconnect other BLE clients
+before retrying. The Windows receiver needs no change for these LED meanings.

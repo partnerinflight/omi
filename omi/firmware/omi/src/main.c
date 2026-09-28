@@ -188,6 +188,16 @@ void set_led_state()
     }
 #endif
 
+    /* Normal recorder indication overrides charging/connection colours.
+     * Setup, upload and warnings above retain their existing priority. */
+    bool silent = mic_in_aad_sleep();
+    if (mic_is_running() || silent) {
+        set_led_green(false);
+        set_led_blue(false);
+        set_led_red(silent);
+        return;
+    }
+
     bool green = false;
     bool blue = false;
     bool red = false;

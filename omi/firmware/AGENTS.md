@@ -35,3 +35,7 @@ VOX recording boundaries must drain PCM and packed frames before SD sleep.
 Zero-length codec callbacks are ordered end markers, never Opus encode errors.
 Native VOX tests and receiver tests cover the 30-second timer, marker ordering,
 resume across upload sessions, and closing audio durably before acknowledging.
+
+Normal recording uses no LEDs; acoustic sleep uses solid red. Preserve the
+higher-priority setup/upload/storage/clock warnings. `test_led_state_c.py`
+executes the production selector across charging, connection and warning states.

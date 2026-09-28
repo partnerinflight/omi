@@ -142,6 +142,12 @@ regressions cover full one- and two-server lists with the multicast slot enabled
 
 ## Sound-activated recordings (VOX)
 
+From firmware `3.0.22-localwifi.10`, normal recording turns all LEDs off;
+VOX silence (after the 30-second timeout) shows solid red. This overrides normal
+charging/BLE connection colours. Boot, shutdown, setup, upload, storage-full,
+and invalid-clock indications retain their existing behavior and priority.
+The indicator refreshes within one second of the microphone transition.
+
 Firmware `3.0.22-localwifi.9` ends a recording after **30 continuous seconds**
 below its sound threshold. Sound during the countdown resets it. The trailing
 30 seconds remain in the recording so ordinary pauses do not cut a conversation.
