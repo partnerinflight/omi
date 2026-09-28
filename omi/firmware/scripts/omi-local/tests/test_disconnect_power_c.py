@@ -42,7 +42,7 @@ void bt_conn_unref(struct bt_conn *c){(void)c;}
 void k_sem_init(int *p,int initial,int limit){(void)p;assert(initial==8 && limit==8);}
 """ + function(SRC/'lib/core/transport.c','static void _transport_disconnected(') + r"""
 int main(void){
- for(int a=0;a<2;a++){for(int p=0;p<1;p++){for(int u=0;u<2;u++){
+ for(int a=0;a<2;a++){for(int p=0;p<2;p++){for(int u=0;u<2;u++){
  asleep=a;paused=p;upload=u;sd=true;is_connected=true;
  _transport_disconnected(NULL,0);assert(!is_connected);
  assert(sd==(!(a||p)||u));

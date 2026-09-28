@@ -3,6 +3,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 enum button_hold_action { HOLD_NONE, HOLD_POWER_OFF, HOLD_SETUP };
+static inline bool button_recording_click(uint32_t ms, bool hold_handled)
+{
+    return !hold_handled && ms >= 40 && ms < 1000;
+}
 static inline enum button_hold_action button_hold_action(uint32_t ms, bool released, bool wifi)
 {
     if (wifi) {

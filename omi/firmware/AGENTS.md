@@ -39,3 +39,12 @@ resume across upload sessions, and closing audio durably before acknowledging.
 Normal recording uses no LEDs; acoustic sleep uses solid red. Preserve the
 higher-priority setup/upload/storage/clock warnings. `test_led_state_c.py`
 executes the production selector across charging, connection and warning states.
+
+Short button releases (40–999 ms) toggle manual pause through the microphone
+owner thread. Manual pause drains an end marker, disables acoustic wake, and
+powers down the microphone rail. It overrides other awake LED states with a
+200 ms red pulse every 3 seconds; sound cannot resume it. Resume failures stay
+paused. Acoustic wake vibrates for 80 ms only after a successful microphone
+start. `test_manual_recording_c.py` exercises production button/owner paths,
+PCM suppression, LED timing, and failures. `test_disconnect_power_c.py` covers
+SD ownership during BLE disconnect, including manual pause.

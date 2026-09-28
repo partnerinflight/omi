@@ -176,3 +176,25 @@ threshold is separately defined in `t5838_aad.c`; room noise and distance affect
 what counts as sound. Hardware acoustic wake has startup latency and no pre-roll.
 BLE bulk downloads defer microphone sleep until the download ends; Wi-Fi
 uploads can continue while the microphone sleeps.
+
+### Manual pause and wake feedback
+
+Firmware `3.0.22-localwifi.11` adds a brief **80 ms vibration** when sound wakes
+the microphone from VOX silence and recording successfully starts. Starting at
+boot or resuming with the button does not add this sound-wake vibration.
+
+**Click and release the button** (less than one second) to pause recording;
+click again to resume. Pausing closes the current recording and turns the
+microphone power rail off, including acoustic detection: sound cannot restart
+recording while manually paused. Resume starts a new recording and returns to
+the normal 30-second VOX behavior. Manual pause lasts until the next click or
+restart; it is not saved across power cycles. A failed resume leaves the mic off
+and paused so another click can retry.
+
+While manually paused, the red LED flashes for **200 ms every 3 seconds**, with
+green and blue off. This indication takes priority over setup, upload and warning
+LEDs while the device is awake. Existing uploads may continue during pause.
+Ordinary acoustic silence still shows solid red, and normal recording is dark.
+The existing 3–5 second power-off release and 5-second setup hold are unchanged;
+long holds do not toggle recording. The receiver from `.9` already understands
+these recording boundaries and needs no additional update for `.11`.

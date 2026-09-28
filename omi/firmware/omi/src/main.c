@@ -144,6 +144,14 @@ void set_led_state()
         return;
     }
 
+    /* Manual pause is explicit privacy feedback, including during uploads. */
+    if (mic_is_manually_paused()) {
+        set_led_green(false);
+        set_led_blue(false);
+        set_led_red(mic_manual_pause_led_on());
+        return;
+    }
+
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Uploading over Wi-Fi (only ever on the charger): solid green + blue blink.
     if (wifi_upload_provisioning()) {
@@ -413,7 +421,7 @@ int main(void)
 #endif
 
         set_led_state();
-        k_msleep(1000);
+        k_msleep(mic_is_manually_paused() ? 100 : 1000);
     }
 
     printk("Exiting omi...");

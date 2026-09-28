@@ -189,6 +189,13 @@ void check_button_level(struct k_work *work_item)
 
         // Check for double tap
         uint32_t press_duration = (btn_release_time - btn_press_start_time);
+        /* Toggle on each short release, independent of delayed single/double
+         * tap notifications. Long holds never become recording clicks. */
+        if (!is_off && button_recording_click(press_duration, hold_handled)) {
+            int ret = mic_toggle_manual_pause();
+            if (ret)
+                LOG_WRN("Recording toggle unavailable (%d)", ret);
+        }
         if (press_duration < TAP_THRESHOLD) {
             if (btn_last_tap_time > 0 && (current_time - btn_last_tap_time) < DOUBLE_TAP_WINDOW) {
                 event = BUTTON_EVENT_DOUBLE_TAP;

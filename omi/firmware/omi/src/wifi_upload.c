@@ -521,7 +521,7 @@ out:
     }
     storage_release_upload();
     atomic_clear(&active);
-    if (mic_in_aad_sleep() && !is_connected) {
+    if ((mic_in_aad_sleep() || mic_is_manually_paused()) && !is_connected) {
         sd_request_power(false);
     }
     set_state(WIFI_UPLOAD_IDLE);

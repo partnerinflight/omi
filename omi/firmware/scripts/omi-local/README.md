@@ -155,4 +155,8 @@ recording. Sound resumes recording into a new timestamped file on the receiver.
 Update and restart `serve` to recognize the firmware's recording-end markers.
 An upload ending leaves an unfinished recording resumable; only its marker or
 a timestamp/sequence boundary closes it. Existing recordings are not re-split.
-See [VOX behavior](../../PROVISIONING.md#sound-activated-recordings-vox).
+Firmware `3.0.22-localwifi.11` also vibrates briefly on sound-triggered wake.
+A short button click pauses/resumes recording: paused means microphone power
+off and a brief red flash every 3 seconds; sound cannot resume it. Each pause
+ends the current file. No receiver update beyond the `.9` boundary support is
+needed. See [VOX behavior](../../PROVISIONING.md#sound-activated-recordings-vox).

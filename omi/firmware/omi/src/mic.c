@@ -13,6 +13,7 @@
 #include <zephyr/sys/atomic.h>
 
 #include "lib/core/codec.h"
+#include "lib/core/haptic.h"
 #include "lib/core/settings.h"
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -86,6 +87,10 @@ static atomic_t aad_woke = ATOMIC_INIT(0);         /* tell mic ctx it just woke 
 static atomic_t aad_in_sleep = ATOMIC_INIT(0);     /* mic is in hardware AAD sleep */
 static atomic_t aad_req_sleep = ATOMIC_INIT(0);    /* silence timer asked to sleep */
 static int64_t aad_last_voice_ms;
+static atomic_t manual_pause_requested;
+static atomic_t manual_paused;
+static uint32_t manual_pause_started_ms;
+static bool manual_end_pending; /* owner-only: retry failed boundary before resume */
 
 static void aad_track_silence(const int16_t *buf, size_t n);
 static int aad_hw_start(void);
@@ -125,6 +130,10 @@ static void process_audio_buffer(void *buffer, uint32_t size)
     interleaved_stereo_to_mono(inter, frames, mono_buffer);
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused)) {
+        k_mem_slab_free(&mem_slab, buffer);
+        return;
+    }
     aad_track_silence(mono_buffer, frames);
 #endif
 
@@ -296,17 +305,18 @@ int mic_pause(void)
     return 0;
 }
 
-void mic_resume()
+int mic_resume(void)
 {
     LOG_INF("Resuming microphone");
     if (!mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("START trigger failed: %d", ret);
-            return;
+            return ret;
         }
         mic_running = true;
     }
+    return 0;
 }
 
 bool mic_is_running()
@@ -318,6 +328,37 @@ bool mic_in_aad_sleep(void)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     return atomic_get(&aad_in_sleep) != 0;
+#else
+    return false;
+#endif
+}
+
+int mic_toggle_manual_pause(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (!aad_thread_started)
+        return -EAGAIN;
+    atomic_xor(&manual_pause_requested, 1);
+    k_sem_give(&aad_sem);
+    return 0;
+#else
+    return -ENOTSUP;
+#endif
+}
+
+bool mic_is_manually_paused(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    return atomic_get(&manual_paused) != 0;
+#else
+    return false;
+#endif
+}
+
+bool mic_manual_pause_led_on(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    return mic_is_manually_paused() && (uint32_t) (k_uptime_get_32() - manual_pause_started_ms) % 3000U < 200U;
 #else
     return false;
 #endif
@@ -410,12 +451,78 @@ static void enter_hw_aad(void)
 static void exit_hw_aad(void)
 {
     aad_wake_irq(false);
-    t5838_aad_release_clk(); /* hand CLK back to the PDM peripheral */
-    atomic_set(&aad_in_sleep, 0);
+    t5838_aad_release_clk();  /* hand CLK back to the PDM peripheral */
     atomic_set(&aad_woke, 1); /* reset silence timer in mic ctx */
     sd_request_power(true);   /* power on + remount SD before audio starts flowing */
-    mic_resume();             /* dmic START reclaims CLK via pinctrl */
+    if (mic_resume()) {       /* dmic START reclaims CLK via pinctrl */
+        /* Restore acoustic mode and retry on the next sound edge. */
+        pdm_hw_disable();
+        t5838_aad_enter();
+        aad_wake_irq(true);
+        return;
+    }
+    atomic_set(&aad_in_sleep, 0);
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+    if (!atomic_get(&manual_pause_requested))
+        play_haptic_milli(80);
+#endif
     LOG_INF("AAD: WAKE -> mic resumed");
+}
+
+/* These transitions run only on the AAD owner, never the button work queue.
+ * Keep manual pause separate from acoustic sleep: sound must not resume it. */
+static void enter_manual_pause(void)
+{
+    aad_wake_irq(false);
+    bool was_asleep = atomic_get(&aad_in_sleep);
+    manual_end_pending = !was_asleep;
+    int ret = mic_pause();
+    if (!ret && !was_asleep)
+        ret = codec_end_recording();
+    if (!ret)
+        manual_end_pending = false;
+    if (ret)
+        LOG_ERR("Manual pause could not flush final audio (%d)", ret);
+    pdm_hw_disable();
+    t5838_aad_release_clk(); /* undo AAD's high line parking before rail-off */
+    t5838_aad_power(false);
+    atomic_clear(&aad_in_sleep);
+    atomic_clear(&aad_wake_pending);
+    atomic_clear(&aad_req_sleep);
+    manual_pause_started_ms = k_uptime_get_32();
+    atomic_set(&manual_paused, 1);
+    if (!is_connected && !wifi_upload_active())
+        sd_request_power(false);
+}
+
+static void exit_manual_pause(void)
+{
+    sd_request_power(true);
+    if (manual_end_pending) {
+        int ret = codec_end_recording();
+        if (ret) {
+            atomic_set(&manual_pause_requested, 1);
+            LOG_ERR("Manual resume blocked by recording boundary (%d)", ret);
+            return;
+        }
+        manual_end_pending = false;
+    }
+    t5838_aad_power(true);
+    k_msleep(AAD_PDM_SETTLE_MS);
+    t5838_aad_release_clk();
+    atomic_clear(&aad_wake_pending);
+    atomic_clear(&aad_req_sleep);
+    atomic_set(&aad_woke, 1);
+    int ret = mic_resume();
+    if (ret) {
+        /* Stay physically off and paused; a later click can retry resume. */
+        pdm_hw_disable();
+        t5838_aad_power(false);
+        atomic_set(&manual_pause_requested, 1);
+        LOG_ERR("Manual resume failed (%d)", ret);
+        return;
+    }
+    atomic_clear(&manual_paused);
 }
 
 static void aad_thread_fn(void *p1, void *p2, void *p3)
@@ -430,12 +537,23 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
          * stays asleep and adds no idle CPU wakeups. */
         k_sem_take(&aad_sem, K_FOREVER);
 
+        bool requested = atomic_get(&manual_pause_requested);
+        if (requested && !atomic_get(&manual_paused))
+            enter_manual_pause();
+        else if (!requested && atomic_get(&manual_paused))
+            exit_manual_pause();
+        if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused)) {
+            atomic_clear(&aad_req_sleep);
+            atomic_clear(&aad_wake_pending);
+            continue;
+        }
+
         if (atomic_cas(&aad_req_sleep, 1, 0) && !atomic_get(&aad_in_sleep)) {
             enter_hw_aad();
         }
 
         if (atomic_cas(&aad_wake_pending, 1, 0)) {
-            if (atomic_get(&aad_in_sleep)) {
+            if (atomic_get(&aad_in_sleep) && !atomic_get(&manual_pause_requested)) {
                 exit_hw_aad();
             }
         }

@@ -280,3 +280,41 @@ scan found no advertising device. Neither attempt began the image upload; the
 last deployed firmware remains `.9`. Physical LED appearance has not been
 observed. Bring Omi within this Mac's BLE range and disconnect other BLE clients
 before retrying. The Windows receiver needs no change for these LED meanings.
+
+## Manual recording pause and acoustic wake feedback — 2026-09-28
+
+Candidate `3.0.22-localwifi.11` adds an 80 ms vibration after successful acoustic
+wake and short-click pause/resume. Manual pause disables PDM, releases the AAD
+clock pins, powers off the microphone rail, and ignores acoustic wake. It drains
+a recording-end marker before idle storage sleep; resume starts a new recording.
+A failed boundary or microphone start leaves the device paused. While paused,
+red pulses for 200 ms every 3 seconds and green/blue stay off. The normal dark
+recording / solid-red VOX indications and 30-second silence timer are retained.
+Pause does not persist across restart. Existing long holds retain their actions.
+
+Validation: `python -m unittest discover -s tests -t .` in `scripts/omi-local`
+passes 69 tests. Native tests execute production owner transitions, click/hold
+handling, PCM suppression, sound wake, failed resume/boundary retry, LED phase
+including uptime wrap, and SD ownership when BLE disconnects during an upload.
+The latter revealed an adjacent SD-power bug, corrected in its own commit.
+Tests use controlled GPIO/DMIC/time seams; they do not measure physical power,
+vibration strength, or LED timing on a device.
+
+Clean NCS 2.9 Wi-Fi and BLE-only sysbuilds pass; the Wi-Fi build was then rebuilt
+incrementally after the final microphone pin-release change. Final Wi-Fi app:
+872476 flash / 428800 RAM bytes. BLE-only: 248588 flash / 335488 RAM bytes.
+Both files in the Wi-Fi OTA ZIP pass MCUboot imgtool signature verification.
+App digest: `959b0656916e211f9373257555cf2f226631bafc8518473f0471a08f248200bb`.
+Network digest: `334a2e2e8cb94c36f86e8d52c477afd2235f72d0a6edebf84f485880d74d1f8c`.
+OTA ZIP SHA-256: `93a2ddab62b128750665e73795228a402036ee3039ad1712caa1fb907fe4a6de`.
+Local archive: `.inspection/Omi_CV1_OTA_3.0.22-localwifi.11.zip` in the parent
+workspace. Existing Kconfig/deprecation and unrelated C warnings remain.
+`scripts/pr-preflight --suggest` reports no affected product invariants, but
+its failure-class metadata validation fails on absent artifacts in this sparse
+checkout; this is not a full-repository CI pass.
+
+**Built only, not deployed, at the user's request.** Omi is at work; physical
+click, sound, vibration, LED and upload checks wait until the user brings it
+home. No BLE scan, OTA upload, reset or receiver connection was attempted.
+Last confirmed installed firmware remains `.9`; this package includes `.10`'s
+LED change. The existing marker-aware Windows receiver needs no update.

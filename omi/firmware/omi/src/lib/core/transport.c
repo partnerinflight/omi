@@ -639,7 +639,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     storage_is_on = false;
     /* An idle microphone can release SD power once any Wi-Fi upload has
      * also finished using it. */
-    if (mic_in_aad_sleep() && !wifi_upload_active()) {
+    if ((mic_in_aad_sleep() || mic_is_manually_paused()) && !wifi_upload_active()) {
         sd_request_power(false);
     }
 #endif
