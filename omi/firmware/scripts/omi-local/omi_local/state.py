@@ -65,10 +65,9 @@ class StateStore:
     def fsync(self) -> None:
         import os
 
-        try:
-            fd = os.open(self.path, os.O_RDONLY)
-        except OSError:
-            return
+        # Windows FlushFileBuffers requires a handle with write access.
+        # A failed open/flush must propagate: the receiver must not ACK it.
+        fd = os.open(self.path, os.O_RDWR)
         try:
             os.fsync(fd)
         finally:
