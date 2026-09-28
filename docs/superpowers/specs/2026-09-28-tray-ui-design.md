@@ -24,12 +24,17 @@ window, real UI instead of plain text, and room for speaker identification.
 - `SecondBrain.Tray` becomes a WPF app (`UseWPF` + `UseWindowsForms`) targeting
   `net10.0-windows`, using WPF's built-in Fluent theme (`ThemeMode="System"`,
   `PresentationFramework.Fluent`, verified present in Microsoft.WindowsDesktop.App
-  10.0.12). It follows Windows light/dark mode and the accent color. If the SDK
-  flags `ThemeMode` as experimental (WPF0001), that single diagnostic is
-  suppressed in the project file.
-- The tray icon stays `System.Windows.Forms.NotifyIcon` (WPF has none).
-- Semantic colors (healthy / attention / stopped) are defined once as resources
-  with light and dark variants; everything else comes from the Fluent theme.
+  10.0.12). It follows Windows light/dark mode and the accent color. The theme is
+  set by the `ThemeMode` attribute in `App.xaml`: spike builds showed the XAML
+  attribute compiles cleanly alongside the app's own resources, whereas setting
+  `Application.ThemeMode` from C# fails with `WPF0001` (evaluation-only API).
+  Every Fluent resource key used below resolves.
+- The tray icon stays `System.Windows.Forms.NotifyIcon` (WPF has none). WinForms
+  and `System.Drawing` are removed from implicit usings (type-name clashes with
+  WPF) and referenced by alias; `System.IO` is added back (WPF's SDK drops it).
+- Semantic colors (healthy / attention / stopped) use Fluent's theme-aware
+  `SystemFillColorSuccessBrush`, `SystemFillColorCautionBrush` and
+  `SystemFillColorCriticalBrush`; everything else comes from the Fluent theme.
 
 ## Components
 
@@ -41,7 +46,8 @@ test project covers it. The tray project contains only views and glue.
 | Type | Responsibility |
 |---|---|
 | `ServiceStatus` | Immutable parsed `status.json`: health (`Running`, `Attention`, `Stopped`, `Unavailable`), stage, time in stage, counts (pending / processing / complete / failed), receiver (listening, port, active uploads, sessions ok/failed, error), discovery error, speaker summary (unidentified, people), events, recent jobs. `Read(path, now)` / `Parse(json, now)`; stale heartbeat (>15 s) or `service != "running"` → `Stopped`; unreadable → `Unavailable`. Missing optional sections default safely. |
-| `Snapshot` | Kept for the tray icon: `Title`, `Tooltip` (≤127 chars), `Healthy`, now derived from `ServiceStatus`. The multi-line `Details` text is removed (no remaining consumer). |
+| `Snapshot` | Removed. Its tray-icon outputs move onto `ServiceStatus` as `Title` and `Tooltip` (≤127 chars); `Health == Running` replaces `Healthy`. The multi-line `Details` text has no remaining consumer. |
+| `WindowBounds` | Pure helper that fits saved window bounds onto the current virtual screen (minimum size, no larger than the screen, pulled back on-screen when a monitor was removed). |
 | `SpeakerCatalog` | Parsed `review/catalog.json` (people, speakers, clips, heartbeat, `Live` = heartbeat < 15 s). Derived views: `Recordings` (speakers grouped by `job`, ordered newest first, with unidentified count), `PersonSummaries` (per person: confirmed rows, matched rows, distinct recordings), `NextUnidentified(afterId)` (next unidentified row in display order, wrapping, or null). |
 | `ReviewClient` | Given the review directory: `LoadCatalog()`, `Send(action, observation, person, name)` → request id, writing `requests/<id>.json` via `CreateNew` temp file + flush + move (same JSON shape as today: `id, action, observation, person, name`), `TryReadResponse(id)`. `ValidateName` mirrors the service rule (1–80 chars after
 trimming, no control characters, none of `[]<>\|`) so bad names get immediate
@@ -50,7 +56,9 @@ feedback; the service remains authoritative. Validates clip file names (`*.wav`,
 
 ### `SecondBrain.Tray` (WPF app)
 
-- `App` — single-instance mutex (unchanged name), status path argument (unchanged),
+- `App` — single-instance mutex (unchanged name), status path argument (unchanged;
+  first argument not starting with `--`), optional `--show[=Page]` to open the
+  window at startup (used for verification and shortcuts),
   owns the `NotifyIcon`, a 1 s status timer, the hover card and the main window.
   Left-click opens the main window; hover shows the card; right-click menu:
   **Open Second Brain**, **Review speakers**, **Windows Services**, separator,
@@ -145,9 +153,12 @@ alternatives need a temp copy of private audio or a new audio dependency.
     paths/non-wav, `ValidateName` accepts/rejects the same cases as the service.
   - `WavInfo`: valid header duration, truncated/invalid header fallback.
 - `windows/build.ps1` runs the tests and publishes the tray (unchanged commands).
-- Manual verification: launch the published tray against the live status and
-  catalog, screenshot each page in light and dark mode, exercise assign/next and
-  playback. Recorded in the commit message; not claimed as automated coverage.
+- `WindowBounds`: off-screen, oversized, undersized, negative-coordinate monitors.
+- Manual verification: launch the published tray with `--show=<Page>` against the
+  live status and catalog, screenshot each page in the current Windows theme
+  (dark on the development PC; light mode is left to the user), exercise
+  assign/next and playback. Recorded in the commit message; not claimed as
+  automated coverage.
 
 ## Docs
 
