@@ -341,3 +341,27 @@ Archive: `.inspection/Omi_CV1_OTA_3.0.22-localwifi.12.zip` in the parent workspa
 No deployment or hardware test was attempted; the device remains at work.
 The earlier sparse-checkout preflight limitation remains; component tests and
 builds are verified, not full-repository CI.
+
+
+## .12 deployment completed — 2026-09-28
+
+The owner brought Omi back and explicitly requested the update. BLE preflight
+confirmed `.9`; the archived `.12` ZIP checksum and both MCUboot signatures
+matched the build evidence above. Both images uploaded successfully, both staged
+digests were checked, then both were marked permanent and the device reset.
+A fresh BLE connection reported `3.0.22-localwifi.12` with the expected application
+digest active and confirmed:
+`5af68c8bff1424cbf5c454d664721078eb12a200dee3cfb88575e1333413ac59`.
+
+Post-boot checks: Wi-Fi configuration present, clock synchronized/valid, SD ring
+readable (`read_seq=139986`, `write_seq=399993`, 260007 queued, zero dropped).
+A fresh battery diagnostic reported 3967 mV / 71%, charging signal inactive,
+sample age 8533 ms, error 0. The initial standard GATT battery read immediately
+after boot showed 100% before the fresh diagnostic; it is not a charging claim.
+No settings or recordings were erased, and no upload was explicitly triggered.
+Physical click/pause/resume, vibration and LED timing remain user-test checks;
+BLE/version/image/clock/storage checks are complete.
+
+Local evidence in the parent workspace: `.inspection/firmware12-upload.log`,
+`firmware12-activate.log`, `firmware12-postflash-probe.log`, and
+`firmware12-health.log`. This supersedes the earlier built-only deployment notes.
