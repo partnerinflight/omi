@@ -34,6 +34,7 @@
 #include "sd_card.h"
 #include "settings.h"
 #include "storage.h"
+#include "wifi_upload.h"
 LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
 
 /*
@@ -636,9 +637,9 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     sd_notify_ble_state(false);
     storage_is_on = false;
-    /* No phone left to sync: if the mic is idle in AAD sleep, drop SD power again
-     * (it was kept on for the connection). */
-    if (mic_in_aad_sleep()) {
+    /* An idle microphone can release SD power once any Wi-Fi upload has
+     * also finished using it. */
+    if (mic_in_aad_sleep() && !wifi_upload_active()) {
         sd_request_power(false);
     }
 #endif
