@@ -365,3 +365,31 @@ BLE/version/image/clock/storage checks are complete.
 Local evidence in the parent workspace: `.inspection/firmware12-upload.log`,
 `firmware12-activate.log`, `firmware12-postflash-probe.log`, and
 `firmware12-health.log`. This supersedes the earlier built-only deployment notes.
+
+## 20% higher silence threshold — 2026-09-28
+
+Firmware `3.0.22-localwifi.13` raises `CONFIG_OMI_VAD_ABS_THRESHOLD` from 250
+to 300 at the owner's request. This is the average absolute PCM amplitude
+that resets the silence timer; the continuous 30-second delay and separate
+hardware acoustic-wake setting are unchanged. The production-function native
+test now exercises 299 as quiet and 300 as sound, including timer reset and
+transfer deferral. All 72 receiver/native firmware tests pass with loopback
+networking enabled (the sandbox initially blocked five receiver socket tests).
+
+NCS 2.9.0 Wi-Fi and BLE-only sysbuilds pass. Wi-Fi app uses 872472 flash /
+428800 RAM bytes; BLE-only uses 248588 flash / 335488 RAM bytes. The Wi-Fi
+incremental build required explicitly setting `ZEPHYR_BASE` for the Wi-Fi driver.
+Both archived OTA images pass MCUboot signature verification.
+Archive in the parent workspace: `.inspection/Omi_CV1_OTA_3.0.22-localwifi.13.zip`.
+ZIP SHA-256: `d5a47bfad40488bf1713faeb3c9587c66cf15d27e0db62f80463148c201d66fe`.
+App digest: `3513dd737be71db3b55592ff532d15f1b9f8ad8c6288978774884cfeb5017db7`.
+Network digest: `feb91989eb075c2886bcf67c8e0cc8bcc84f6051bce05ac944371e1ce7d75cf9`.
+
+Installed on the owner's Omi during the ongoing authorized device test. Both
+staged digests matched before activation; after reset, GATT reports `.13` and
+SMP reports the expected app digest active/confirmed. Clock synchronized and
+valid, Wi-Fi configuration present, storage readable with 271400 queued packets
+and zero dropped. Fresh battery: 3957 mV / 69%, sample age 2365 ms, error 0,
+charging signal inactive. No recordings or settings were erased. Physical
+sensitivity in the owner's room remains a user test, not a bench-calibrated
+result. Evidence: parent `.inspection/firmware13-{upload,activate,postflash-probe,health}.log`.

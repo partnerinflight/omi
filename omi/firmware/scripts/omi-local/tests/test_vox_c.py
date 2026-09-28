@@ -22,7 +22,7 @@ class VoxTests(unittest.TestCase):
 #include <stddef.h>
 #include <stdbool.h>
 #include <assert.h>
-#define CONFIG_OMI_VAD_ABS_THRESHOLD 250
+#define CONFIG_OMI_VAD_ABS_THRESHOLD 300
 #define CONFIG_OMI_VAD_HOLD_MS 30000
 static int aad_woke,aad_in_sleep,aad_req_sleep,aad_sem;
 static int64_t aad_last_voice_ms,now;
@@ -35,7 +35,7 @@ void k_sem_give(int *p){(*p)++;}
 bool storage_transfer_active(void){return syncing;}
 ''' + function(SRC/'mic.c','static uint32_t avg_abs_amplitude(') + function(SRC/'mic.c','static void aad_track_silence(const int16_t *buf, size_t n)\n{') + r'''
 int main(void){
- int16_t quiet[]={-249,249},sound[]={-250,250};
+ int16_t quiet[]={-299,299},sound[]={-300,300};
  now=29999;aad_track_silence(quiet,2);assert(!aad_req_sleep);
  aad_track_silence(sound,2);assert(aad_last_voice_ms==29999);
  now=59998;aad_track_silence(quiet,2);assert(!aad_req_sleep);
