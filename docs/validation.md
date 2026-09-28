@@ -38,3 +38,14 @@ unit-normalized 192-dimensional embeddings using local weights, fingerprint
 `24df09c705c014a81c5e3c4ea0d5a8f88d978bc27c6b1ee2aeb05c06fc4c0ac4`.
 This verifies loading/extraction, not Omi identity accuracy or the default
 matching threshold. Test audio, model weights and embeddings remain outside Git.
+
+Windows lock regression (2026-09-28): the second worker read byte zero before
+attempting its nonblocking lock. Windows rejects reads through a competing
+handle, so this escaped as PermissionError and leaked the handle. Acquisition
+now locks without reading or initializing the file (Windows supports locking
+past EOF). Tests cover new/legacy files, contention cleanup, reacquisition and
+separate-process exclusion/release. All 28 pipeline and 72 receiver/native tests
+pass locally on macOS. Pipeline tests now also run in Windows CI, alongside
+its existing service smoke test; local success does not establish Windows SCM
+success. The earlier Windows CI run at bf996910a failed starting the smoke
+service, separately from the reported lock-test failure.

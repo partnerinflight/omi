@@ -26,6 +26,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: choco install ffmpeg -y --no-progress
+      - name: Windows pipeline and lock regression tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "${{ github.workspace }}\src;${{ github.workspace }}\omi\firmware\scripts\omi-local"
+          python -m unittest discover -s tests -t .
       - name: Build service, tray, and Python packages
         run: ./windows/build.ps1
       - name: Real SCM service smoke test (synthetic ASR fixture)

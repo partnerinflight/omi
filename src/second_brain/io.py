@@ -46,12 +46,11 @@ class InstanceLock:
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("a+b")
-        self.file.seek(0)
-        if not self.file.read(1):
-            self.file.write(b"0")
-            self.file.flush()
-        self.file.seek(0)
         try:
+            # Windows locks deny reads too, including through another handle
+            # in this process. Lock byte zero without reading/initializing it;
+            # msvcrt permits locking beyond EOF, even on a new empty file.
+            self.file.seek(0)
             if os.name == "nt":
                 import msvcrt
 
@@ -69,3 +68,4 @@ class InstanceLock:
     def __exit__(self, *_):
         if self.file:
             self.file.close()
+            self.file = None

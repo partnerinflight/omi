@@ -1,7 +1,10 @@
 from __future__ import annotations
 import asyncio
 import json
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,10 +70,44 @@ class QueueAndVaultTests(unittest.TestCase):
         self.assertEqual(self.queue.claim()["attempts"], 1)
 
     def test_second_worker_cannot_take_same_data_directory(self):
-        with InstanceLock(self.root / "instance.lock"):
-            with self.assertRaises(RuntimeError):
-                with InstanceLock(self.root / "instance.lock"):
-                    pass
+        path = self.root / "instance.lock"
+        for contents in (b"", b"0"):
+            with self.subTest(contents=contents):
+                path.write_bytes(contents)
+                rejected = InstanceLock(path)
+                with InstanceLock(path) as owner:
+                    with self.assertRaisesRegex(RuntimeError, "Another Second Brain worker"):
+                        with rejected:
+                            self.fail("Second worker acquired an owned directory")
+                    self.assertIsNone(rejected.file)
+                    self.assertFalse(owner.file.closed)
+                self.assertIsNone(owner.file)
+                with rejected:
+                    self.assertFalse(rejected.file.closed)
+
+    def test_worker_lock_excludes_other_process_and_releases_on_exit(self):
+        path = self.root / "instance.lock"
+        code = """
+import sys
+from pathlib import Path
+from second_brain.io import InstanceLock
+try:
+    with InstanceLock(Path(sys.argv[1])):
+        print('acquired')
+except RuntimeError:
+    print('owned')
+"""
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        def attempt():
+            return subprocess.check_output(
+                [sys.executable, "-c", code, str(path)], env=env, text=True, timeout=15
+            ).strip()
+        with InstanceLock(path):
+            self.assertEqual(attempt(), "owned")
+        self.assertEqual(attempt(), "acquired")
+        with InstanceLock(path):
+            pass
 
     def test_vibe_padding_is_excluded_and_unknown_schema_is_error(self):
         ref = {
