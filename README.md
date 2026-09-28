@@ -1,195 +1,160 @@
-<div align="center">
+# Second Brain — Omi to Obsidian
 
-# **omi**
+A local pipeline for one paired Omi and a Windows PC. The old Omi desktop,
+mobile, cloud and web applications have been removed from this fork.
 
-### A 2nd brain you trust more than your 1st
-
-Omi captures your screen and conversations, transcribes in real-time, generates summaries and action items, and gives you an AI chat that remembers everything you've seen and heard. Works on desktop, phone and wearables. Fully open source.
-
-Trusted by 300,000+ professionals.
-
-
-[![Discord](https://img.shields.io/discord/1192313062041067520?label=Discord&logo=discord&logoColor=white&style=for-the-badge)](http://discord.omi.me)&ensp;
-[![GitHub Repo stars](https://img.shields.io/github/stars/BasedHardware/Omi?style=for-the-badge)](https://github.com/BasedHardware/Omi)&ensp;
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
-
-[Website](https://omi.me/) · [Docs](https://docs.omi.me/) · [Discord](http://discord.omi.me) · [Twitter](https://x.com/kodjima33) · [DeepWiki](https://deepwiki.com/BasedHardware/omi)
-
-</div>
-
-## Quick Start
-
-### macOS
-
-```sh
-git clone https://github.com/BasedHardware/omi.git && cd omi/desktop/macos && ./run.sh --yolo
+```text
+Omi CV1 → authenticated Wi-Fi upload :7331 → durable .opus recordings
+  → SQLite queue → MOSS speech recognition + speaker labels
+  → adaptive durable-memory scoring → selective VibeVoice refinement
+  → final memory gate → source-linked Obsidian notes
+                         ↘ filtered transcripts remain in the private archive
 ```
 
-Builds the macOS app, connects to the cloud backend, and launches. No env files, no credentials, no local backend.
+**SecondBrain** is a native Windows service with automatic delayed startup and
+crash recovery. It supervises a Python worker and model subprocesses in a Windows
+Job Object. It runs in Session 0 under a virtual service account, without login.
+The separate **SecondBrain.Tray** app starts at user login. Hover shows current
+work, receiver activity, queue counts and recent results; double-click pins the
+status card. Exiting the tray leaves the service running. A stale heartbeat is
+shown as unavailable rather than falsely reporting idle.
 
-> **Requirements:** macOS 14+, [Xcode](https://developer.apple.com/xcode/) (includes Swift & code signing), [Node.js](https://nodejs.org/)
+## Repository
 
-### Windows
+| Path | Purpose |
+|---|---|
+| `omi/firmware/` | CV1 firmware, build tools, local receiver/BLE CLI and tests |
+| `src/second_brain/adaptive/` | Imported v3 policy and MOSS/VibeVoice runners |
+| `src/second_brain/` | Persistent queue, receiver integration, worker and vault writer |
+| `windows/` | Native service, tray UI, installer, build and SCM smoke test |
+| `config/` | Service/model configuration examples; no secrets |
+| `tests/` | Policy, recovery, publication and full-loop contract tests |
+
+The imported ZIP and modifications are recorded in [provenance](docs/import-provenance.md).
+See [architecture](src/second_brain/ARCHITECTURE.md) for durability boundaries.
+
+## Build on Windows
+
+Requires Python 3.12+, .NET 10 SDK, and ffmpeg/ffprobe for tests/processing.
+The resulting Windows x64 executables are self-contained; no .NET runtime is
+needed on the target PC. Python and model runtimes are separate prerequisites.
 
 ```powershell
-git clone https://github.com/BasedHardware/omi.git
-cd omi\desktop\windows
-npm install
-copy .env.example .env
-npm run dev
+python -m pip install .\omi\firmware\scripts\omi-local .
+python scripts\test.py
+.\windows\build.ps1
 ```
 
-Starts the Windows desktop app from source using the public config in `.env.example`.
+The bundle is written to `dist\windows` (service, tray, Python wheels, install
+scripts and examples). CI runs Linux receiver/native tests and a real Windows
+Service Control Manager smoke test using synthetic audio and a deterministic
+ASR fixture. Fixture success does **not** measure speech recognition accuracy.
 
-> **Requirements:** [Node.js](https://nodejs.org/)
+## Configure the engines
 
-For development worktrees, run the baseline local setup once. It installs the Git hooks and syncs the pinned backend Python environment used by selected pre-push checks; mobile and desktop runtime environments remain opt-in.
+Copy `config\pipeline.example.json` to a private configuration file, then set
+MOSS binary/model paths and VibeVoice's environment/local model directory to
+match the Windows machine. Existing working MOSS binaries can be copied using
+`windows\setup-engines.ps1 -Config <file>`; it also prepares the VibeVoice Python
+environment. Model weights are not bundled. Download the VibeVoice checkpoint
+before installing an unattended service; use a **local directory** for
+`vibe_7b_model`. The service runs with Hugging Face offline mode enabled.
 
-```bash
-make setup
+The imported policy uses MOSS for the first pass, optional Hermes scoring
+(disabled by default), and selective VibeVoice 7B refinement. `-SkipVibe7` can
+be used when installing an initial MOSS-only service. Model IDs, device, dtype,
+thresholds, threads and hotwords remain configurable. The service's vault path
+overrides the pipeline example's path. Its engine processes need no GUI.
+
+## Install on the Windows receiver
+
+Use an elevated PowerShell after building and configuring the engines. First
+stop the old standalone `omi-local serve` process so port 7331 is available.
+The installer refuses an occupied port; it never kills the old receiver.
+
+```powershell
+.\dist\windows\install.ps1 `
+  -Python 'C:\Program Files\Python312\python.exe' `
+  -PipelineConfig 'C:\SecondBrainConfig\pipeline.json' `
+  -SecretFile "$env:USERPROFILE\.omi-local\upload-secret.hex" `
+  -FfmpegDir 'C:\ffmpeg\bin' `
+  -Vault 'C:\Users\Eugene\SecondBrain' `
+  -IncomingDir 'D:\SecondBrain-Audio\incoming'
 ```
 
-<details>
-  <summary>Full Installation</summary>
-  
-For local development with the full backend stack:
+Replace paths with the actual installed paths. `IncomingDir` should be the
+**same destination directory used by the existing receiver** to preserve resume
+state and import completed recordings. It defaults to ProgramData for a fresh
+install. Import the **existing pairing key**: the service must use the same key
+already configured on Omi. The installer does not print it or generate a new
+one. No firmware update/re-pairing is required for this service integration.
 
-1. Install prerequisites
+The installer creates `NT SERVICE\SecondBrain`, installs code under Program
+Files and private state under `C:\ProgramData\SecondBrain`, grants read access
+to the configured models/vault and modify access to `Omi\Conversations`, and
+adds a TCP 7331 rule restricted to Private networks and LocalSubnet. It uses no
+stored user password. Prefer machine-wide Python; Windows Store aliases and
+mapped drive letters are unsuitable. The vault must be a local filesystem
+folder available before login. Obsidian itself does not need to be open; any
+separate sync client has its own login requirements.
 
-```bash
-xcode-select --install
-uv --version
+In a normal (non-elevated) PowerShell for your own account:
+
+```powershell
+.\dist\windows\register-tray.ps1
 ```
 
-2. Clone and configure
+The tray reads only sanitized operational status. It cannot start jobs, mutate
+notes, read the pairing key, or stop the service. It can open Windows Services.
 
-```bash
-git clone https://github.com/BasedHardware/omi.git
-cd omi/desktop/macos
-cp ../../backend/.env.example ../../backend/.env
+## Notes, archives and recovery
+
+- Closed, checkpointed recordings are queued; a completed upload alone does
+  not close a still-active recording. VOX/end markers remain authoritative.
+- Durable windows create one deterministic Markdown note each under
+  `Omi/Conversations`. Notes contain recording time, audio link, window offsets,
+  engine, speaker-labelled transcript, content type and filtering reason.
+- Speaker labels are **chunk-local labels, not real identities**. They are
+  scoped to chunks/windows to avoid falsely equating speakers across files.
+  VibeVoice's approximate timing cannot provide word-accurate boundaries.
+- This is an additive vault writer, not a semantic merger into existing people,
+  project or task notes. Existing notes are only read for novelty/hotwords.
+- Filtered conversation remains in private job results and is not published.
+  Audio/transcripts are not deleted automatically; plan archive retention to
+  suit your disk capacity.
+- SQLite records jobs, attempts, errors and operations. Interrupted jobs resume
+  after service restart. Failed jobs retry with backoff, then stay visible.
+  A completed manifest is reused after a publication failure, avoiding another
+  expensive model run. Notes are published atomically without replacing edits.
+- A conflicting human-edited note causes a visible failure and remains intact.
+  Resolve that conflict before retrying; the service never overwrites it.
+
+Administrator commands:
+
+```powershell
+$python = 'C:\Program Files\SecondBrain\python\Scripts\python.exe'
+$config = 'C:\ProgramData\SecondBrain\config\service.json'
+& $python -m second_brain.cli check --config $config
+& $python -m second_brain.cli status --config $config
+& $python -m second_brain.cli retry --config $config
+Restart-Service SecondBrain
 ```
 
-3. Build and run
+Private service logs rotate under `ProgramData\SecondBrain\data`; each job's
+attempt contains its own `pipeline.log`, configuration, transcripts and report.
+Model output and transcripts never enter the public status file. Current upload
+session counters reset when the worker restarts; job history persists.
 
-```bash
-./run.sh
-```
+`windows\uninstall.ps1` removes the service and its firewall rule while retaining
+all recordings, keys, history, notes and binaries. Run `register-tray.ps1
+-Unregister` as your normal user to disable tray autostart. For upgrades, stop
+and uninstall the service, rebuild/reinstall with the same paths/key, then
+restart the tray. No data directory should be deleted during an upgrade.
 
-See [desktop/macos/README.md](desktop/macos/README.md) for environment variables and credential setup.
+## Firmware
 
-
-### Mobile App
-
-```bash
-cd app && bash setup.sh ios    # or: bash setup.sh android
-```
-
-</details>
-
-<p align="center">
-  <a href="https://macos.omi.me"><img src="docs/assets/readme/download-macos-badge.png" alt="Download for macOS" height="50"></a>
-  <a href="https://apps.apple.com/us/app/friend-ai-wearable/id6502156163"><img src="docs/assets/readme/download-appstore-badge.png" alt="Download on the App Store" height="50"></a>
-  <a href="https://play.google.com/store/apps/details?id=com.friend.ios"><img src="docs/assets/readme/download-gplay-badge.png" alt="Get it on Google Play" height="50"></a>
-</p>
-
-<p align="center">
-  <a href="https://app.omi.me">Try in Browser</a>
-</p>
-
-<details>
-  <summary>How it works</summary>
-
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Your Devices                       │
-│                                                         │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ Omi      │  │ macOS App    │  │ Mobile App        │  │
-│  │ Wearable │  │ (Swift/Python) │  │ (Flutter)         │  │
-│  └────┬─────┘  └──────┬───────┘  └────────┬──────────┘  │
-│       │    BLE         │   HTTPS/WS        │             │
-└───────┼────────────────┼───────────────────┼─────────────┘
-        │                │                   │
-        ▼                ▼                   ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Omi Backend (Python)                  │
-│                                                         │
-│  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐  │
-│  │ Listen  │  │ Pusher   │  │ VAD     │  │ Diarizer │  │
-│  │ (REST)  │  │ (WS)     │  │ (GPU)   │  │ (GPU)    │  │
-│  └─────────┘  └──────────┘  └─────────┘  └──────────┘  │
-│                                                         │
-│  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐  │
-│  │ Deepgram│  │ Firestore│  │ Redis   │  │ LLMs     │  │
-│  │ (STT)   │  │ (DB)     │  │ (Cache) │  │ (AI)     │  │
-│  └─────────┘  └──────────┘  └─────────┘  └──────────┘  │
-└─────────────────────────────────────────────────────────┘
-```
-
-| Component | Path | Stack |
-|-----------|------|-------|
-| **macOS app** | [`desktop/macos/`](desktop/macos/) | Swift, SwiftUI, Python desktop backend |
-| Mobile app | [`app/`](app/) | Flutter (iOS & Android) |
-| Backend API | [`backend/`](backend/) | Python, FastAPI, Firebase |
-| Firmware | [`omi/`](omi/) | nRF, Zephyr, C |
-| Omi Glass | [`omiGlass/`](omiGlass/) | ESP32-S3, C |
-| SDKs | [`sdks/`](sdks/) | Device (Python/Swift/RN + multi-lang protocol) |
-| AI Personas | [`web/personas-open-source/`](web/personas-open-source/) | Next.js |
-
-</details>
-
-## Documentation
-
-### Getting Started
-- [Introduction](https://docs.omi.me/)
-- [Quick Start Guide](https://docs.omi.me/quickstart)
-- [macOS App Development](desktop/macos/README.md)
-- [Mobile App Setup](https://docs.omi.me/doc/developer/AppSetup)
-- [Backend Setup](https://docs.omi.me/doc/developer/backend/Backend_Setup)
-- [Contributing](https://docs.omi.me/doc/developer/Contribution) — also [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`PRODUCT.md`](PRODUCT.md)
-
-### Building Apps
-- [App Development Guide](https://docs.omi.me/doc/developer/apps/Introduction)
-- [Example Apps](https://docs.omi.me/doc/developer/apps/examples/Github) — GitHub, Slack, OmiMentor
-- [Audio Streaming Apps](https://docs.omi.me/doc/developer/apps/AudioStreaming)
-- [Custom Chat Tools](https://docs.omi.me/doc/developer/apps/ChatTools)
-- [Submit to App Store](https://docs.omi.me/doc/developer/apps/Submitting)
-
-### API & SDKs
-- [API Reference](https://docs.omi.me/api-reference/introduction) — REST endpoints for memories, conversations, action items
-- [Device multi-lang protocol SDKs](sdks/device/) — shared BLE UUIDs/packet framing for TS/Go/Rust/C++/Dart
-- [Python device SDK](sdks/python/) — full BLE + Opus + Deepgram
-- [Swift device SDK](sdks/swift/)
-- [React Native device SDK](sdks/react-native/)
-- [MCP Server](mcp/) — Model Context Protocol integration
-
-### Architecture
-- [Backend Deep Dive](https://docs.omi.me/doc/developer/backend/backend_deepdive)
-- [Transcription Pipeline](https://docs.omi.me/doc/developer/backend/transcription)
-- [Chat System](https://docs.omi.me/doc/developer/backend/chat_system)
-- [Audio Streaming Pipeline](https://docs.omi.me/doc/developer/backend/listen_pusher_pipeline)
-- [BLE Protocol](https://docs.omi.me/doc/developer/Protocol)
-
-## Omi Hardware
-![Omi](https://github.com/user-attachments/assets/7a658366-9e02-4057-bde5-a510e1f0217a)
-
-Open-source AI wearables that pair with the mobile app for 24h+ continuous capture.
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/834d3fdb-31b5-4f22-ae35-da3d2b9a8f59" alt="Omi Wearable" width="49%" />
-  <img src="https://github.com/user-attachments/assets/fdad4226-e5ce-4c55-b547-9101edfa3203" alt="Omi Glass" width="49%" />
-</p>
-
-- [Buy Omi](https://www.omi.me/pages/product)
-- [Buy Omi Glass Dev Kit](https://www.omi.me/glass) — ESP32-S3, camera + audio
-- [Open Source Hardware Designs](https://docs.omi.me/doc/hardware/consumer/electronics)
-- [Buying Guide](https://docs.omi.me/doc/assembly/Buying_Guide)
-- [Build the Device](https://docs.omi.me/doc/assembly/Build_the_device)
-- [Flash Firmware](https://docs.omi.me/doc/get_started/Flash_device)
-- [Integrate Your Wearable](https://docs.omi.me/doc/integrations)
-- [Hardware Specs](https://docs.omi.me/doc/hardware/DevKit2)
-
-## License
-
-MIT — see [LICENSE](LICENSE)
+The latest candidate remains `3.0.22-localwifi.12`: 30-second VOX, brief wake
+vibration, button pause/resume, red paused flashes, and a 20-second setup hold.
+This pipeline work does not deploy it. See [Mac build](omi/firmware/MAC_BUILD.md),
+[provisioning](omi/firmware/PROVISIONING.md), and
+[validation history](omi/firmware/VALIDATION_MAC.md).

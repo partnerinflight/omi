@@ -54,6 +54,8 @@ class UploadServer:
         self.writers = writer_factory or SessionWriterFactory(self.dest)
         self._server: asyncio.base_events.Server | None = None
         self._busy: set[str] = set()
+        self._connections = set()
+        self._handlers = set()
         self.sessions_ok = 0
         self.sessions_failed = 0
 
@@ -73,6 +75,10 @@ class UploadServer:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+        for writer in list(self._connections):
+            writer.close()
+        if self._handlers:
+            await asyncio.gather(*list(self._handlers), return_exceptions=True)
 
     @property
     def bound_port(self) -> int:
@@ -98,6 +104,10 @@ class UploadServer:
         device = "?"
         session_writer = None
         ok = False
+        owns_device = False
+        task = asyncio.current_task()
+        self._handlers.add(task)
+        self._connections.add(writer)
         try:
             msg_type, payload = await self._read_frame(reader, U.MAX_CTRL_PAYLOAD, CTRL_TIMEOUT_S)
             if msg_type != U.MSG_HELLO:
@@ -121,6 +131,7 @@ class UploadServer:
                 await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_BUSY]))
                 return
             self._busy.add(device)
+            owns_device = True
             info = auth.info
             log.info("device %s connected from %s: ring [%d, %d), %d unread packets", device, peer,
                      info.read_seq, info.write_seq, info.unread_packets)
@@ -173,17 +184,25 @@ class UploadServer:
                 await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_PROTOCOL]))
             except Exception:  # noqa: BLE001
                 pass
+        except Exception:
+            log.exception("device %s: persistence or receiver error; chunk was not acknowledged", device)
         finally:
-            self._busy.discard(device)
+            if owns_device:
+                self._busy.discard(device)
             if session_writer is not None:
                 # A completed upload drains a snapshot, not necessarily a
                 # recording. Only a VOX marker or timestamp/sequence boundary
                 # closes it; later uploads can continue the same file.
-                session_writer.finish(final=False)
+                try:
+                    session_writer.finish(final=False)
+                except Exception:
+                    log.exception("device %s: could not save shutdown checkpoint", device)
             if ok:
                 self.sessions_ok += 1
             else:
                 self.sessions_failed += 1
+            self._connections.discard(writer)
+            self._handlers.discard(task)
             writer.close()
             try:
                 await writer.wait_closed()

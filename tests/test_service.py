@@ -1,0 +1,183 @@
+from __future__ import annotations
+import asyncio
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from second_brain.io import InstanceLock, write_json
+from second_brain.queue import Queue
+from second_brain.runtime import Runtime
+from second_brain.vault import NoteConflict, publish
+from second_brain.adaptive.pipeline import parse_vibe_text
+from second_brain.adaptive.runners.moss_cpp_runner import normalize_segments
+from tests.helpers import configuration, records, upload, SECRET
+from omi_local import upload_protocol as U
+
+
+class QueueAndVaultTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.cfg = configuration(self.root)
+        self.audio = self.root / "incoming" / "sample.opus"
+        self.audio.write_bytes(b"audio")
+        self.queue = Queue(self.root / "queue.db")
+        self.meta = {"device": "test", "start_seq": 0, "first_utc": "2026-09-28T17:00:00Z"}
+        self.key = self.queue.enqueue(self.audio, self.meta)
+
+    def test_queue_restart_and_idempotent_delivery(self):
+        self.assertEqual(self.key, self.queue.enqueue(self.audio, self.meta))
+        job = self.queue.claim()
+        self.assertIsNone(self.queue.claim())
+        self.queue.recover()
+        recovered = self.queue.claim()
+        self.assertEqual(job["id"], recovered["id"])
+        manifest = {
+            "windows": [
+                dict(
+                    id="w0000",
+                    route_to_knowledge_router=True,
+                    memory_keep=True,
+                    final_transcript="S1: We decided to launch the project.",
+                    start=0,
+                    end=5,
+                    final_engine="moss",
+                ),
+                dict(id="w0001", route_to_knowledge_router=False, memory_keep=False),
+            ]
+        }
+        first = publish(self.cfg.vault_path, self.cfg.vault_folder, recovered, manifest)
+        self.assertEqual(first, publish(self.cfg.vault_path, self.cfg.vault_folder, recovered, manifest))
+        self.assertEqual(len(list(self.cfg.vault_path.rglob("*.md"))), 1)
+        note = self.cfg.vault_path / first[0]
+        note.write_text("human edit")
+        with self.assertRaises(NoteConflict):
+            publish(self.cfg.vault_path, self.cfg.vault_folder, recovered, manifest)
+        self.assertEqual(note.read_text(), "human edit")
+
+    def test_failed_jobs_are_visible_and_explicitly_retryable(self):
+        job = self.queue.claim()
+        self.queue.fail(job, "engine unavailable", 0.01, 1)
+        self.assertEqual(self.queue.snapshot()["counts"]["failed"], 1)
+        self.assertIsNone(self.queue.claim())
+        self.assertEqual(self.queue.retry_failed(), 1)
+        self.assertEqual(self.queue.claim()["attempts"], 1)
+
+    def test_second_worker_cannot_take_same_data_directory(self):
+        with InstanceLock(self.root / "instance.lock"):
+            with self.assertRaises(RuntimeError):
+                with InstanceLock(self.root / "instance.lock"):
+                    pass
+
+    def test_vibe_padding_is_excluded_and_unknown_schema_is_error(self):
+        ref = {
+            "context_start": 10,
+            "segments": [
+                dict(approx_start=0, approx_end=2, speaker=0, text="outside"),
+                dict(approx_start=5, approx_end=7, speaker=0, text="inside"),
+            ],
+        }
+        self.assertEqual(parse_vibe_text(ref, 14, 18, "w1"), "w1:0: inside")
+        with self.assertRaises(ValueError):
+            normalize_segments({"unexpected": "schema"})
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
+class EndToEndTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.cfg = configuration(self.root)
+        self.runtime = Runtime(self.cfg)
+        self.task = asyncio.create_task(self.runtime.run())
+        for _ in range(100):
+            if self.runtime.server and self.runtime.server._server:
+                break
+            if self.task.done():
+                await self.task
+            await asyncio.sleep(0.01)
+
+    async def asyncTearDown(self):
+        self.runtime.stop.set()
+        await asyncio.wait_for(self.task, 10)
+        self.tmp.cleanup()
+
+    async def test_authenticated_upload_to_real_pipeline_and_vault(self):
+        port = self.runtime.server.bound_port
+        self.assertEqual(await upload(port, records(marker=False)), U.MSG_BYE)
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.runtime.queue.snapshot()["counts"], {})  # unfinished recording stays resumable
+        self.assertEqual(await upload(port, records()), U.MSG_BYE)
+        for _ in range(300):
+            state = self.runtime.queue.snapshot()
+            if state["counts"].get("complete") or state["counts"].get("failed"):
+                break
+            await asyncio.sleep(0.05)
+        logs = "\n".join(p.read_text()[-2500:] for p in (self.root / "data/jobs").rglob("pipeline.log"))
+        self.assertEqual(state["counts"].get("complete"), 1, str(state) + logs)
+        notes = list(self.cfg.vault_path.rglob("*.md"))
+        self.assertEqual(len(notes), 1)
+        text = notes[0].read_text()
+        self.assertIn("c0000:S1", text)
+        self.assertIn("c0000:S2", text)
+        self.assertIn("Source audio", text)
+        self.assertIn("project launch", text)
+        self.runtime.discover()
+        self.assertEqual(self.runtime.queue.snapshot()["counts"]["complete"], 1)
+        # Crash/restart publication replay uses the saved manifest, not another ASR run.
+        with self.runtime.queue.connect() as db:
+            db.execute("UPDATE jobs SET state='processing'")
+        self.runtime.queue.recover()
+        for _ in range(100):
+            if self.runtime.queue.snapshot()["counts"].get("complete") == 1:
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(len(list(self.cfg.vault_path.rglob("*.md"))), 1)
+        self.assertEqual(len(list((self.root / "data/jobs").rglob("pipeline.log"))), 1)
+
+    async def test_bad_pairing_key_never_creates_a_job(self):
+        self.assertEqual(await upload(self.runtime.server.bound_port, records(), bytes(reversed(SECRET))), U.MSG_REJECT)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.runtime.queue.snapshot()["counts"], {})
+        self.assertFalse(list(self.cfg.vault_path.rglob("*.md")))
+
+    async def test_failed_engine_retries_without_stopping_receiver(self):
+        pipeline = json.loads(self.cfg.pipeline_config.read_text())
+        pipeline["moss_command"] = ["missing-moss-executable"]
+        write_json(self.cfg.pipeline_config, pipeline)
+        await upload(self.runtime.server.bound_port, records())
+        for _ in range(200):
+            if self.runtime.queue.snapshot()["counts"].get("failed"):
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(self.runtime.queue.snapshot()["counts"].get("failed"), 1)
+        self.assertTrue(self.runtime.server._server.is_serving())
+        self.assertFalse(list(self.cfg.vault_path.rglob("*.md")))
+
+    async def test_rejected_duplicate_does_not_release_active_device(self):
+        import secrets
+        from omi_local import protocol as P
+        from tests.helpers import receive, DEVICE
+
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.runtime.server.bound_port)
+        try:
+            cn = secrets.token_bytes(16)
+            writer.write(U.frame(U.MSG_HELLO, U.encode_hello(DEVICE, cn)))
+            await writer.drain()
+            _, challenge = await receive(reader)
+            info = P.Info(0, 0, 10000, 0, P.RECORD_SIZE, P.CODEC_ID_OPUS)
+            writer.write(
+                U.frame(U.MSG_AUTH, U.encode_auth(U.auth_tag(SECRET, U.LABEL_CLIENT, cn, challenge[:16]), info))
+            )
+            await writer.drain()
+            kind, _ = await receive(reader)
+            self.assertEqual(kind, U.MSG_START)
+            self.assertEqual(await upload(self.runtime.server.bound_port, records()), U.MSG_REJECT)
+            self.assertIn("11-22-33-44-55-66", self.runtime.server._busy)
+            self.assertEqual(await upload(self.runtime.server.bound_port, records()), U.MSG_REJECT)
+        finally:
+            writer.close()
+            await writer.wait_closed()

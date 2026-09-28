@@ -4,4 +4,4 @@ Everything here talks BLE directly to the device. There is no Omi backend,
 cloud, HTTP or transcription anywhere in this package.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

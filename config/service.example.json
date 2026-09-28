@@ -1,0 +1,18 @@
+{
+  "data_dir": "C:\\ProgramData\\SecondBrain\\data",
+  "incoming_dir": "C:\\ProgramData\\SecondBrain\\incoming",
+  "secret_file": "C:\\ProgramData\\SecondBrain\\config\\upload-secret.hex",
+  "pipeline_config": "C:\\ProgramData\\SecondBrain\\config\\pipeline.json",
+  "vault_path": "C:\\Users\\Eugene\\SecondBrain",
+  "vault_folder": "Omi/Conversations",
+  "status_file": "C:\\ProgramData\\SecondBrain\\status\\status.json",
+  "host": "0.0.0.0",
+  "port": 7331,
+  "poll_seconds": 2,
+  "retry_seconds": 60,
+  "max_attempts": 5,
+  "job_timeout_seconds": 14400,
+  "skip_vibe7": false,
+  "no_hermes": false,
+  "ffmpeg_dir": "C:\\ffmpeg\\bin"
+}

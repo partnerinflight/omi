@@ -8,6 +8,24 @@ and verified. `omi-local delete --downloaded` never deletes past it.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
+
+_STORE_LOCK = threading.Lock()
+
+def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(value, file, indent=2, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -20,6 +38,8 @@ class OpenFile:
     last_seq: int
     last_timestamp: int
     mux: dict
+    bytes_written: int | None = None
+    metadata: dict | None = None
 
 
 @dataclass
@@ -56,11 +76,12 @@ class StateStore:
     def put(self, st: DeviceState) -> None:
         d = asdict(st)
         d.pop("device_id")
-        self._data[st.device_id] = d
-        self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._data, indent=2, sort_keys=True))
-        tmp.replace(self.path)
+        with _STORE_LOCK:
+            # Different devices can complete DATA writes on different pool threads.
+            if self.path.exists():
+                self._data = json.loads(self.path.read_text(encoding="utf-8"))
+            self._data[st.device_id] = d
+            atomic_json(self.path, self._data)
 
     def fsync(self) -> None:
         import os

@@ -24,6 +24,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import os
 import random
 import sys
 import time
@@ -34,7 +35,7 @@ from . import protocol as P
 from . import upload_protocol as U
 from .device import BleakTransport, DeviceError, DumpClient, Progress, TransferError
 from .oggopus import MuxState, OggOpusWriter, iter_pages
-from .state import DeviceState, OpenFile, StateStore
+from .state import DeviceState, OpenFile, StateStore, atomic_json
 
 log = logging.getLogger("omi_local")
 
@@ -99,6 +100,7 @@ class SessionWriter:
         self._cur: dict | None = None
         self._prev: P.Record | None = None
         self.files_written: list[str] = []
+        self._checkpoint_failed = False
         self._resume_open_file()
 
     # -- file management
@@ -110,10 +112,15 @@ class SessionWriter:
         if not path.exists():
             self.state.open_file = None
             return
+        if of.bytes_written is not None:
+            if path.stat().st_size < of.bytes_written:
+                raise IOError("Recording is shorter than its durable checkpoint")
+            with path.open("r+b") as recovered:
+                recovered.truncate(of.bytes_written)
         self._fp = open(path, "ab")
         self._writer = OggOpusWriter(self._fp, serial=0, resume_state=MuxState.from_dict(of.mux))
         sidecar = path.with_suffix(".json")
-        self._cur = json.loads(sidecar.read_text()) if sidecar.exists() else {"file": str(path)}
+        self._cur = dict(of.metadata) if of.metadata else (json.loads(sidecar.read_text()) if sidecar.exists() else {"file": str(path)})
         self._prev = P.Record(of.last_seq, of.last_timestamp, ())
         if self.keep_raw:
             self._raw_fp = open(path.with_suffix(".omiring"), "ab")
@@ -146,7 +153,7 @@ class SessionWriter:
 
     def _sidecar(self) -> None:
         if self._cur:
-            Path(self._cur["file"]).with_suffix(".json").write_text(json.dumps(self._cur, indent=2))
+            atomic_json(Path(self._cur["file"]).with_suffix(".json"), self._cur)
 
     def _close_file(self, eos: bool) -> None:
         if not self._writer:
@@ -175,6 +182,7 @@ class SessionWriter:
 
     # -- record ingestion
     def add(self, seq: int, data: bytes) -> None:
+        self._checkpoint_failed = True
         for rec in P.iter_records(seq, data):
             if rec.recording_end:
                 self._close_file(eos=True)
@@ -202,7 +210,7 @@ class SessionWriter:
             self._fp.flush()
             self._sidecar()
             self.state.open_file = OpenFile(self._cur["file"], self._prev.seq, self._prev.timestamp,
-                                            self._writer.state.to_dict())
+                                            self._writer.state.to_dict(), self._fp.tell(), dict(self._cur))
         # `downloaded_through` is the verified CONTIGUOUS prefix from the device's
         # read_seq. Only extend it when this chunk continues that prefix, so an
         # explicit `--from` range can never make `delete --downloaded` delete
@@ -210,7 +218,14 @@ class SessionWriter:
         chunk_end = seq + len(data) // P.RECORD_SIZE
         if seq == self.state.downloaded_through:
             self.state.downloaded_through = chunk_end
+        # Durable audio must precede the resume checkpoint, even if the process
+        # dies before the receiver sends its ACK.
+        for fp in (self._fp, self._raw_fp):
+            if fp is not None and not fp.closed:
+                fp.flush()
+                os.fsync(fp.fileno())
         self.store.put(self.state)
+        self._checkpoint_failed = False
 
     def fsync(self) -> None:
         """Force written pages to disk (the Wi-Fi receiver ACKs only after this)."""
@@ -224,6 +239,14 @@ class SessionWriter:
 
     def finish(self, final: bool) -> None:
         """final=True closes the current file with EOS (device fully drained)."""
+        if self._checkpoint_failed:
+            # Do not publish in-memory progress from a failed DATA write. The
+            # next writer reopens the durable checkpoint and truncates the tail.
+            for fp in (self._fp, self._raw_fp):
+                if fp is not None and not fp.closed:
+                    fp.close()
+            self._writer = self._fp = self._raw_fp = None
+            return
         if final:
             self._close_file(eos=True)
             self.state.open_file = None
