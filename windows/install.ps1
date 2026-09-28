@@ -19,7 +19,7 @@ function Run([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed with exit code $LASTEXITCODE" }
 }
-if (-not $NoStart -and (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) { throw 'Port 7331 is in use. Stop the standalone receiver before installing, or use -NoStart.' }
+if (-not $NoStart -and (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) { throw "Port $Port is in use. Stop the standalone receiver before installing, or use -NoStart." }
 if (Get-Service $ServiceName -ErrorAction SilentlyContinue) { throw 'SecondBrain already exists. Use uninstall.ps1 (keeps all data), then reinstall.' }
 foreach ($path in @($Python, $PipelineConfig, $SecretFile, $Vault, (Join-Path $FfmpegDir 'ffmpeg.exe'), (Join-Path $FfmpegDir 'ffprobe.exe'), (Join-Path $Bundle 'service\SecondBrain.Service.exe'))) {
     if (-not (Test-Path $path)) { throw "Required path not found: $path" }
@@ -30,8 +30,10 @@ if (-not $IncomingDir) { $IncomingDir = Join-Path $DataRoot 'incoming' }
 $paths = @($InstallDir, $DataRoot, "$DataRoot\config", "$DataRoot\data", "$DataRoot\status", $IncomingDir, "$Vault\Omi\Conversations")
 foreach ($path in $paths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 Run icacls.exe @($DataRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
-Copy-Item "$Bundle\service" $InstallDir -Recurse -Force
-Copy-Item "$Bundle\tray" $InstallDir -Recurse -Force
+foreach ($component in @('service', 'tray')) {
+    New-Item -ItemType Directory -Force "$InstallDir\$component" | Out-Null
+    Copy-Item "$Bundle\$component\*" "$InstallDir\$component\" -Recurse -Force
+}
 Run $Python @('-m', 'venv', "$InstallDir\python")
 $workerPython = "$InstallDir\python\Scripts\python.exe"
 $wheels = @(Get-ChildItem "$Bundle\python\*.whl" | ForEach-Object FullName)
@@ -55,6 +57,7 @@ $cfg = [ordered]@{
 $cfg | ConvertTo-Json | Set-Content "$DataRoot\config\service.json" -Encoding UTF8
 Run $workerPython @('-m', 'second_brain.cli', 'check', '--config', "$DataRoot\config\service.json")
 $binary = '"' + "$InstallDir\service\SecondBrain.Service.exe" + '" --python "' + $workerPython + '" --config "' + "$DataRoot\config\service.json" + '" --service-name ' + $ServiceName
+if (-not [System.Diagnostics.EventLog]::SourceExists($ServiceName)) { [System.Diagnostics.EventLog]::CreateEventSource($ServiceName, 'Application') }
 # Virtual service account: no stored user password and no interactive login.
 Run sc.exe @('create', $ServiceName, 'binPath=', $binary, 'start=', 'delayed-auto', 'obj=', ('NT SERVICE\' + $ServiceName), 'DisplayName=', 'Second Brain')
 try {
@@ -72,7 +75,15 @@ try {
     $pipeline = Get-Content $pipelineTarget -Raw | ConvertFrom-Json
     $pythonBase = (& $Python -c 'import sys; print(sys.base_prefix)').Trim()
     $enginePaths = @($pipeline.moss_cpp_engine_dir, $pipeline.moss_model, $FfmpegDir, $pythonBase)
-    if (-not $SkipVibe7) { $enginePaths += @($pipeline.vibe_repo, $pipeline.vibe_7b_model) }
+    if (-not $SkipVibe7) {
+        $vibePython = if ($pipeline.vibe_python) { $pipeline.vibe_python } else { Join-Path $pipeline.vibe_repo '.venv\Scripts\python.exe' }
+        $vibeRoots = (& $vibePython -c 'import sys,json; print(json.dumps([sys.prefix,sys.base_prefix]))') | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'VibeVoice interpreter is not runnable' }
+        foreach ($path in $vibeRoots) {
+            if ([IO.Path]::GetPathRoot($path) -eq $path) { throw 'Refusing an interpreter configured at the drive root' }
+        }
+        $enginePaths += @($pipeline.vibe_repo, $pipeline.vibe_7b_model) + $vibeRoots
+    }
     foreach ($path in $enginePaths) {
         if (-not (Test-Path $path)) { throw "Engine/model path unavailable: $path" }
         Run icacls.exe @($path, '/grant', "${principal}:(OI)(CI)RX", '/T', '/Q')
@@ -85,7 +96,7 @@ try {
     if (-not $NoStart) { Start-Service $ServiceName }
     Write-Host 'Installed SecondBrain with automatic delayed startup and crash recovery.'
     Write-Host 'Run register-tray.ps1 as your normal logged-in user to enable the tray UI.'
-    Write-Host 'The existing standalone receiver must be stopped before this service can bind port 7331.'
+    Write-Host "The existing standalone receiver must be stopped before this service can bind port $Port."
 } catch {
     Stop-Service $ServiceName -ErrorAction SilentlyContinue
     & sc.exe delete $ServiceName | Out-Null

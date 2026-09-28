@@ -181,3 +181,21 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def test_model_timeout_keeps_receiver_alive(self):
+        from dataclasses import replace
+        import sys
+
+        self.runtime.cfg = replace(self.cfg, job_timeout_seconds=0.1, max_attempts=1)
+        pipeline = json.loads(self.cfg.pipeline_config.read_text())
+        pipeline["moss_command"] = [sys.executable, "-c", "import time; time.sleep(60)"]
+        write_json(self.cfg.pipeline_config, pipeline)
+        await upload(self.runtime.server.bound_port, records())
+        for _ in range(100):
+            state = self.runtime.queue.snapshot()
+            if state["counts"].get("failed"):
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(state["counts"].get("failed"), 1)
+        self.assertIn("TimeoutError", state["recent"][0]["error"])
+        self.assertTrue(self.runtime.server._server.is_serving())

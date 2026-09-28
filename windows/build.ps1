@@ -14,6 +14,9 @@ try {
     Copy-Item (Join-Path $PSScriptRoot 'install.ps1') 'dist/windows/install.ps1' -Force
     Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') 'dist/windows/uninstall.ps1' -Force
     Copy-Item (Join-Path $PSScriptRoot 'register-tray.ps1') 'dist/windows/register-tray.ps1' -Force
-    Copy-Item 'config' 'dist/windows/config' -Recurse -Force
+    New-Item -ItemType Directory -Force 'dist/windows/config' | Out-Null
+    Copy-Item 'config/*.example.json' 'dist/windows/config/' -Force
+    Copy-Item (Join-Path $PSScriptRoot 'setup-engines.ps1') 'dist/windows/setup-engines.ps1' -Force
+    Copy-Item 'README.md' 'dist/windows/README.md' -Force
     Write-Host 'Built dist/windows. No service has been installed or started.'
 } finally { Pop-Location }

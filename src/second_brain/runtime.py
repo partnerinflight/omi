@@ -52,6 +52,7 @@ class Runtime:
         self.started = time.time()
 
     def discover(self):
+        self.last_scan_error = None
         for receipt in (self.cfg.incoming_dir / ".ready").glob("*.json"):
             try:
                 value = read_json(receipt)

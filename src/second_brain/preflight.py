@@ -20,7 +20,7 @@ def check(cfg: Config):
         if not shutil.which(name, path=search):
             errors.append(f"{name} is unavailable to this account")
     for key in ["moss_model", "moss_cpp_engine_dir"]:
-        if not Path(pipeline.get(key, "")).exists():
+        if not Path(pipeline.get(key, "")).is_absolute() or not Path(pipeline.get(key, "")).exists():
             errors.append(f"{key} does not exist")
     exe = Path(pipeline.get("moss_cpp_engine_dir", "")) / (
         "moss-transcribe.exe" if os.name == "nt" else "moss-transcribe"
@@ -28,14 +28,22 @@ def check(cfg: Config):
     if not exe.is_file():
         errors.append("MOSS executable is missing")
     if not cfg.skip_vibe7:
-        python = pipeline.get("vibe_python") or str(Path(pipeline["vibe_repo"]) / ".venv" / "Scripts" / "python.exe")
-        if not Path(python).is_file():
+        repo = Path(pipeline.get("vibe_repo") or "")
+        python = Path(pipeline.get("vibe_python") or repo / ".venv" / "Scripts" / "python.exe")
+        if not repo.is_absolute() or not repo.is_dir():
+            errors.append("VibeVoice repository must be an existing absolute directory")
+        if not python.is_absolute() or not python.is_file():
             errors.append("VibeVoice Python environment is missing")
-        if not Path(pipeline["vibe_7b_model"]).exists():
+        model = Path(pipeline.get("vibe_7b_model") or "")
+        if not model.is_absolute() or not model.is_dir():
             errors.append("Download VibeVoice to a local model path before unattended service use")
-    for name, path in [("vault", cfg.vault_path), ("data", cfg.data_dir), ("incoming", cfg.incoming_dir)]:
+    for name, path in [
+        ("vault", cfg.vault_path / cfg.vault_folder),
+        ("data", cfg.data_dir),
+        ("incoming", cfg.incoming_dir),
+    ]:
         try:
-            if name == "vault" and not path.is_dir():
+            if name == "vault" and not cfg.vault_path.is_dir():
                 raise FileNotFoundError()
             path.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryFile(dir=path):

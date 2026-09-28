@@ -17,7 +17,7 @@ No firmware was deployed by this integration work. No user's existing notes or
 recordings are used as test data. Repository cleanup was explicitly approved by
 the user; old products remain recoverable from the parent Git history.
 
-Local result on 2026-09-28: 17 pipeline/policy/integration tests and 72
+Local result on 2026-09-28: 18 pipeline/policy/integration tests and 72
 receiver/native-firmware tests pass. The .NET status executable tests pass,
 and both Windows x64 self-contained publishes succeed. Firmware source and
 images are unchanged by this integration. Actual Windows SCM/interactive tests

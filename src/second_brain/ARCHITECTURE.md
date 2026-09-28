@@ -24,7 +24,7 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    heuristic/ASR fallbacks are visible in job results. Vibe padding is filtered
    to the selected window and speaker labels are locally scoped.
 5. The vault writer creates deterministic names from job and window identity.
-   A flushed temporary file is linked into place without replacing an existing
+   A flushed temporary file is atomically published without replacing an existing
    note. Retrying identical output is a no-op; different existing content is a
    conflict. Only kept windows are published. SQLite completion follows note
    publication; a crash in between safely repeats it.

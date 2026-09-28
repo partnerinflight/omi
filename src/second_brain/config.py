@@ -40,6 +40,8 @@ class Config:
                 raise ValueError(f"{key} must be an absolute path; services have no user working directory")
             raw[key] = value.resolve()
         cfg = cls(**raw)
+        if cfg.ffmpeg_dir and not Path(cfg.ffmpeg_dir).is_absolute():
+            raise ValueError("ffmpeg_dir must be an absolute path")
         if not 0 <= cfg.port <= 65535 or cfg.poll_seconds <= 0 or cfg.retry_seconds <= 0:
             raise ValueError("Invalid port or polling/retry interval")
         if cfg.max_attempts < 1 or cfg.job_timeout_seconds <= 0:

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(o => o.ServiceName = builder.Configuration["service-name"] ?? "SecondBrain");
+builder.Logging.AddEventLog(o => o.SourceName = builder.Configuration["service-name"] ?? "SecondBrain");
 builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(45));
 builder.Services.AddHostedService<PipelineWorker>();
 await builder.Build().RunAsync();

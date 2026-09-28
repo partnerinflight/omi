@@ -80,7 +80,10 @@ def publish(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
                     out.flush()
                     os.fsync(out.fileno())
                 try:
-                    os.link(temporary, path)  # publish without replacing a concurrently created note
+                    if os.name == "nt":
+                        os.rename(temporary, path)  # Windows rename refuses an existing destination
+                    else:
+                        os.link(temporary, path)  # POSIX rename would replace an existing note
                 except FileExistsError:
                     if path.read_bytes() != content:
                         raise NoteConflict("A note appeared during publication; existing content was preserved")
