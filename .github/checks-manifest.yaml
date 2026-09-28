@@ -5,7 +5,7 @@
 # push runs exclude only that category because no authoritative PR body is available.
 checks:
   - id: cv1-local-recorder-tests
-    command: ["python", "-m", "unittest", "discover", "-s", "omi/firmware/scripts/omi-local/tests", "-t", "omi/firmware/scripts/omi-local"]
+    command: ["python3", "omi/firmware/scripts/omi-local/run_tests.py"]
     triggers: ["omi/firmware/**", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "CV1 local recorder migration found settings layout drift and shared BLE/Wi-Fi buffer ownership hazards; run the existing protocol suite plus native C and portal regression tests before firmware changes land"
