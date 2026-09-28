@@ -48,3 +48,8 @@ paused. Acoustic wake vibrates for 80 ms only after a successful microphone
 start. `test_manual_recording_c.py` exercises production button/owner paths,
 PCM suppression, LED timing, and failures. `test_disconnect_power_c.py` covers
 SD ownership during BLE disconnect, including manual pause.
+
+The Wi-Fi setup hold is 20 seconds from `.12`; it is not a reboot. Keep the
+3–5 second power-off release window separate, so an abandoned 5–20 second
+hold does nothing. Native hold-policy and button-handler tests cover both
+thresholds and ensure one action per hold. Keep the portal help in sync.

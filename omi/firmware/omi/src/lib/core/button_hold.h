@@ -10,7 +10,7 @@ static inline bool button_recording_click(uint32_t ms, bool hold_handled)
 static inline enum button_hold_action button_hold_action(uint32_t ms, bool released, bool wifi)
 {
     if (wifi) {
-        if (!released && ms >= 5000)
+        if (!released && ms >= 20000)
             return HOLD_SETUP;
         if (released && ms >= 3000 && ms < 5000)
             return HOLD_POWER_OFF;

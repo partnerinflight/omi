@@ -36,14 +36,14 @@ Do not interpret "no chip erase" as preservation of an incompatible SD layout.
    and upload counters. The portal disappears when saved; it cannot report
    the subsequent STA result over the disconnected AP.
 
-Setup blinks blue and expires after five minutes. Hold the button for **five
+Setup blinks blue and expires after five minutes. Hold the button for **20
 seconds** to reopen it; release after the haptic acknowledgement. Existing
 settings remain until a successful save. A short press never resets settings.
 To power off the Wi-Fi build, **release between three and five seconds**.
 The BLE-only build retains its three-second power-off hold. An active upload
 stops at a safe record boundary before setup; an outstanding network operation
 may delay entry until its timeout. `omi-local wifi-forget` explicitly clears
-the selected configuration; reboot or hold five seconds to start setup again.
+the selected configuration; reboot or hold 20 seconds to start setup again.
 
 Configured boot does not expose an AP, including when Wi-Fi or the receiver is
 down. Normal uploads require charging, at least roughly one minute of queued
@@ -195,6 +195,8 @@ While manually paused, the red LED flashes for **200 ms every 3 seconds**, with
 green and blue off. This indication takes priority over setup, upload and warning
 LEDs while the device is awake. Existing uploads may continue during pause.
 Ordinary acoustic silence still shows solid red, and normal recording is dark.
-The existing 3–5 second power-off release and 5-second setup hold are unchanged;
-long holds do not toggle recording. The receiver from `.9` already understands
+The 3–5 second power-off release is unchanged. From `.12`, reopening setup
+requires a continuous 20-second hold (previously 5 seconds). Releasing between
+5 and 20 seconds does nothing. This opens setup rather than rebooting; long
+holds do not toggle recording. The receiver from `.9` already understands
 these recording boundaries and needs no additional update for `.11`.

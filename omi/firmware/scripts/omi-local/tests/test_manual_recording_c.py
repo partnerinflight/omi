@@ -175,9 +175,13 @@ int main(void){
  poll(3000,true);poll(3400,false);assert(toggles==3);
  poll(4000,true);poll(5000,false);assert(toggles==3);
  poll(6000,true);poll(9200,false);assert(off==1 && !setup && toggles==3);
- poll(10000,true);poll(15000,true);assert(setup==1);
- poll(15100,true);poll(15200,false);assert(setup==1 && off==1 && toggles==3);
- is_off=true;poll(16000,true);poll(16120,false);assert(toggles==3);
+ /* A five-second hold and an abandoned long hold must do nothing. */
+ poll(10000,true);poll(15000,true);assert(!setup && off==1);
+ poll(15040,false);assert(!setup && off==1 && toggles==3);
+ poll(20000,true);poll(39999,true);assert(!setup && off==1);
+ poll(40000,true);assert(setup==1);
+ poll(41000,true);poll(41100,false);assert(setup==1 && off==1 && toggles==3);
+ is_off=true;poll(42000,true);poll(42120,false);assert(toggles==3);
  return 0;
 }
 """)

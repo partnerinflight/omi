@@ -72,7 +72,9 @@ class WifiConfigTests(unittest.TestCase):
         self.assertTrue(self.run_c('config',U.encode_wifi_config(host='valid.local').hex()).startswith('0 0 '))
     def test_deliberate_setup_and_power_off(self):
         for ms, released, wifi, action in [(100,1,1,0),(2999,0,1,0),(3000,0,1,0),
-                (3000,1,1,1),(4999,1,1,1),(5000,0,1,2),(5000,1,1,0),(9000,0,1,2),(3000,0,0,1)]:
+                (3000,1,1,1),(4999,1,1,1),(5000,0,1,0),(5000,1,1,0),(9000,0,1,0),
+                (19999,0,1,0),(19999,1,1,0),(20000,0,1,2),(20000,1,1,0),(21000,0,1,2),
+                (3000,0,0,1)]:
             self.assertEqual(self.run_c('hold',str(ms),str(released),str(wifi)),str(action))
 
     def test_bulk_ownership_survives_rejected_claim(self):

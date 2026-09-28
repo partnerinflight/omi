@@ -318,3 +318,26 @@ click, sound, vibration, LED and upload checks wait until the user brings it
 home. No BLE scan, OTA upload, reset or receiver connection was attempted.
 Last confirmed installed firmware remains `.9`; this package includes `.10`'s
 LED change. The existing marker-aware Windows receiver needs no update.
+
+## Longer setup hold — 2026-09-28
+
+Candidate `3.0.22-localwifi.12` moves the existing Wi-Fi setup hold from 5 to
+20 seconds, following the user's request to lengthen the five-second action.
+Code inspection confirmed that action opens setup, not a reboot; this distinction
+was explained to the user. Power-off remains a release at 3–5 seconds; releasing
+at 5–20 seconds does nothing. Short recording clicks are unchanged. Portal help
+and provisioning documentation now show 20 seconds.
+
+Validation: all 69 host tests pass. Production hold-policy and button-handler
+tests assert no action at 5 seconds or just below 20 seconds, setup at exactly
+20 seconds, no repeat while held/released, and preserved short-click/power-off
+behavior. These expectations follow the user's requested duration. Wi-Fi and
+BLE-only NCS 2.9 incremental sysbuilds pass. Wi-Fi: 872472 flash / 428800 RAM
+bytes; BLE-only: 248588 flash / 335488 RAM bytes. Both OTA images pass imgtool
+signature verification. App digest:
+`5af68c8bff1424cbf5c454d664721078eb12a200dee3cfb88575e1333413ac59`.
+ZIP SHA-256: `d793d9ea94e8c1155be5a9445359a28bc8040205b3afc56a77c1c4faa3565fc4`.
+Archive: `.inspection/Omi_CV1_OTA_3.0.22-localwifi.12.zip` in the parent workspace.
+No deployment or hardware test was attempted; the device remains at work.
+The earlier sparse-checkout preflight limitation remains; component tests and
+builds are verified, not full-repository CI.
