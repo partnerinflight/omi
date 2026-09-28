@@ -9,6 +9,7 @@ param(
     [string]$DataRoot = "$env:ProgramData\SecondBrain",
     [string]$IncomingDir = '',
     [string]$Bundle = $PSScriptRoot,
+    [string]$ReviewUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [ValidatePattern("^[A-Za-z][A-Za-z0-9]{0,48}$")][string]$ServiceName = "SecondBrain",
     [ValidateRange(1,65535)][int]$Port = 7331,
     [switch]$SkipVibe7,
@@ -27,7 +28,9 @@ foreach ($path in @($Python, $PipelineConfig, $SecretFile, $Vault, (Join-Path $F
 if (-not [IO.Path]::IsPathRooted($Python) -or $Python -like '*WindowsApps*') { throw 'Use an absolute machine-wide Python 3.12+ executable, not a Windows Store alias.' }
 if (-not [IO.Path]::IsPathRooted($Vault)) { throw 'Vault must be a local absolute path; mapped drives are unavailable before login.' }
 if (-not $IncomingDir) { $IncomingDir = Join-Path $DataRoot 'incoming' }
-$paths = @($InstallDir, $DataRoot, "$DataRoot\config", "$DataRoot\data", "$DataRoot\status", $IncomingDir, "$Vault\Omi\Conversations")
+$reviewSid = (New-Object Security.Principal.NTAccount($ReviewUser)).Translate([Security.Principal.SecurityIdentifier]).Value
+$reviewPrincipal = '*' + $reviewSid
+$paths = @($InstallDir, $DataRoot, "$DataRoot\config", "$DataRoot\data", "$DataRoot\status", "$DataRoot\review", "$DataRoot\review\requests", "$DataRoot\review\responses", "$DataRoot\review\clips", $IncomingDir, "$Vault\Omi\Conversations")
 foreach ($path in $paths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 Run icacls.exe @($DataRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
 foreach ($component in @('service', 'tray')) {
@@ -69,12 +72,22 @@ try {
     Run icacls.exe @($DataRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "${principal}:(OI)(CI)RX")
     foreach ($path in @("$DataRoot\data", $IncomingDir)) { Run icacls.exe @($path, '/grant:r', "${principal}:(OI)(CI)M", '/T', '/Q') }
     Run icacls.exe @("$DataRoot\status", '/grant:r', "${principal}:(OI)(CI)M", '*S-1-5-32-545:(OI)(CI)RX', '/T', '/Q')
+    # Only the configured interactive user may listen/name speakers. Never grant
+    # all Users access to transcripts, snippets or voice references.
+    Run icacls.exe @("$DataRoot\review", '/reset', '/T', '/Q')
+    Run icacls.exe @("$DataRoot\review", '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "${principal}:(OI)(CI)M", "${reviewPrincipal}:(OI)(CI)RX")
+    Run icacls.exe @("$DataRoot\review\requests", '/grant:r', "${reviewPrincipal}:(OI)(CI)M", '/T', '/Q')
     Run icacls.exe @($InstallDir, '/grant:r', "${principal}:(OI)(CI)RX", '/T', '/Q')
     Run icacls.exe @($Vault, '/grant', "${principal}:(OI)(CI)RX", '/T', '/Q')
     Run icacls.exe @("$Vault\Omi\Conversations", '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
     $pipeline = Get-Content $pipelineTarget -Raw | ConvertFrom-Json
     $pythonBase = (& $Python -c 'import sys; print(sys.base_prefix)').Trim()
     $enginePaths = @($pipeline.moss_cpp_engine_dir, $pipeline.moss_model, $FfmpegDir, $pythonBase)
+    if ($pipeline.speaker_python -and $pipeline.speaker_model) {
+        $speakerRoots = (& $pipeline.speaker_python -c 'import sys,json; print(json.dumps([sys.prefix,sys.base_prefix]))') | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'Speaker encoder interpreter is not runnable' }
+        $enginePaths += @($pipeline.speaker_model) + $speakerRoots
+    }
     if (-not $SkipVibe7) {
         $vibePython = if ($pipeline.vibe_python) { $pipeline.vibe_python } else { Join-Path $pipeline.vibe_repo '.venv\Scripts\python.exe' }
         $vibeRoots = (& $vibePython -c 'import sys,json; print(json.dumps([sys.prefix,sys.base_prefix]))') | ConvertFrom-Json
@@ -85,6 +98,7 @@ try {
         $enginePaths += @($pipeline.vibe_repo, $pipeline.vibe_7b_model) + $vibeRoots
     }
     foreach ($path in $enginePaths) {
+        if ([IO.Path]::GetPathRoot($path) -eq $path) { throw 'Refusing read access to an entire drive for an engine' }
         if (-not (Test-Path $path)) { throw "Engine/model path unavailable: $path" }
         Run icacls.exe @($path, '/grant', "${principal}:(OI)(CI)RX", '/T', '/Q')
     }
@@ -96,6 +110,7 @@ try {
     if (-not $NoStart) { Start-Service $ServiceName }
     Write-Host 'Installed SecondBrain with automatic delayed startup and crash recovery.'
     Write-Host 'Run register-tray.ps1 as your normal logged-in user to enable the tray UI.'
+    Write-Host "Speaker review access: $ReviewUser"
     Write-Host "The existing standalone receiver must be stopped before this service can bind port $Port."
 } catch {
     Stop-Service $ServiceName -ErrorAction SilentlyContinue

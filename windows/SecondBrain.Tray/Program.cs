@@ -26,6 +26,7 @@ sealed class TrayContext : ApplicationContext
     readonly string path;
     DateTime lastHover;
     bool pinned;
+    SpeakerReview? speakerReview;
     public TrayContext(string statusPath)
     {
         path = statusPath;
@@ -34,6 +35,10 @@ sealed class TrayContext : ApplicationContext
         icon = new NotifyIcon { Icon = SystemIcons.Information, Visible = true, Text = "Second Brain: loading status" };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => { pinned = true; ShowCard(); });
+        menu.Items.Add("Speakers — listen and name", null, (_, _) => {
+            if (speakerReview is null || speakerReview.IsDisposed) speakerReview = new SpeakerReview(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(path))!, "review"));
+            speakerReview.Show(); speakerReview.Activate();
+        });
         menu.Items.Add("Windows Services", null, (_, _) => Process.Start(new ProcessStartInfo("services.msc") { UseShellExecute = true }));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Quit status app (service continues)", null, (_, _) => ExitThread());
@@ -60,5 +65,5 @@ sealed class TrayContext : ApplicationContext
         card.Location = new(Math.Clamp(Cursor.Position.X - card.Width, area.Left, Math.Max(area.Left, area.Right - card.Width)), Math.Clamp(Cursor.Position.Y - card.Height - 12, area.Top, Math.Max(area.Top, area.Bottom - card.Height)));
         card.Show();
     }
-    protected override void ExitThreadCore() { timer.Stop(); timer.Dispose(); icon.Visible = false; icon.Dispose(); card.Dispose(); base.ExitThreadCore(); }
+    protected override void ExitThreadCore() { timer.Stop(); timer.Dispose(); icon.Visible = false; icon.Dispose(); card.Dispose(); speakerReview?.Dispose(); base.ExitThreadCore(); }
 }

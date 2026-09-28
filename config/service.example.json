@@ -8,6 +8,8 @@
   "status_file": "C:\\ProgramData\\SecondBrain\\status\\status.json",
   "host": "0.0.0.0",
   "port": 7331,
+  "speaker_match_threshold": 0.80,
+  "speaker_match_margin": 0.10,
   "poll_seconds": 2,
   "retry_seconds": 60,
   "max_attempts": 5,

@@ -927,7 +927,7 @@ def should_route(cfg, importance, novelty, words):
     return importance >= cfg["router_importance_threshold"] or novelty >= cfg["router_novelty_threshold"]
 
 
-def parse_vibe_text(result, start, end, window_id):
+def parse_vibe_segments(result, start, end, window_id):
     segs = result.get("segments") or []
     rows = []
     for s in segs:
@@ -939,10 +939,12 @@ def parse_vibe_text(result, start, end, window_id):
         speaker = window_id + ":" + str(s["speaker"] if s.get("speaker") is not None else "S?")
         text = (s.get("text") or "").strip()
         if text:
-            rows.append(f"{speaker}: {text}")
-    if rows:
-        return "\n".join(rows)
-    return ""  # No unbounded padded-context fallback: retain the bounded MOSS window.
+            rows.append(dict(start=max(start, st), end=min(end, en), speaker=speaker, text=text, approximate=True))
+    return rows
+
+
+def parse_vibe_text(result, start, end, window_id):
+    return "\n".join(f"{s['speaker']}: {s['text']}" for s in parse_vibe_segments(result, start, end, window_id))
 
 
 def main():
@@ -1239,6 +1241,7 @@ def main():
 
         final_engine = "moss"
         final_text = item["moss_transcript"]
+        final_segments = item["moss_segments"]
 
         ref_path = item.get("escalation_json")
         if ref_path and Path(ref_path).exists():
@@ -1249,6 +1252,7 @@ def main():
                 if candidate.strip():
                     final_text = candidate
                     final_engine = tier
+                    final_segments = parse_vibe_segments(ref, item["start"], item["end"], item["id"])
 
         if ref_path and final_engine == "moss":
             manifest["fallbacks"].append(
@@ -1256,6 +1260,7 @@ def main():
             )
         item["final_engine"] = final_engine
         item["final_transcript"] = final_text
+        item["final_segments"] = final_segments
 
         final_memory_h = memory_gate_heuristic(
             final_text,
@@ -1341,6 +1346,13 @@ def main():
                 encoding="utf-8",
             )
             item["filtered_record"] = str(filtered_path)
+
+    # Keep bounded PCM clips for human review. Voice profiles are owned by the
+    # service; model extraction stays inside this supervised job subprocess.
+    progress("speakers")
+    from second_brain.speaker_audio import prepare
+
+    prepare(manifest, audio, run_dir, cfg)
 
     # Persist final manifest.
     filtered_count = sum(1 for x in manifest["windows"] if not x.get("route_to_knowledge_router"))

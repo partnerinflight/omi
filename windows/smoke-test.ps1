@@ -30,9 +30,19 @@ try {
     if ($status.counts.complete -ne 1) { throw "Service did not publish the synthetic note; inspect $root" }
     $notes = @(Get-ChildItem "$root\vault" -Recurse -Filter *.md)
     if ($notes.Count -ne 1) { throw 'Expected one note' }
+    & $pythonPath -m tests.windows_smoke_fixture review --root $root
+    if ($LASTEXITCODE -ne 0) { throw 'Speaker review/PCM playback fixture failed' }
+    $previousStart = $status.started
     Restart-Service $name
-    Start-Sleep -Seconds 3
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Milliseconds 500
+        $status = Get-Content $statusPath -Raw | ConvertFrom-Json
+    } until (($status.service -eq 'running' -and $status.started -gt $previousStart) -or (Get-Date) -gt $deadline)
+    if ($status.service -ne 'running' -or $status.started -le $previousStart) { throw 'Service did not publish a fresh heartbeat after restart' }
     if (@(Get-ChildItem "$root\vault" -Recurse -Filter *.md).Count -ne 1) { throw 'Restart duplicated a note' }
+    & $pythonPath -m tests.windows_smoke_fixture verify-review --root $root
+    if ($LASTEXITCODE -ne 0) { throw 'Speaker identity did not survive restart' }
     $svc = Get-CimInstance Win32_Service -Filter "Name='$name'"
     $process = Get-Process -Id $svc.ProcessId
     if ($process.SessionId -ne 0) { throw 'Service is not running in Session 0' }

@@ -40,7 +40,13 @@ rely on the desktop, current user PATH, GUI, model downloads, or mapped drives.
 The tray is a separate WinForms process. Its read-only status file contains
 counts, stage names and sanitized operations. It tolerates replacement while
 reading and reports a stale heartbeat after 15 seconds. Detailed transcripts,
-keys and private logs stay behind service/admin filesystem ACLs.
+keys and private logs stay behind service/admin filesystem ACLs. The separate
+speaker review UI reads a user-restricted catalog and PCM clips and writes only
+to a request directory. The service owns the speaker database and applies
+idempotent commands; this adds no network listener. Confirmed references alone
+drive voice matching, with model fingerprint separation and conservative
+multi-clip agreement. Publication freezes identity attribution for replay.
+See `docs/speakers.md` for access, enrollment, correction and timing limits.
 
 ## Verification boundaries
 

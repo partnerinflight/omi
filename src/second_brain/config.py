@@ -27,6 +27,12 @@ class Config:
     skip_vibe7: bool = False
     no_hermes: bool = False
     ffmpeg_dir: str = ""
+    speaker_match_threshold: float = 0.80
+    speaker_match_margin: float = 0.10
+
+    @property
+    def review_dir(self):
+        return self.data_dir.parent / "review"
 
     @classmethod
     def load(cls, path: Path):
@@ -40,6 +46,8 @@ class Config:
                 raise ValueError(f"{key} must be an absolute path; services have no user working directory")
             raw[key] = value.resolve()
         cfg = cls(**raw)
+        if not 0 < cfg.speaker_match_threshold <= 1 or not 0 < cfg.speaker_match_margin <= 1:
+            raise ValueError("Invalid speaker matching threshold or margin")
         if cfg.ffmpeg_dir and not Path(cfg.ffmpeg_dir).is_absolute():
             raise ValueError("ffmpeg_dir must be an absolute path")
         if not 0 <= cfg.port <= 65535 or cfg.poll_seconds <= 0 or cfg.retry_seconds <= 0:

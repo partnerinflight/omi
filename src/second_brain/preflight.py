@@ -37,6 +37,21 @@ def check(cfg: Config):
         model = Path(pipeline.get("vibe_7b_model") or "")
         if not model.is_absolute() or not model.is_dir():
             errors.append("Download VibeVoice to a local model path before unattended service use")
+    if pipeline.get("speaker_model") or pipeline.get("speaker_python"):
+        python = Path(pipeline.get("speaker_python") or "")
+        model = Path(pipeline.get("speaker_model") or "")
+        if not python.is_absolute() or not python.is_file():
+            errors.append("Speaker encoder Python environment is missing")
+        for name in (
+            "hyperparams.yaml",
+            "embedding_model.ckpt",
+            "mean_var_norm_emb.ckpt",
+            "classifier.ckpt",
+            "label_encoder.txt",
+        ):
+            if not model.is_absolute() or not (model / name).is_file():
+                errors.append("Speaker model is incomplete; run windows/setup-speakers.ps1")
+                break
     for name, path in [
         ("vault", cfg.vault_path / cfg.vault_folder),
         ("data", cfg.data_dir),

@@ -34,6 +34,11 @@ public record Snapshot(string Title, string Tooltip, string Details, bool Health
             var at = DateTimeOffset.FromUnixTimeSeconds((long)ev.GetProperty("time").GetDouble()).ToLocalTime();
             lines.Add($"{at:HH:mm:ss} · {ev.GetProperty("kind").GetString()} · {ev.GetProperty("detail").GetString()}");
         }
+        if (r.TryGetProperty("speakers", out var speakers)) {
+            lines.Add("");
+            lines.Add($"Speakers: {speakers.GetProperty("unidentified")} unidentified · {speakers.GetProperty("people")} saved people");
+            lines.Add("Use Speakers — listen and name from the tray menu.");
+        }
         if (r.GetProperty("discovery_error").ValueKind != JsonValueKind.Null) lines.Add("Recording discovery needs attention; check the service log.");
         return new(title, tip, string.Join(Environment.NewLine, lines), healthy);
     }

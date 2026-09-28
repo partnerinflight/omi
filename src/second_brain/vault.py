@@ -47,6 +47,7 @@ def publish(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
             "end_seconds": window["end"],
             "asr_engine": window["final_engine"],
             "conversation_type": window.get("memory_gate", {}).get("conversation_type", "other"),
+            "speaker_identities": window.get("speaker_identities", {}),
         }
         # JSON scalars are valid YAML and cannot inject new frontmatter keys.
         lines = ["---"] + [f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in front.items()] + ["---", ""]
@@ -55,7 +56,7 @@ def publish(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
             "",
             f"[Source audio]({front['audio']}) · {window['start']:.1f}–{window['end']:.1f} seconds",
             "",
-            "Speaker labels are local to this recording/chunk, not identified people.",
+            "Unnamed speaker labels are local to this recording/chunk. Named speakers include confirmation or voice-match provenance in the note properties.",
             "",
             "## Transcript",
             "",

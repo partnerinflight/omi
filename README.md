@@ -19,6 +19,10 @@ work, receiver activity, queue counts and recent results; double-click pins the
 status card. Exiting the tray leaves the service running. A stale heartbeat is
 shown as unavailable rather than falsely reporting idle.
 
+The tray also has **Speakers — listen and name**: play several snippets, replace
+anonymous labels with names, and build local voice profiles for future recordings.
+See [speaker review and setup](docs/speakers.md) for model setup and correction controls.
+
 ## Repository
 
 | Path | Purpose |
@@ -104,8 +108,9 @@ In a normal (non-elevated) PowerShell for your own account:
 .\dist\windows\register-tray.ps1
 ```
 
-The tray reads only sanitized operational status. It cannot start jobs, mutate
-notes, read the pairing key, or stop the service. It can open Windows Services.
+The status card reads sanitized operational status. Speaker review separately
+reads private snippets and submits naming commands through a user-restricted
+local mailbox. It cannot read the pairing key or stop the service.
 
 ## Notes, archives and recovery
 
@@ -114,9 +119,10 @@ notes, read the pairing key, or stop the service. It can open Windows Services.
 - Durable windows create one deterministic Markdown note each under
   `Omi/Conversations`. Notes contain recording time, audio link, window offsets,
   engine, speaker-labelled transcript, content type and filtering reason.
-- Speaker labels are **chunk-local labels, not real identities**. They are
-  scoped to chunks/windows to avoid falsely equating speakers across files.
-  VibeVoice's approximate timing cannot provide word-accurate boundaries.
+- Anonymous speaker labels are scoped to chunks/windows. Confirmed voice profiles
+  can attach names to future recordings with sufficiently strong evidence;
+  ambiguous voices remain unidentified. VibeVoice's approximate timing cannot
+  provide word-accurate boundaries or clean voice-enrollment samples.
 - This is an additive vault writer, not a semantic merger into existing people,
   project or task notes. Existing notes are only read for novelty/hotwords.
 - Filtered conversation remains in private job results and is not published.

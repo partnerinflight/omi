@@ -22,3 +22,19 @@ receiver/native-firmware tests pass. The .NET status executable tests pass,
 and both Windows x64 self-contained publishes succeed. Firmware source and
 images are unchanged by this integration. Actual Windows SCM/interactive tests
 are the remaining platform validation.
+
+Speaker review adds tests for persistent enrollment, multi-clip agreement,
+ambiguous/unknown voices, model-version separation, correction and reference
+revocation, request replay, private playable WAV clips and name propagation into
+future publication. Existing-note preservation is verified after assigning a name.
+The Windows smoke test now also submits a naming request and checks it after a
+fresh service restart. Real interactive Windows playback remains unverified.
+The expanded suite passes 27 policy/service/speaker tests and 72 receiver/native
+tests (99 total); the updated Windows tray cross-compiles successfully.
+
+The real SpeechBrain 1.0.3 / Torch 2.8.0 ECAPA runner was exercised offline on
+macOS with two public SpeechBrain test clips. It produced two finite,
+unit-normalized 192-dimensional embeddings using local weights, fingerprint
+`24df09c705c014a81c5e3c4ea0d5a8f88d978bc27c6b1ee2aeb05c06fc4c0ac4`.
+This verifies loading/extraction, not Omi identity accuracy or the default
+matching threshold. Test audio, model weights and embeddings remain outside Git.

@@ -1,5 +1,8 @@
 {
   "work_root": "C:\\second-brain-adaptive\\results",
+  "speaker_python": null,
+  "speaker_model": null,
+  "speaker_timeout_seconds": 300,
   "moss_cpp_source_dir": "C:\\moss-transcribe.cpp\\build\\bin\\Release",
   "moss_cpp_engine_dir": "C:\\second-brain-asr-engines\\moss-transcribe-cpp",
   "moss_model": "C:\\moss-transcribe.cpp\\models\\moss-transcribe-q5_k.gguf",

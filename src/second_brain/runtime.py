@@ -14,9 +14,10 @@ from .io import InstanceLock, write_json
 from .queue import Queue
 from .receiver import ReceiverFactory
 from .vault import publish
+from .speakers import Speakers
 
 log = logging.getLogger("second_brain")
-STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing"}
+STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
 
 
 async def kill_tree(proc):
@@ -50,6 +51,7 @@ class Runtime:
         self.receiver_error = None
         self.last_scan_error = None
         self.started = time.time()
+        self.speakers = Speakers(cfg.data_dir, cfg.review_dir, cfg.speaker_match_threshold, cfg.speaker_match_margin)
 
     def discover(self):
         self.last_scan_error = None
@@ -133,6 +135,13 @@ class Runtime:
                 raise ValueError("Pipeline returned an invalid manifest")
             write_json(manifest_path, manifest)
         manifest = read_json(manifest_path)
+        await asyncio.to_thread(self.speakers.ingest, job, manifest)
+        # Freeze names once for publication so later name corrections cannot
+        # turn a crash-replay into an edited-note conflict.
+        publication = root / "publication-manifest.json"
+        if not publication.exists():
+            write_json(publication, self.speakers.render(job["id"], manifest))
+        manifest = read_json(publication)
         self.queue.progress(job["id"], "publishing")
         notes = await asyncio.to_thread(publish, cfg.vault_path, cfg.vault_folder, job, manifest)
         return {
@@ -180,12 +189,24 @@ class Runtime:
                 "error": self.receiver_error,
             },
             discovery_error=self.last_scan_error,
+            speakers=self.speakers.summary(),
         )
         write_json(self.cfg.status_file, result)
 
     async def heartbeat(self):
         while not self.stop.is_set():
             await asyncio.to_thread(self.status)
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=1)
+            except asyncio.TimeoutError:
+                pass
+
+    async def speaker_review(self):
+        while not self.stop.is_set():
+            try:
+                await asyncio.to_thread(self.speakers.tick)
+            except OSError:
+                log.exception("Speaker review mailbox unavailable")
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=1)
             except asyncio.TimeoutError:
@@ -201,7 +222,11 @@ class Runtime:
                 secret, self.cfg.incoming_dir, self.cfg.host, self.cfg.port, writer_factory=factory
             )
             await self.server.start()
-            tasks = [asyncio.create_task(self.worker()), asyncio.create_task(self.heartbeat())]
+            tasks = [
+                asyncio.create_task(self.worker()),
+                asyncio.create_task(self.heartbeat()),
+                asyncio.create_task(self.speaker_review()),
+            ]
             waiter = asyncio.create_task(self.stop.wait())
             try:
                 done, _ = await asyncio.wait([*tasks, waiter], return_when=asyncio.FIRST_COMPLETED)

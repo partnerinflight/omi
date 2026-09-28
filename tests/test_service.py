@@ -125,6 +125,32 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("c0000:S2", text)
         self.assertIn("Source audio", text)
         self.assertIn("project launch", text)
+        # The tray can listen and name speakers without reading private jobs.
+        import uuid
+        import wave
+
+        for _ in range(100):
+            catalog = json.loads((self.cfg.review_dir / "catalog.json").read_text())
+            if catalog["speakers"]:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(len(catalog["speakers"]), 2)
+        speaker = catalog["speakers"][0]
+        with wave.open(str(self.cfg.review_dir / "clips" / speaker["clips"][0]["file"])) as clip:
+            self.assertEqual(clip.getframerate(), 16000)
+            self.assertGreater(clip.getnframes(), 0)
+        request_id = str(uuid.uuid4())
+        write_json(
+            self.cfg.review_dir / "requests" / f"{request_id}.json",
+            dict(id=request_id, action="assign", observation=speaker["id"], name="Test Person"),
+        )
+        response = self.cfg.review_dir / "responses" / f"{request_id}.json"
+        for _ in range(100):
+            if response.exists():
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(json.loads(response.read_text())["ok"])
+        self.assertNotIn("Test Person", json.dumps(self.runtime.queue.snapshot()))
         self.runtime.discover()
         self.assertEqual(self.runtime.queue.snapshot()["counts"]["complete"], 1)
         # Crash/restart publication replay uses the saved manifest, not another ASR run.
@@ -137,6 +163,7 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
         self.assertEqual(len(list(self.cfg.vault_path.rglob("*.md"))), 1)
         self.assertEqual(len(list((self.root / "data/jobs").rglob("pipeline.log"))), 1)
+        self.assertEqual(notes[0].read_text(), text)  # later naming doesn't overwrite an already published note
 
     async def test_bad_pairing_key_never_creates_a_job(self):
         self.assertEqual(await upload(self.runtime.server.bound_port, records(), bytes(reversed(SECRET))), U.MSG_REJECT)
