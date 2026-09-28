@@ -29,13 +29,21 @@ The upload path now bounds socket writes and budgets its transmit memory.
 A successful association clears the previous session's disconnect event,
 preventing that stale event from aborting a retry. Native tests exercise this
 event sequence and real later disconnects. Receiver commit `d14eb687f` fixes
-Windows progress-file flushing through a writable handle; it is pushed, but
-the running Windows process must be updated and restarted separately.
+Windows progress-file flushing through a writable handle. The user updated
+and restarted the Windows receiver before the successful follow-up below.
 
 On firmware `.7`, the receiver resume pointer advanced from 6944 to 6980, but
 no DATA acknowledgements or complete sessions were observed. Retained storage
-continued growing with zero dropped records. End-to-end upload remains
-unverified pending the restarted receiver and a successful acknowledged run.
+continued growing with zero dropped records.
+
+On 2026-09-28, after the Windows receiver restart, a manual `.8` upload received
+28,584 DATA packet acknowledgements (12,691,296 record bytes) and kept uploading.
+The SD read sequence advanced to 35,564, with write sequence 139,996 and zero
+dropped records: 104,432 records remained at that snapshot. This verifies real
+device-to-Windows transfer and release of acknowledged records. The complete
+backlog/session finish was not yet observed. `last_result=link lost` and errno
+`-5` still describe the previous failed session while the current state is
+`uploading`; those fields update when the active session finishes.
 Automatic upload is still gated by active charging; a full battery may clear
 that signal while externally powered. Manual `upload-now` bypasses the gate.
 
