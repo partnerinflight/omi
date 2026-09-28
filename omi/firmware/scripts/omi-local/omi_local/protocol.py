@@ -191,11 +191,14 @@ def parse_status(value: bytes | bytearray) -> Status:
 
 
 # --- Records -----------------------------------------------------------------
+RECORD_END_MAGIC = b"\x00OMIEND\x01"
+
 @dataclass(frozen=True)
 class Record:
     seq: int
     timestamp: int  # UTC epoch seconds, 0 = clock was not set when recorded
     frames: tuple[bytes, ...]
+    recording_end: bool = False
 
     @property
     def has_time(self) -> bool:
@@ -203,10 +206,14 @@ class Record:
 
 
 def parse_record(seq: int, raw: bytes) -> Record:
-    """Parse one 444-byte ring record: [u32 BE timestamp][len:u8][opus]... zero padded."""
+    """Parse timestamp + packed Opus frames, or the reserved zero-frame end marker."""
     if len(raw) != RECORD_SIZE:
         raise ProtocolError(f"record {seq}: expected {RECORD_SIZE} bytes, got {len(raw)}")
     timestamp = struct.unpack_from(">I", raw, 0)[0]
+    if raw[TIMESTAMP_BYTES:].startswith(RECORD_END_MAGIC):
+        if any(raw[TIMESTAMP_BYTES + len(RECORD_END_MAGIC):]):
+            raise ProtocolError(f"record {seq}: invalid recording-end padding")
+        return Record(seq, timestamp, (), recording_end=True)
     frames: list[bytes] = []
     i = TIMESTAMP_BYTES
     end = RECORD_SIZE
@@ -287,6 +294,8 @@ def session_boundary(prev: Record | None, cur: Record, gap_s: int) -> bool:
     """True if `cur` should start a new session after `prev`."""
     if prev is None:
         return True
+    if prev.recording_end:
+        return True
     if cur.seq != prev.seq + 1:
         return True
     if prev.has_time != cur.has_time:
@@ -300,6 +309,9 @@ def split_sessions(records: Iterable[Record], gap_s: int = 60) -> list[Session]:
     sessions: list[Session] = []
     prev: Record | None = None
     for rec in records:
+        if rec.recording_end:
+            prev = None
+            continue
         if session_boundary(prev, rec, gap_s):
             sessions.append(Session(rec.seq, rec.seq, rec.timestamp, rec.timestamp))
         s = sessions[-1]

@@ -79,7 +79,8 @@ def approx_seconds(packets: int) -> float:
 class SessionWriter:
     """Turns the record stream into one playable .opus (+ .json) file per session.
 
-    A session ends when a record is not the successor of the previous one, when
+    A session ends on an explicit recording-end marker, when a record is not
+    the successor of the previous one, when
     the clock state flips (unknown <-> known), or when the timestamp jumps by
     more than `gap_s` (the mic was in hardware sleep or the device was off).
     """
@@ -151,8 +152,15 @@ class SessionWriter:
         if not self._writer:
             return
         self._writer.close(eos=eos)
+        # A boundary can close a file inside a DATA chunk. Make its bytes
+        # durable before releasing the handle and later acknowledging it.
+        import os
+        self._fp.flush()
+        os.fsync(self._fp.fileno())
         self._fp.close()
         if self._raw_fp:
+            self._raw_fp.flush()
+            os.fsync(self._raw_fp.fileno())
             self._raw_fp.close()
             self._raw_fp = None
         if self._cur:
@@ -168,6 +176,11 @@ class SessionWriter:
     # -- record ingestion
     def add(self, seq: int, data: bytes) -> None:
         for rec in P.iter_records(seq, data):
+            if rec.recording_end:
+                self._close_file(eos=True)
+                self.state.open_file = None
+                self._prev = None
+                continue
             if P.session_boundary(self._prev, rec, self.gap_s):
                 self._close_file(eos=True)
                 self._open(rec)

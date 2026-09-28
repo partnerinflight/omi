@@ -176,7 +176,10 @@ class UploadServer:
         finally:
             self._busy.discard(device)
             if session_writer is not None:
-                session_writer.finish(final=ok)
+                # A completed upload drains a snapshot, not necessarily a
+                # recording. Only a VOX marker or timestamp/sequence boundary
+                # closes it; later uploads can continue the same file.
+                session_writer.finish(final=False)
             if ok:
                 self.sessions_ok += 1
             else:

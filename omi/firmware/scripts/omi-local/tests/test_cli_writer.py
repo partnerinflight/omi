@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import struct
 import unittest
 from pathlib import Path
 
@@ -9,10 +10,44 @@ from omi_local.cli import SessionWriter, build_parser, cmd_verify
 from omi_local.device import DumpClient
 from omi_local.oggopus import iter_pages
 from omi_local.state import StateStore
-from tests.fake_device import FakeRing, FakeTransport
+from tests.fake_device import FakeRing, FakeTransport, make_record
 
 
 class SessionWriterTests(unittest.TestCase):
+    def test_vox_boundary_closes_and_resumes_without_empty_files(self):
+        for ts in (0, 1_700_000_000):
+            with self.subTest(timestamp=ts), tempfile.TemporaryDirectory() as d:
+                dest = Path(d)
+                marker = struct.pack('>I', ts) + P.RECORD_END_MAGIC + bytes(
+                    P.AUDIO_PAYLOAD_BYTES - len(P.RECORD_END_MAGIC))
+                store = StateStore(dest)
+                w = SessionWriter(dest, 'vox', store.get('vox'), store)
+                # Two adjacent records with identical timestamps still split;
+                # a marker-only transfer creates no empty .opus file.
+                w.add(0, marker + make_record(1, ts) + marker)
+                w.fsync()
+                w.finish(final=False)
+                state = StateStore(dest).get('vox')
+                self.assertEqual(state.downloaded_through, 3)
+                self.assertIsNone(state.open_file)
+                self.assertEqual(len(list(dest.glob('*.opus'))), 1)
+                store = StateStore(dest)
+                w = SessionWriter(dest, 'vox', store.get('vox'), store)
+                w.add(3, marker + make_record(4, ts) + marker)
+                w.fsync()
+                w.finish(final=True)
+                files = sorted(dest.glob('*.opus'))
+                self.assertEqual(len(files), 2)
+                self.assertEqual(StateStore(dest).get('vox').downloaded_through, 6)
+                for file in files:
+                    pages = list(iter_pages(file.read_bytes()))
+                    self.assertTrue(all(page.crc_ok for page in pages))
+                    self.assertTrue(pages[-1].header_type & 4)
+                    self.assertEqual(json.loads(file.with_suffix('.json').read_text())['frames'], 5)
+                sessions = P.split_sessions(P.iter_records(0, marker + make_record(1, ts) + marker + make_record(3, ts)))
+                self.assertEqual(len(sessions), 2)
+                self.assertEqual([s.start_seq for s in sessions], [1, 3])
+
     def _ring(self):
         ring = FakeRing()
         ring.record_session(1_700_000_000, 50)   # session A

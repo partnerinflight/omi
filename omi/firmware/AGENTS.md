@@ -30,3 +30,8 @@ that persistent ABI when changing SDK dependencies.
 Battery reports must stay fresh without a BLE connection. `battery-status`
 exposes voltage and sample age; the charging GPIO alone does not prove current
 flow. Native tests execute the battery work handler and fractional gauge filter.
+
+VOX recording boundaries must drain PCM and packed frames before SD sleep.
+Zero-length codec callbacks are ordered end markers, never Opus encode errors.
+Native VOX tests and receiver tests cover the 30-second timer, marker ordering,
+resume across upload sessions, and closing audio durably before acknowledging.

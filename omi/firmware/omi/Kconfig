@@ -91,8 +91,8 @@ config OMI_VAD_HOLD_MS
     depends on OMI_ENABLE_T5838_AAD
     help
         "Amount of continuous below-threshold silence before entering T5838
-         hardware AAD sleep. This does not gate or drop streamed audio while
-         the mic is active."
+         hardware AAD sleep and emitting an explicit recording-end marker.
+         Trailing silence stays in the recording; sound restarts recording."
 
 config OMI_AAD_SETTLE_MS
     int "T5838 AAD settle time before arming WAKE (ms)"

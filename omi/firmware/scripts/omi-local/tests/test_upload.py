@@ -170,6 +170,10 @@ class ServerTests(unittest.TestCase):
             await server.close()
 
     def test_full_upload_persists_files_and_device_deletes_only_acked(self):
+        # Explicit recorder boundary, independent of the upload's DONE frame.
+        self.ring.records[300] = struct.pack('>I', 1_700_000_030) + P.RECORD_END_MAGIC + bytes(
+            P.AUDIO_PAYLOAD_BYTES - len(P.RECORD_END_MAGIC))
+        self.ring.write_seq = 301
         up = FakeUploader(self.ring, self.secret)
 
         async def go(server):
@@ -178,8 +182,8 @@ class ServerTests(unittest.TestCase):
 
         server = run(self._with_server(go))
         self.assertEqual(up.result, "ok")
-        self.assertEqual(up.uploaded, 300)
-        self.assertEqual(self.ring.read_seq, 300)  # delete-after-verified-upload
+        self.assertEqual(up.uploaded, 301)
+        self.assertEqual(self.ring.read_seq, 301)  # delete-after-verified-upload
         self.assertEqual(server.sessions_ok, 1)
         files = list(self.dest.glob("*.opus"))
         self.assertEqual(len(files), 1)
@@ -190,7 +194,24 @@ class ServerTests(unittest.TestCase):
         meta = json.loads(files[0].with_suffix(".json").read_text())
         self.assertEqual((meta["start_seq"], meta["end_seq"], meta["complete"]), (0, 300, True))
         st = StateStore(self.dest).get("11-22-33-44-55-66")
-        self.assertEqual(st.downloaded_through, 300)
+        self.assertEqual(st.downloaded_through, 301)
+        self.assertIsNone(st.open_file)
+
+    def test_completed_upload_does_not_split_a_recording(self):
+        async def upload(server):
+            up = FakeUploader(self.ring, self.secret)
+            await up.run('127.0.0.1', server.bound_port)
+            self.assertEqual(up.result, 'ok')
+        run(self._with_server(upload))
+        self.assertIsNotNone(StateStore(self.dest).get('11-22-33-44-55-66').open_file)
+        self.ring.record_session(1_700_000_030, 10)
+        run(self._with_server(upload))
+        files = list(self.dest.glob('*.opus'))
+        self.assertEqual(len(files), 1)
+        pages = list(iter_pages(files[0].read_bytes()))
+        self.assertTrue(all(p.crc_ok for p in pages))
+        self.assertEqual(sum(len(p.packets) for p in pages[2:]), 310 * 5)
+        self.assertFalse(pages[-1].header_type & 4)
 
     def test_wrong_secret_is_rejected_before_any_audio(self):
         up = FakeUploader(self.ring, secrets.token_bytes(32))

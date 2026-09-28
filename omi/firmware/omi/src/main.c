@@ -66,8 +66,10 @@ static void print_reset_reason(void)
     }
 }
 
-static void codec_handler(uint8_t *data, size_t len)
+static int codec_handler(uint8_t *data, size_t len)
 {
+    if (!len)
+        return transport_end_recording();
 #ifdef CONFIG_OMI_ENABLE_MONITOR
     monitor_inc_broadcast_audio();
 #endif
@@ -77,6 +79,7 @@ static void codec_handler(uint8_t *data, size_t len)
         monitor_inc_broadcast_audio_failed();
 #endif
     }
+    return err;
 }
 
 static void mic_handler(int16_t *buffer)

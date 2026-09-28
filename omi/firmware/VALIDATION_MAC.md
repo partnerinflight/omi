@@ -215,3 +215,45 @@ A clean configure of the untouched recovered branch placed NVS at `0xf8000`
 (size `0x2000`). New dependencies initially reordered dynamic partitions.
 Both persistent partitions are now pinned in the board static layout, and
 compiler assertions plus a negative compile test prevent accidental NVS drift.
+
+## VOX recording boundaries — 2026-09-28
+
+The user selected 30 seconds of continuous silence. Firmware
+`3.0.22-localwifi.9` drains PCM/Opus/packed records before writing an explicit
+recording-end marker and entering acoustic sleep. Receiver boundaries are now
+independent of upload boundaries, including across process restart and an
+unknown RTC. Boundary-closed audio is flushed before its chunk is acknowledged.
+The wire format and timing behavior are documented in `PROVISIONING.md`.
+
+Validation: `python -m unittest discover -s tests -t .` in `scripts/omi-local`
+passes 64 tests. New native tests execute the production 30-second timer,
+codec drain/padding/error path and frame-packer marker/retry path. Receiver tests
+cover markers alone, identical or missing timestamps, separate files after
+restart, and continuity across successful upload sessions. The existing full
+upload test now includes a recorder marker to request EOS; the documented wire
+contract, rather than upload DONE, owns recording closure.
+
+Both clean NCS 2.9 builds pass using the build command above (omit `--wifi` for
+BLE-only). Wi-Fi application: 871736 flash / 428784 RAM bytes. BLE-only:
+247816 flash / 335472 RAM bytes. The installed application digest is
+`1b92c9041629620b6b83ea73c1c4cd2eaa6cc50687d1b4b978b64c7aecee4eca`;
+OTA ZIP SHA-256:
+`046ccfd4d1ef516fd30a6f650a6430fde598567b0129a85c91e14a4536360ae5`.
+The app signature and staged image digest were verified before reboot; BLE
+readback reports `.9`. Settings and queued recordings are preserved.
+
+Before the update, the Windows backlog upload completed successfully: 132934
+packets acknowledged, one successful session, last result OK/errno 0. The updated
+receiver must be pulled/restarted to recognize VOX boundaries. Real acoustic
+wake sensitivity and first-syllable capture have not been calibrated; hardware
+wake has no pre-roll. Previous recordings are not retrospectively re-segmented.
+
+Live silence check: `.9` recording sequence stopped at 140334 and remained
+unchanged over repeated 5-second polls through 61 seconds, with zero dropped
+records. A non-destructive BLE pull found the recording-end marker at sequence
+140333. The receiver parser consumed it and closed the captured file with EOS.
+All three captured files (including pre-update buffered audio) decode through
+ffmpeg without errors. Controlled sound-to-wake/new-recording testing remains
+pending physical test conditions; automated tests cover the split independently
+of timestamps. Evidence is retained locally in `.inspection/vox-hardware.log`
+and `.inspection/vox-audio/`.

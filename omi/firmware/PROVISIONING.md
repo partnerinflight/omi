@@ -139,3 +139,34 @@ SHA256, adds a zero-initialized terminating entry, and supplies mDNS addresses
 alongside the DHCP DNS servers. The installed SDK is never edited. An SDK update
 must review this patch; a source mismatch fails the build. Native sanitizer
 regressions cover full one- and two-server lists with the multicast slot enabled.
+
+## Sound-activated recordings (VOX)
+
+Firmware `3.0.22-localwifi.9` ends a recording after **30 continuous seconds**
+below its sound threshold. Sound during the countdown resets it. The trailing
+30 seconds remain in the recording so ordinary pauses do not cut a conversation.
+The microphone then uses its existing T5838 acoustic wake mode; sound wakes it
+and recording resumes. The Windows receiver creates a new UTC-timestamped
+`.opus` file (plus JSON metadata) for that recording. Files are assembled on the
+receiver; Omi stores sequence-numbered records on its SD card.
+
+The firmware pauses the PCM producer, drains the codec and frame packer, writes
+an explicit end marker, then permits microphone/SD sleep. The marker is a normal
+444-byte record: a big-endian UTC timestamp followed by the eight payload bytes
+`00 4f 4d 49 45 4e 44 01` and 432 zero bytes. It contains no audio. The receiver
+closes and flushes the file before acknowledging the marker, without creating an
+empty file. Sequence numbering and upload resume include the marker. Markers
+work even without a valid clock; unknown-time filenames still contain a unique
+sequence number. Upload completion itself does not end a recording.
+
+Update/restart the receiver when installing this firmware. Earlier receivers
+ignore marker payloads as padding and do not implement the explicit split.
+Existing stored audio retains the previous timestamp-gap splitting behavior;
+this change does not retrospectively detect silence inside old recordings.
+
+`CONFIG_OMI_VAD_HOLD_MS=30000` sets the silence interval and
+`CONFIG_OMI_VAD_ABS_THRESHOLD=250` sets the PCM threshold. The hardware wake
+threshold is separately defined in `t5838_aad.c`; room noise and distance affect
+what counts as sound. Hardware acoustic wake has startup latency and no pre-roll.
+BLE bulk downloads defer microphone sleep until the download ends; Wi-Fi
+uploads can continue while the microphone sleeps.

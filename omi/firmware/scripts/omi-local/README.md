@@ -147,3 +147,12 @@ The read-only battery diagnostic characteristic is
 `u8 percent`, `u8 charging`, `u32 sample_age_ms`, `i32 sample_error`.
 Upload status retains its original 28-byte prefix and appends `u8 dhcp_state`,
 `u8 attempts`, two reserved bytes, then four IPv4 bytes in network order.
+
+## Sound-activated files
+
+With firmware `3.0.22-localwifi.9`, 30 seconds of continuous silence ends a
+recording. Sound resumes recording into a new timestamped file on the receiver.
+Update and restart `serve` to recognize the firmware's recording-end markers.
+An upload ending leaves an unfinished recording resumable; only its marker or
+a timestamp/sequence boundary closes it. Existing recordings are not re-split.
+See [VOX behavior](../../PROVISIONING.md#sound-activated-recordings-vox).

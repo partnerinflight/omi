@@ -1,7 +1,10 @@
 #include "codec.h"
 
+#include <errno.h>
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 
 #include "config.h"
@@ -30,6 +33,17 @@ void set_codec_callback(codec_callback callback)
 uint8_t codec_ring_buffer_data[AUDIO_BUFFER_SAMPLES * 2]; // 2 bytes per sample
 struct ring_buf codec_ring_buf;
 K_SEM_DEFINE(codec_data_sem, 0, NETWORK_RING_BUF_SIZE);
+static K_SEM_DEFINE(codec_end_done, 0, 1);
+static atomic_t codec_end_requested;
+static int codec_end_result;
+
+int codec_end_recording(void)
+{
+    atomic_set(&codec_end_requested, 1);
+    k_sem_give(&codec_data_sem);
+    k_sem_take(&codec_end_done, K_FOREVER);
+    return codec_end_result;
+}
 int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic data is finished
 {
 
@@ -81,9 +95,26 @@ void codec_entry()
             output_size = execute_codec();
 
             // Notify
-            if (_callback) {
+            if (_callback && output_size) {
                 _callback(codec_output_bytes, output_size);
             }
+        }
+        if (atomic_cas(&codec_end_requested, 1, 0)) {
+            /* Pad only the final incomplete frame; no PCM crosses a silence. */
+            size_t remaining = ring_buf_size_get(&codec_ring_buf);
+            if (remaining) {
+                memset(codec_input_samples, 0, sizeof(codec_input_samples));
+                ring_buf_get(&codec_ring_buf, (uint8_t *) codec_input_samples, remaining);
+                output_size = execute_codec();
+                if (_callback && output_size)
+                    _callback(codec_output_bytes, output_size);
+            }
+            codec_end_result = _callback ? _callback(codec_output_bytes, 0) : -ENODEV;
+#if CODEC_OPUS
+            if (!codec_end_result)
+                opus_encoder_ctl(m_opus_state, OPUS_RESET_STATE);
+#endif
+            k_sem_give(&codec_end_done);
         }
     }
 }

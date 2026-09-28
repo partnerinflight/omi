@@ -931,6 +931,8 @@ static uint8_t tx_buffer_2[CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE];
 static uint32_t tx_buffer_size = 0;
 static struct ring_buf ring_buf;
 K_SEM_DEFINE(tx_queue_sem, 0, NETWORK_RING_BUF_SIZE);
+static K_SEM_DEFINE(recording_end_done, 0, 1);
+static int recording_end_result;
 
 static bool write_to_tx_queue(uint8_t *data, size_t size)
 {
@@ -1010,6 +1012,10 @@ static void emit_storage_record(const uint8_t *record, size_t size)
 {
     write_to_file((uint8_t *) record, size);
 }
+static bool emit_recording_end(const uint8_t *record, size_t size)
+{
+    return write_to_file((uint8_t *) record, size) == size;
+}
 
 bool write_to_storage(void)
 {
@@ -1039,6 +1045,19 @@ void pusher(void)
         }
 
         while (read_from_tx_queue()) {
+            if (!tx_buffer_size) {
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                recording_end_result =
+                    is_sd_on() && record_packer_end(
+                                      storage_temp_data, sizeof(storage_temp_data), &buffer_offset, emit_recording_end)
+                        ? 0
+                        : -EIO;
+#else
+                recording_end_result = -ENOTSUP;
+#endif
+                k_sem_give(&recording_end_done);
+                continue;
+            }
             if (is_sd_on()) {
                 storage_unavailable_warned = false;
                 write_to_storage();
@@ -1248,8 +1267,23 @@ struct bt_conn *get_current_connection()
 
 int broadcast_audio_packets(uint8_t *buffer, size_t size)
 {
+    if (!size)
+        return -EINVAL;
     if (!write_to_tx_queue(buffer, size)) {
         return -1;
     }
     return 0;
+}
+
+int transport_end_recording(void)
+{
+    uint8_t unused = 0;
+    int64_t deadline = k_uptime_get() + 1000;
+    while (!write_to_tx_queue(&unused, 0)) {
+        if (k_uptime_get() >= deadline)
+            return -ENOBUFS;
+        k_sleep(K_MSEC(5));
+    }
+    k_sem_take(&recording_end_done, K_FOREVER);
+    return recording_end_result;
 }

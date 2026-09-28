@@ -12,6 +12,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
+#include "lib/core/codec.h"
 #include "lib/core/settings.h"
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -274,10 +275,10 @@ void set_mic_callback(mix_handler callback)
     callback_func = callback;
 }
 
-void mic_pause()
+int mic_pause(void)
 {
     if (!mic_running) {
-        return;
+        return 0;
     }
     LOG_INF("Pausing microphone");
 
@@ -290,7 +291,9 @@ void mic_pause()
         atomic_clear(&mic_stop_req);
         (void) dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
         mic_running = false;
+        return -ETIMEDOUT;
     }
+    return 0;
 }
 
 void mic_resume()
@@ -363,8 +366,18 @@ static void aad_wake_isr(const struct device *dev, struct gpio_callback *cb, uin
 /* Drop the mic into T5838 hardware AAD sleep (aad thread context). */
 static void enter_hw_aad(void)
 {
-    aad_wake_irq(false); /* mask WAKE during config bit-bang */
-    mic_pause();         /* stop PDM peripheral */
+    aad_wake_irq(false);   /* mask WAKE during config bit-bang */
+    int ret = mic_pause(); /* stop PDM producer before draining its queues */
+    /* The stopped PCM producer lets codec/pusher drain in order. Complete the
+     * last record and enqueue a boundary before SD can lose power. */
+    if (!ret)
+        ret = codec_end_recording();
+    if (ret) {
+        LOG_ERR("Could not end recording (%d); keeping mic active", ret);
+        atomic_set(&aad_woke, 1);
+        mic_resume();
+        return;
+    }
     k_msleep(AAD_PDM_SETTLE_MS);
     pdm_hw_disable();                   /* fully release the CLK pin for bit-banging */
     t5838_aad_enter();                  /* program AAD mode-A + clock into sleep */
