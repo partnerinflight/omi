@@ -72,11 +72,25 @@ re-encoded after enabling/changing models.
 
 A future occurrence needs at least two usable clips whose embeddings all favor
 the same confirmed person. Every clip must exceed `speaker_match_threshold`
-(default cosine similarity 0.80) and beat the next person by
-`speaker_match_margin` (default 0.10). These are conservative starting values,
-not calibrated probabilities. Unknown, short, ambiguous and conflicting evidence
-stays unidentified. Voice recognition is an estimate and can be corrected in the
-UI; Omi microphone/noise conditions need real-world threshold validation.
+(default cosine similarity 0.50) and beat the next person by
+`speaker_match_margin` (default 0.05). Unknown, short, ambiguous and conflicting
+evidence stays unidentified. Voice recognition is an estimate and can be
+corrected in the UI.
+
+The defaults come from calibration on real Omi recordings (2026-09-29, 10
+confirmed rows across 3 people): samples of the same person scored median 0.46
+and never above 0.66, different people median 0.07 and at most 0.52, so the
+original 0.80 could never match. Replaying each confirmed row as unknown, 0.50 /
+0.05 named 5 of 10 correctly and none wrongly. That is a small sample: re-check
+as you confirm more people by running, as an administrator,
+
+```powershell
+& 'C:\Program Files\SecondBrain\python\Scripts\python.exe' -I scripts\speaker_calibration.py
+```
+
+It opens the speaker database read-only and prints anonymised scores (P1, P2, …)
+and a correct/wrong/unmatched table per setting; override the defaults in
+`service.json` if your data favours different values.
 
 Named future Obsidian notes include stable person IDs and whether each identity
 was confirmed or voice-matched. Already published notes are preserved, including

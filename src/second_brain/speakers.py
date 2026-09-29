@@ -29,7 +29,7 @@ def unit(value):
     return [x / norm for x in numbers]
 
 
-def match(vectors, model, references, threshold=0.80, margin=0.10):
+def match(vectors, model, references, threshold=0.50, margin=0.05):
     """Every query clip must agree; only manually confirmed references may enter."""
     if len(vectors) < 2 or not model:
         return None, None
@@ -66,7 +66,7 @@ class Speakers:
         finally:
             db.close()
 
-    def __init__(self, data_dir: Path, review_dir: Path, threshold=0.80, margin=0.10):
+    def __init__(self, data_dir: Path, review_dir: Path, threshold=0.50, margin=0.05):
         self.path = data_dir / "speakers.sqlite3"
         self.review = review_dir
         self.threshold, self.margin = threshold, margin

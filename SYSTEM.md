@@ -197,7 +197,8 @@ Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brai
   Only clean, nonoverlapping, precisely timed turns ≥2 seconds enroll; approximate
   VibeVoice turns remain playable/nameable but cannot become voice references.
 - Only human-confirmed references train profiles. Matching requires at least two
-  usable agreeing clips, cosine ≥0.80 and runner-up margin ≥0.10 by default.
+  usable agreeing clips, cosine ≥0.50 and runner-up margin ≥0.05 by default
+  (calibrated on Omi audio 2026-09-29; `scripts/speaker_calibration.py` re-checks).
   Thresholds live in **service config**. Model fingerprints prevent incompatible
   embeddings mixing. Ambiguous voices remain unknown; matching is not certainty.
 - SQLite identities survive restarts. Configure the encoder before processing;

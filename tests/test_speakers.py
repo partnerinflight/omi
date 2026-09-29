@@ -1,4 +1,5 @@
 import json
+import math
 import hashlib
 import shutil
 import sys
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 import uuid
 import wave
+from second_brain.config import Config
 from second_brain.io import write_json
 from second_brain.speakers import Speakers, match, unit
 from second_brain.speaker_audio import candidates, prepare
@@ -35,6 +37,19 @@ class MatchingTests(unittest.TestCase):
         self.assertTrue(all(s["eligible"] for s in groups[0]["clips"]))
         self.assertFalse(groups[1]["clips"][0]["eligible"])
         self.assertFalse(groups[2]["clips"][0]["eligible"])
+
+    def test_default_rule_accepts_calibrated_omi_level_similarity(self):
+        # scripts/speaker_calibration.py on confirmed Omi rows (2026-09-29): same-person samples
+        # scored median 0.46 / max 0.66, different people median 0.07 / max 0.52.
+        alice, bob = unit([1, 0, 0]), unit([0, 1, 0])
+        refs = [("alice", "m", alice), ("bob", "m", bob)]
+        near = unit([0.55, 0.10, math.sqrt(1 - 0.55**2 - 0.10**2)])
+        self.assertEqual(match([near, near], "m", refs)[0], "alice")
+        self.assertIsNone(match([near], "m", refs)[0], "one sample is still not enough")
+        between = unit([0.56, 0.53, math.sqrt(1 - 0.56**2 - 0.53**2)])
+        self.assertIsNone(match([between, between], "m", refs)[0], "close to two people is still unknown")
+        fields = Config.__dataclass_fields__
+        self.assertEqual((fields["speaker_match_threshold"].default, fields["speaker_match_margin"].default), (0.50, 0.05))
 
     def test_review_skips_short_and_wordless_clips_and_speakers_left_without_any(self):
         segments = [

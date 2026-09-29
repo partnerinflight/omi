@@ -27,8 +27,8 @@ class Config:
     skip_vibe7: bool = False
     no_hermes: bool = False
     ffmpeg_dir: str = ""
-    speaker_match_threshold: float = 0.80
-    speaker_match_margin: float = 0.10
+    speaker_match_threshold: float = 0.50  # calibrated on Omi audio; see scripts/speaker_calibration.py
+    speaker_match_margin: float = 0.05
 
     @property
     def review_dir(self):
