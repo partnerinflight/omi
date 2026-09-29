@@ -152,7 +152,7 @@ public partial class SpeakersPage : UserControl
     void ShowMessage()
     {
         MessageText.Text = session.Message;
-        AssignButton.IsEnabled = ClearButton.IsEnabled = !session.Pending;
+        AssignButton.IsEnabled = ClearButton.IsEnabled = DiscardButton.IsEnabled = !session.Pending;
     }
 
     void SpeakerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -175,6 +175,19 @@ public partial class SpeakersPage : UserControl
         if (Selected is { } speaker) session.Send("clear", speaker.Id, null, "");
     }
 
+    void Discard_Click(object sender, RoutedEventArgs e)
+    {
+        if (Selected is not { } speaker) return;
+        var answer = MessageBox.Show(Window.GetWindow(this)!,
+            $"Discard {speaker.Title} ({speaker.Recorded})? Its clips are deleted and it won't be used for voice matching. Published notes are not changed.",
+            "Discard speaker", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (answer == MessageBoxResult.Yes)
+        {
+            player.Stop();  // the clip files are about to be deleted
+            session.Send("discard", speaker.Id, null, "");
+        }
+    }
+
     void Assign()
     {
         if (Selected is not { } speaker) return;
@@ -184,10 +197,10 @@ public partial class SpeakersPage : UserControl
         session.Send("assign", speaker.Id, person, name);
     }
 
-    // Quick naming: after an acknowledged assignment in the Unidentified view, open the next unnamed speaker.
+    // Quick naming: after an acknowledged assign or discard in the Unidentified view, open the next unnamed speaker.
     void OnApplied(string action, string? observation)
     {
-        if (action != "assign" || UnidentifiedOnly.IsChecked != true || session.Catalog is not { } catalog) return;
+        if (action is not ("assign" or "discard") || UnidentifiedOnly.IsChecked != true || session.Catalog is not { } catalog) return;
         if (catalog.NextUnidentified(observation, SearchBox.Text) is not { } next) return;
         SelectById(next.Id);
         NameBox.Text = "";

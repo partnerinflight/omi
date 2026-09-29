@@ -137,6 +137,28 @@ class SpeakerStoreTests(unittest.TestCase):
         row = next((r for r in self.catalog()["speakers"] if r["job"] == job_id), None)
         return row, manifest
 
+    def test_discard_removes_row_clips_and_voice_reference_for_good(self):
+        reference, manifest = self.ingest("a")
+        other, _ = self.ingest("b")
+        self.assertTrue(self.command("assign", observation=reference["id"], name="Eugene")["ok"])
+        self.store.catalog()
+        self.assertEqual({r["job"]: r["state"] for r in self.catalog()["speakers"]}["b"], "matched", "b matched via a's voice")
+        files = [self.root / "review/clips" / c["file"] for c in reference["clips"]]
+        self.assertTrue(all(f.exists() for f in files))
+
+        self.assertTrue(self.command("discard", observation=reference["id"])["ok"])
+        self.store.catalog()
+        rows = {r["job"]: r for r in self.catalog()["speakers"]}
+        self.assertNotIn("a", rows, "discarded row leaves review")
+        self.assertFalse(any(f.exists() for f in files), "its clip audio is deleted")
+        self.assertEqual(rows["b"]["state"], "unidentified", "a discarded row no longer serves as a voice reference")
+        self.assertEqual(self.store.summary()["unidentified"], 1)
+
+        self.store.ingest(dict(id="a", metadata="{}"), manifest)  # crash-recovery replay of the same job
+        self.store.catalog()
+        self.assertNotIn("a", {r["job"] for r in self.catalog()["speakers"]}, "replay does not bring it back")
+        self.assertFalse(self.command("discard", observation="missing")["ok"])
+
     def test_review_hides_useless_rows_but_keeps_named_ones_and_counts_agree(self):
         wordless, _ = self.ingest("a", text="...")
         # A different voice, so naming row "a" below does not auto-match it.

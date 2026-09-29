@@ -18,7 +18,11 @@ be named from the keyboard. Existing people are offered so references from
 multiple recordings accumulate under one stable identity.
 
 **Clear assignment** makes the selected row explicitly unidentified and removes
-its contribution to voice matching. The **People** page lists everyone saved with
+its contribution to voice matching. **Discard speaker…** (after a confirmation)
+is for speakers too garbled to identify: the row leaves review for good, its clip
+audio is deleted, and it is never used for voice matching, as a reference or as a
+candidate. Published notes are not changed. In the Unidentified view the next
+unnamed speaker opens, as after naming. The **People** page lists everyone saved with
 confirmed and voice-matched counts: **Rename** updates a person's name
 throughout the review catalog, **Forget person** removes their profile and all
 assignments, and **Open** jumps to one of their speaker rows. Other automatic

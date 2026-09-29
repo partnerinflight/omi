@@ -71,7 +71,11 @@
             </DockPanel>
             <DockPanel x:Name="DetailPanel" Grid.Column="2" Visibility="Hidden">
                 <StackPanel DockPanel.Dock="Top">
-                    <TextBlock x:Name="SpeakerTitle" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <DockPanel>
+                        <Button x:Name="DiscardButton" DockPanel.Dock="Right" Content="Discard speaker…" VerticalAlignment="Center" Click="Discard_Click"
+                                ToolTip="Too garbled to identify: remove this speaker and its clips from review and voice matching" />
+                        <TextBlock x:Name="SpeakerTitle" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
                         <Border Style="{StaticResource Chip}">
                             <TextBlock x:Name="StateText" FontSize="12" />

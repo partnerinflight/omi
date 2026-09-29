@@ -166,6 +166,7 @@ class Speakers:
             if saved:
                 return json.loads(saved["response"])
             db.execute("SAVEPOINT change")
+            discarded = []
             try:
                 action = request["action"]
                 if action in ("assign", "clear"):
@@ -191,6 +192,18 @@ class Speakers:
                         "UPDATE people SET name=?,folded=? WHERE id=?", (name, name.casefold(), request["person"])
                     ).rowcount:
                         raise ValueError("Person no longer exists")
+                elif action == "discard":
+                    # Too garbled to identify: drop clips and voice data but keep the row, so a
+                    # crash-recovery replay of the job (which skips existing rows) cannot recreate it.
+                    row = db.execute("SELECT clips FROM observations WHERE id=?", (request["observation"],)).fetchone()
+                    if not row:
+                        raise ValueError("Speaker no longer exists; refresh the list")
+                    discarded = [c["file"] for c in json.loads(row["clips"])]
+                    db.execute(
+                        "UPDATE observations SET clips='[]',vectors='[]',person=NULL,manual=1,score=NULL,"
+                        "embedding_status='discarded' WHERE id=?",
+                        (request["observation"],),
+                    )
                 elif action == "forget":
                     db.execute(
                         "UPDATE observations SET person=NULL,manual=1,score=NULL WHERE person=?", (request["person"],)
@@ -209,7 +222,12 @@ class Speakers:
                 }
             db.execute("RELEASE change")
             db.execute("INSERT INTO commands VALUES(?,?)", (key, json.dumps(response)))
-            return response
+        # Delete discarded audio only after the change is committed.
+        if response["ok"]:
+            for name in discarded:
+                if Path(name).name == name:
+                    (self.review / "clips" / name).unlink(missing_ok=True)
+        return response
 
     def tick(self):
         for path in sorted((self.review / "requests").glob("*.json"))[:50]:
