@@ -10,6 +10,7 @@ public partial class MainWindow : Window
     readonly OverviewPage overview = new();
     readonly ActivityPage activity = new();
     readonly SpeakersPage speakers;
+    readonly PeoplePage people;
     readonly Dictionary<string, FrameworkElement> pages;
     bool exiting;
 
@@ -17,7 +18,13 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         speakers = new SpeakersPage(session);
-        pages = new() { ["Overview"] = overview, ["Speakers"] = speakers, ["Activity"] = activity };
+        people = new PeoplePage(session);
+        pages = new() { ["Overview"] = overview, ["Speakers"] = speakers, ["People"] = people, ["Activity"] = activity };
+        people.OpenSpeakerRequested += id =>
+        {
+            Navigate("Speakers");
+            speakers.Select(id);
+        };
         overview.ReviewSpeakersRequested += () => Navigate("Speakers");
         // Poll the speaker catalog only while the window is visible.
         IsVisibleChanged += (_, _) =>

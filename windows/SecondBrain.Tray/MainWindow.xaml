@@ -36,6 +36,12 @@
                         </StackPanel>
                     </DockPanel>
                 </ListBoxItem>
+                <ListBoxItem Tag="People">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Glyph}" Text="&#xE716;" Margin="0,0,12,0" />
+                        <TextBlock Text="People" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ListBoxItem>
                 <ListBoxItem Tag="Activity">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource Glyph}" Text="&#xE81C;" Margin="0,0,12,0" />
