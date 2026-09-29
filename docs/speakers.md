@@ -1,22 +1,30 @@
 # Speaker review and voice memory
 
-Right-click the tray icon and choose **Speakers — listen and name**. Each row is
-a speaker within one recording/chunk, initially **Speaker 1**, **Speaker 2**, etc.
-The same number in another recording does not imply the same person.
+Click the tray icon to open Second Brain and choose **Speakers** (or use **Review
+speakers** in the tray menu or on the Overview page). Speakers are grouped by
+recording. Each row is a speaker within one recording/chunk, initially
+**Speaker 1**, **Speaker 2**, etc. The same number in another recording does not
+imply the same person. The list shows **Unidentified** speakers by default;
+choose **All** to review or correct existing names. **Ctrl+F** searches by name
+or recording date.
 
-Select a row, choose one of up to five clips, and click **Play clip** (or
-double-click the clip). Clips are at most 12 seconds; long turns can provide
-several clips. The accompanying text is the turn transcript, which may extend
-beyond that particular clip. Choose an existing person or type a name and click
-**Assign name**. Existing people are offered so references from multiple
-recordings accumulate under one stable identity.
+Select a speaker and play one of up to five clips with its play button or
+**Space**; a progress bar shows playback and Space stops it again. Clips are at
+most 12 seconds; long turns can provide several clips. The text under a clip is
+the turn transcript, which may extend beyond that clip. Type a name or choose an
+existing person under **Who is this?** and press **Enter** (or **Assign**). In the
+Unidentified view the next unnamed speaker opens automatically, so a backlog can
+be named from the keyboard. Existing people are offered so references from
+multiple recordings accumulate under one stable identity.
 
-**Rename person** updates that person's name throughout the review catalog.
 **Clear assignment** makes the selected row explicitly unidentified and removes
-its contribution to voice matching. **Forget person** removes their profile and
-all assignments. Other automatic assignments are recalculated when confirmed
-references change. Automatically matched clips never enroll themselves; only
-human confirmations contribute reference voices.
+its contribution to voice matching. The **People** page lists everyone saved with
+confirmed and voice-matched counts: **Rename** updates a person's name
+throughout the review catalog, **Forget person** removes their profile and all
+assignments, and **Open** jumps to one of their speaker rows. Other automatic
+assignments are recalculated when confirmed references change. Automatically
+matched clips never enroll themselves; only human confirmations contribute
+reference voices.
 
 Names appear immediately in review after the service acknowledges the change.
 Changes made while the service is offline remain queued. Request IDs are durable

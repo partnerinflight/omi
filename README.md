@@ -14,13 +14,15 @@ Omi CV1 → authenticated Wi-Fi upload :7331 → durable .opus recordings
 **SecondBrain** is a native Windows service with automatic delayed startup and
 crash recovery. It supervises a Python worker and model subprocesses in a Windows
 Job Object. It runs in Session 0 under a virtual service account, without login.
-The separate **SecondBrain.Tray** app starts at user login. Hover shows current
-work, receiver activity, queue counts and recent results; double-click pins the
-status card. Exiting the tray leaves the service running. A stale heartbeat is
-shown as unavailable rather than falsely reporting idle.
+The separate **SecondBrain.Tray** app starts at user login. Hovering the icon
+shows a compact status card; clicking it opens the Second Brain window with
+**Overview** (health, receiver, queue, current stage, recent results),
+**Speakers**, **People** and **Activity** pages. It follows the Windows light/dark
+theme. Closing the window or exiting the tray leaves the service running. A stale
+heartbeat is shown as stopped rather than falsely reporting idle.
 
-The tray also has **Speakers — listen and name**: play several snippets, replace
-anonymous labels with names, and build local voice profiles for future recordings.
+The **Speakers** page lets you play snippets, replace anonymous labels with names,
+and build local voice profiles for future recordings.
 See [speaker review and setup](docs/speakers.md) for model setup and correction controls.
 
 ## Repository

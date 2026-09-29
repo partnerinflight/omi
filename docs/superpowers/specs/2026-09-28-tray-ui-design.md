@@ -1,6 +1,6 @@
 # Tray app UI redesign
 
-Date: 2026-09-28 · Status: approved design, pending spec review
+Date: 2026-09-28 · Status: implemented
 
 ## Goal
 
