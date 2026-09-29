@@ -1,0 +1,25 @@
+{
+  "moss": {
+    "url": "https://github.com/localai-org/moss-transcribe.cpp.git",
+    "revision": "190a569c13b4b247450f2fb3b2a431244e84833e"
+  },
+  "vibe": {
+    "url": "https://github.com/microsoft/VibeVoice.git",
+    "revision": "1541f590c7099820f10ea012f48d2399282df69f"
+  },
+  "moss_model": {
+    "repo": "mudler/moss-transcribe.cpp-gguf",
+    "revision": "54e4bbd17da3f84adf1c1bcf7791b9b9266f741e",
+    "patterns": ["moss-transcribe-q5_k.gguf", "README.md"]
+  },
+  "vibe_model": {
+    "repo": "microsoft/VibeVoice-ASR-Streaming-7B",
+    "revision": "60d858b518b4e19d404af3737f848fc185b30177",
+    "patterns": ["*.json", "*.txt", "*.safetensors", "README.md"]
+  },
+  "speaker_model": {
+    "repo": "speechbrain/spkrec-ecapa-voxceleb",
+    "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+    "patterns": ["hyperparams.yaml", "*.ckpt", "label_encoder.txt", "README.md"]
+  }
+}

@@ -49,3 +49,16 @@ pass locally on macOS. Pipeline tests now also run in Windows CI, alongside
 its existing service smoke test; local success does not establish Windows SCM
 success. The earlier Windows CI run at bf996910a failed starting the smoke
 service, separately from the reported lock-test failure.
+
+Single-checkout setup audit (2026-09-29): original ZIP SHA-256 verified; all
+original pipeline/runner/policy-test definitions remain present and the original
+README is byte-identical. All 100 component tests pass. New PowerShell boundary
+tests pass on macOS with real temporary Git repositories: repeat setup, dirty
+source protection, config preservation/backup, and native command failure.
+PowerShell parser checks pass. A clean venv outside the checkout installs only
+the main wheel, resolves omi-local from the bundle and declared dependencies,
+passes pip check, and runs synthetic audio through installed segmentation,
+fixture ASR, memory gate, and review-clip creation. This is packaging validation,
+not a real-model test. Engine source/model revisions are pinned; source/model
+metadata was verified against upstream. Full multi-GB VibeVoice download and
+fresh Windows engine/service setup still require Windows execution evidence.

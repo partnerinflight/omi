@@ -31,8 +31,14 @@ jobs:
         run: |
           $env:PYTHONPATH = "${{ github.workspace }}\src;${{ github.workspace }}\omi\firmware\scripts\omi-local"
           python -m unittest discover -s tests -t .
+      - name: Setup script boundary tests
+        run: ./windows/test-setup.ps1
       - name: Build service, tray, and Python packages
         run: ./windows/build.ps1
+      - name: Installed packages outside the source checkout
+        run: python scripts/test-installed.py dist/windows/python
+      - name: Build pinned MOSS runtime on Windows
+        run: ./windows/build-moss.ps1 -EngineRoot "$env:RUNNER_TEMP/second-brain-engines"
       - name: Real SCM service smoke test (synthetic ASR fixture)
         run: ./windows/smoke-test.ps1
       - uses: actions/upload-artifact@v4

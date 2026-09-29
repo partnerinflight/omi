@@ -1,79 +1,52 @@
-param([string]$Config = ".\config.json")
-$ErrorActionPreference = "Stop"
-
-if (-not (Test-Path $Config)) {
-    throw "Missing $Config. Run: Copy-Item config.example.json config.json"
-}
-
+param(
+    [Parameter(Mandatory=$true)][string]$Config,
+    [string]$Python = 'python',
+    [string]$EngineRoot = 'C:\second-brain-asr-engines',
+    [string]$MossBinaryDir = '',
+    [switch]$SkipVibe7
+)
+. "$PSScriptRoot/setup-common.ps1"
+if (-not (Test-Path $Config)) { throw 'Copy config/pipeline.example.json to a private config first.' }
+if (-not [IO.Path]::IsPathRooted($EngineRoot)) { throw 'EngineRoot must be an absolute machine-local path.' }
 $cfg = Get-Content $Config -Raw | ConvertFrom-Json
+$lock = Get-EngineLock
+$lockPath = Join-Path $PSScriptRoot 'config/engines.lock.json'
+if (-not (Test-Path $lockPath)) { $lockPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config/engines.lock.json' }
+New-Item -ItemType Directory -Force $EngineRoot | Out-Null
+$setupEnv = Join-Path $EngineRoot 'setup-python'
+Invoke-Checked $Python @('-m', 'venv', $setupEnv)
+$setupPython = Join-Path $setupEnv 'Scripts/python.exe'
+Invoke-Checked $setupPython @('-m', 'pip', 'install', 'huggingface-hub==0.34.6')
 
-function Require-Command($name) {
-    if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-        throw "Required command '$name' was not found on PATH."
-    }
-}
-
-Require-Command python
-Require-Command git
-Require-Command ffmpeg
-Require-Command ffprobe
-
-Write-Host "System Python:"
-python --version
-
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing uv..."
-    python -m pip install --user uv
-    $userScripts = python -c "import site, pathlib; print(pathlib.Path(site.USER_BASE) / 'Scripts')"
-    if (Test-Path $userScripts) { $env:Path = "$userScripts;$env:Path" }
-}
-Require-Command uv
-
-Write-Host ""
-Write-Host "=== MOSS C++ ==="
-$source = $cfg.moss_cpp_source_dir
-$dest = $cfg.moss_cpp_engine_dir
-if (-not (Test-Path (Join-Path $source "moss-transcribe.exe"))) {
-    throw "Working MOSS binary not found at $source"
-}
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item (Join-Path $source "*") $dest -Recurse -Force
-$mossExe = Join-Path $dest "moss-transcribe.exe"
-& $mossExe version
-if ($LASTEXITCODE -ne 0) {
-    throw "Copied MOSS runtime failed to start. Exit code: $LASTEXITCODE"
-}
-if (-not (Test-Path $cfg.moss_model)) {
-    throw "MOSS model not found: $($cfg.moss_model)"
-}
-
-Write-Host ""
-Write-Host "=== Microsoft VibeVoice repo ==="
-$vibeRepo = $cfg.vibe_repo
-$vibeParent = Split-Path -Parent $vibeRepo
-New-Item -ItemType Directory -Force -Path $vibeParent | Out-Null
-
-if (-not (Test-Path $vibeRepo)) {
-    git clone https://github.com/microsoft/VibeVoice.git $vibeRepo
+if ($MossBinaryDir) {
+    $MossBinaryDir = (Resolve-Path $MossBinaryDir).Path
+    Invoke-Checked (Join-Path $MossBinaryDir 'moss-transcribe.exe') @('version')
 } else {
-    git -C $vibeRepo pull --ff-only
+    & "$PSScriptRoot/build-moss.ps1" -EngineRoot $EngineRoot
+    $MossBinaryDir = Join-Path $EngineRoot ('sources/moss-' + $lock.moss.revision.Substring(0,12) + '/build/Release')
 }
+$mossModel = Join-Path $EngineRoot ('models/moss-' + $lock.moss_model.revision.Substring(0,12))
+Invoke-Checked $setupPython @("$PSScriptRoot/download-model.py", '--lock', $lockPath, '--model', 'moss_model', '--destination', $mossModel)
+Set-ConfigValue $cfg 'moss_cpp_engine_dir' $MossBinaryDir
+Set-ConfigValue $cfg 'moss_model' (Join-Path $mossModel 'moss-transcribe-q5_k.gguf')
+Invoke-Checked (Join-Path $MossBinaryDir 'moss-transcribe.exe') @('info', $cfg.moss_model)
 
-$vibeVenv = Join-Path $vibeRepo ".venv"
-$vibePython = Join-Path $vibeVenv "Scripts\python.exe"
-if (-not (Test-Path $vibePython)) {
-    uv venv --python 3.12 $vibeVenv
+if (-not $SkipVibe7) {
+    $vibe = Join-Path $EngineRoot ('sources/VibeVoice-' + $lock.vibe.revision.Substring(0,12))
+    Get-PinnedSource $lock.vibe.url $lock.vibe.revision $vibe
+    $venv = Join-Path $vibe '.venv'
+    Invoke-Checked $Python @('-m', 'venv', $venv)
+    $vibePython = Join-Path $venv 'Scripts/python.exe'
+    Invoke-Checked $vibePython @('-m', 'pip', 'install', 'torch==2.8.0', 'torchaudio==2.8.0', '--index-url', 'https://download.pytorch.org/whl/cpu')
+    Invoke-Checked $vibePython @('-m', 'pip', 'install', $vibe, 'transformers==4.51.3', 'huggingface-hub==0.34.6', 'soundfile', 'librosa')
+    Invoke-Checked $vibePython @('-c', 'from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration as M; from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor; assert callable(M.streaming_generate); print("VibeVoice streaming API OK")')
+    $vibeModel = Join-Path $EngineRoot ('models/vibe-' + $lock.vibe_model.revision.Substring(0,12))
+    Invoke-Checked $setupPython @("$PSScriptRoot/download-model.py", '--lock', $lockPath, '--model', 'vibe_model', '--destination', $vibeModel)
+    Set-ConfigValue $cfg 'vibe_repo' $vibe
+    Set-ConfigValue $cfg 'vibe_python' $vibePython
+    Set-ConfigValue $cfg 'vibe_7b_model' $vibeModel
+    Set-ConfigValue $cfg 'vibe_7b_device' 'cpu'
+    Set-ConfigValue $cfg 'vibe_7b_dtype' 'float32'
 }
-
-uv pip install --python $vibePython -e $vibeRepo
-uv pip install --python $vibePython "huggingface-hub>=0.34.0,<1.0" soundfile librosa
-
-& $vibePython -c "import torch; from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration; print('Torch:', torch.__version__); print('CUDA:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE'); print('VibeVoice repo import: OK')"
-if ($LASTEXITCODE -ne 0) {
-    throw "VibeVoice preflight failed."
-}
-
-Write-Host ""
-Write-Host "Setup complete."
-Write-Host "MOSS:      $dest"
-Write-Host "VibeVoice: $vibeRepo"
+Save-PipelineConfig $Config $cfg
+Write-Host 'Engine setup complete. Config backed up and updated. CPU environments selected; see docs/install-windows.md for GPU setup.'
