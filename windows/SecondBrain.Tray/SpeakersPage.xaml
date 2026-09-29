@@ -24,7 +24,8 @@
                 </StackPanel>
                 <Grid>
                     <ListBox x:Name="SpeakerList" SelectionChanged="SpeakerList_SelectionChanged"
-                             VirtualizingPanel.IsVirtualizingWhenGrouping="True" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                             VirtualizingPanel.IsVirtualizingWhenGrouping="True" VirtualizingPanel.ScrollUnit="Pixel"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.GroupStyle>
                             <GroupStyle>
                                 <GroupStyle.ContainerStyle>

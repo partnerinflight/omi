@@ -61,6 +61,7 @@ public partial class SpeakersPage : UserControl
         string typed = NameBox.Text;
         var scroll = FindScrollViewer(SpeakerList);
         double offset = scroll?.VerticalOffset ?? 0;
+        var anchor = scroll is null ? null : VisibleAnchor(scroll);
         bool unidentifiedOnly = UnidentifiedOnly.IsChecked == true;
 
         var rows = catalog.Recordings(unidentifiedOnly, SearchBox.Text)
@@ -87,6 +88,46 @@ public partial class SpeakersPage : UserControl
         {
             SpeakerList.UpdateLayout();
             scroll.ScrollToVerticalOffset(offset);
+            // New recordings arrive at the top; keep the row the user was looking at in place.
+            if (anchor is not null && rows.FirstOrDefault(r => r.Speaker.Id == anchor.Id) is { } row)
+            {
+                SpeakerList.UpdateLayout();
+                SpeakerList.ScrollIntoView(row);
+                SpeakerList.UpdateLayout();
+                if (RowTop(scroll, row) is double top) scroll.ScrollToVerticalOffset(scroll.VerticalOffset + top - anchor.Top);
+            }
+        }
+    }
+
+    sealed record Anchor(string Id, double Top);
+
+    // The selected row if it is on screen, otherwise the topmost visible row.
+    Anchor? VisibleAnchor(ScrollViewer scroll)
+    {
+        var visible = Containers(SpeakerList)
+            .Select(c => (Row: c.DataContext as SpeakerRow, Top: RowTop(scroll, c)))
+            .Where(r => r.Row is not null && r.Top is double t && t >= 0 && t < scroll.ViewportHeight)
+            .OrderBy(r => r.Top).ToList();
+        if (visible.Count == 0) return null;
+        var pick = visible.FirstOrDefault(r => r.Row!.Speaker.Id == Selected?.Id);
+        if (pick.Row is null) pick = visible[0];
+        return new Anchor(pick.Row!.Speaker.Id, pick.Top!.Value);
+    }
+
+    double? RowTop(ScrollViewer scroll, SpeakerRow row) =>
+        Containers(SpeakerList).FirstOrDefault(c => ReferenceEquals(c.DataContext, row)) is { } c ? RowTop(scroll, c) : null;
+
+    static double? RowTop(ScrollViewer scroll, ListBoxItem container) =>
+        container.IsVisible && container.IsDescendantOf(scroll) ? container.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y : null;
+
+    // Realized item containers; grouping nests them under GroupItems, so walk the visual tree.
+    static IEnumerable<ListBoxItem> Containers(DependencyObject root)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ListBoxItem item) yield return item;
+            else foreach (var nested in Containers(child)) yield return nested;
         }
     }
 
