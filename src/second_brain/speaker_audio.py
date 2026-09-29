@@ -7,8 +7,18 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 from .io import write_json
+
+# Clips shorter than this, or whose turn text has no words ("...", ""), cannot identify a
+# voice and are not worth listening to; they are left out of speaker review entirely.
+MIN_REVIEW_SECONDS = 2.0
+WORD = re.compile(r"\w")
+
+
+def useful_clip(clip):
+    return clip["end"] - clip["start"] >= MIN_REVIEW_SECONDS and bool(WORD.search(clip.get("text") or ""))
 
 
 def candidates(manifest):
@@ -31,6 +41,8 @@ def candidates(manifest):
         for index in range(min(5, math.ceil((s["end"] - s["start"]) / 12))):
             start = s["start"] + index * 12
             end = min(s["end"], start + 12)
+            if not useful_clip(dict(start=start, end=end, text=s.get("text"))):
+                continue
             overlaps = any(t["speaker"] != s["speaker"] and t["start"] < end and t["end"] > start for t in segments)
             clean = not overlaps and not s.get("approximate") and end - start >= 2 and "S?" not in s["speaker"]
             groups[s["speaker"]].append(

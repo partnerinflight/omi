@@ -62,7 +62,10 @@ after changing model/interpreter paths so the service receives the required ACLs
 Clean, non-overlapping, precisely timed turns of at least two seconds can become
 reference clips. Silence and approximately timed Streaming VibeVoice turns are
 excluded from voice enrollment. Those clips remain playable and manually
-nameable. If there is no usable reference, the catalog says so instead of implying
+nameable. Clips shorter than two seconds, or whose text has no words (empty or
+only "..."), are left out of review altogether, and a speaker with no remaining
+clip is not listed; rows that already have a person assigned stay visible.
+Transcripts and notes are unaffected. If there is no usable reference, the catalog says so instead of implying
 recognition is active. Set up the encoder before naming recordings that should
 become reusable voice references; already completed jobs are not automatically
 re-encoded after enabling/changing models.

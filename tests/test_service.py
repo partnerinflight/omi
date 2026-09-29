@@ -189,7 +189,8 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await upload(port, records(marker=False)), U.MSG_BYE)
         await asyncio.sleep(0.1)
         self.assertEqual(self.runtime.queue.snapshot()["counts"], {})  # unfinished recording stays resumable
-        self.assertEqual(await upload(port, records()), U.MSG_BYE)
+        # 5 s of audio, so each fake speaker's 2.5 s turn is long enough for speaker review.
+        self.assertEqual(await upload(port, records(count=250)), U.MSG_BYE)
         for _ in range(300):
             state = self.runtime.queue.snapshot()
             if state["counts"].get("complete") or state["counts"].get("failed"):

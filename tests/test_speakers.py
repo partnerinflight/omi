@@ -1,4 +1,5 @@
 import json
+import hashlib
 import shutil
 import sys
 from pathlib import Path
@@ -34,6 +35,20 @@ class MatchingTests(unittest.TestCase):
         self.assertTrue(all(s["eligible"] for s in groups[0]["clips"]))
         self.assertFalse(groups[1]["clips"][0]["eligible"])
         self.assertFalse(groups[2]["clips"][0]["eligible"])
+
+    def test_review_skips_short_and_wordless_clips_and_speakers_left_without_any(self):
+        segments = [
+            dict(start=0, end=0.8, speaker="c:S1", text="yes"),
+            dict(start=1, end=6, speaker="c:S2", text="..."),
+            dict(start=7, end=12, speaker="c:S3", text="real words here"),
+            dict(start=12.5, end=13.2, speaker="c:S3", text="ok"),
+            dict(start=14, end=19, speaker="c:S4", text=" … "),
+            dict(start=20, end=33, speaker="c:S5", text="a long turn with a short tail"),
+        ]
+        groups = {g["label"]: g["clips"] for g in candidates({"windows": [dict(id="w", final_segments=segments)]})}
+        self.assertEqual(sorted(groups), ["c:S3", "c:S5"])
+        self.assertEqual([(c["start"], c["end"]) for c in groups["c:S3"]], [(7.0, 12.0)])
+        self.assertEqual([(c["start"], c["end"]) for c in groups["c:S5"]], [(20.0, 32.0)], "1 s tail chunk dropped")
 
     def test_vibe_times_are_bounded_and_marked_approximate(self):
         ref = dict(context_start=10, segments=[dict(approx_start=0, approx_end=10, speaker=0, text="words")])
@@ -76,7 +91,7 @@ class SpeakerStoreTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.store = Speakers(self.root / "data", self.root / "review")
 
-    def ingest(self, job_id, vectors=None, label="c:S1", model="model"):
+    def ingest(self, job_id, vectors=None, label="c:S1", model="model", text="hello", seconds=3):
         directory = self.root / "data/jobs" / job_id
         directory.mkdir(parents=True, exist_ok=True)
         clips = []
@@ -89,8 +104,8 @@ class SpeakerStoreTests(unittest.TestCase):
                 dict(
                     path=str(audio),
                     start=i * 4,
-                    end=i * 4 + 3,
-                    text="hello",
+                    end=i * 4 + seconds,
+                    text=text,
                     quality="clean turn",
                     eligible=True,
                     embedding=vector,
@@ -104,8 +119,24 @@ class SpeakerStoreTests(unittest.TestCase):
         )
         self.store.ingest(job, manifest)
         self.store.catalog()
-        row = next(r for r in self.catalog()["speakers"] if r["job"] == job_id)
+        row = next((r for r in self.catalog()["speakers"] if r["job"] == job_id), None)
         return row, manifest
+
+    def test_review_hides_useless_rows_but_keeps_named_ones_and_counts_agree(self):
+        wordless, _ = self.ingest("a", text="...")
+        # A different voice, so naming row "a" below does not auto-match it.
+        short, _ = self.ingest("b", vectors=[[0, 1], [0, 1]], seconds=1)
+        useful, _ = self.ingest("c", text="we should ship the demo")
+        self.assertIsNone(wordless, "a row whose clips have no words is not offered for naming")
+        self.assertIsNone(short, "a row whose clips are all under 2 s is not offered for naming")
+        self.assertEqual([r["job"] for r in self.catalog()["speakers"]], ["c"])
+        self.assertEqual(self.store.summary()["unidentified"], 1, "tray count matches the visible list")
+        # A row someone already named stays visible even if its clips are not useful.
+        hidden = hashlib.sha256(b"a:c:S1").hexdigest()
+        self.assertTrue(self.command("assign", observation=hidden, name="Eugene")["ok"])
+        self.store.catalog()
+        self.assertEqual(sorted(r["job"] for r in self.catalog()["speakers"]), ["a", "c"])
+        self.assertEqual(self.catalog()["speakers"][[r["job"] for r in self.catalog()["speakers"]].index("a")]["clips"], [])
 
     def catalog(self):
         return json.loads((self.root / "review/catalog.json").read_text())

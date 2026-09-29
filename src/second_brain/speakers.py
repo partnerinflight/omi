@@ -11,6 +11,12 @@ import sqlite3
 import time
 import uuid
 from .io import write_json, atomic_write
+from .speaker_audio import useful_clip
+
+
+def review_clips(row):
+    """Clips worth listening to; rows without any are hidden unless a person is already assigned."""
+    return [c for c in json.loads(row["clips"]) if useful_clip(c)]
 
 
 def unit(value):
@@ -231,7 +237,9 @@ class Speakers:
                 )
             ]
             for row in rows:
-                row["clips"] = json.loads(row["clips"])
+                row["clips"] = review_clips(row)
+            rows = [row for row in rows if row["clips"] or row["person"]]
+            for row in rows:
                 row["state"] = (
                     "confirmed" if row["manual"] and row["person"] else "matched" if row["person"] else "unidentified"
                 )
@@ -243,7 +251,9 @@ class Speakers:
     def summary(self):
         with self.connect() as db:
             return {
-                "unidentified": db.execute("SELECT count(*) FROM observations WHERE person IS NULL").fetchone()[0],
+                "unidentified": sum(
+                    1 for row in db.execute("SELECT clips FROM observations WHERE person IS NULL") if review_clips(row)
+                ),
                 "people": db.execute("SELECT count(*) FROM people").fetchone()[0],
             }
 
