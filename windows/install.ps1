@@ -37,11 +37,13 @@ foreach ($component in @('service', 'tray')) {
     New-Item -ItemType Directory -Force "$InstallDir\$component" | Out-Null
     Copy-Item "$Bundle\$component\*" "$InstallDir\$component\" -Recurse -Force
 }
-Run $Python @('-m', 'venv', "$InstallDir\python")
+Run $Python @('-I', '-m', 'venv', "$InstallDir\python")
 $workerPython = "$InstallDir\python\Scripts\python.exe"
 $wheels = @(Get-ChildItem "$Bundle\python\*.whl" | ForEach-Object FullName)
 if ($wheels.Count -lt 2) { throw 'Bundle is missing Python wheels. Run windows/build.ps1 first.' }
-Run $workerPython (@('-m', 'pip', 'install') + $wheels)
+# Developer PYTHONPATH/egg-info must not make pip skip the service's wheels.
+# Reinstall explicit wheels even when an earlier bundle used the same version.
+Run $workerPython (@('-I', '-m', 'pip', 'install', '--force-reinstall') + $wheels)
 $key = (Get-Content $SecretFile -Raw).Trim()
 if ($key -notmatch '^[0-9a-fA-F]{64}$') { throw 'Existing receiver pairing key must contain 64 hexadecimal characters.' }
 $targetKey = "$DataRoot\config\upload-secret.hex"
@@ -58,7 +60,7 @@ $cfg = [ordered]@{
     skip_vibe7 = [bool]$SkipVibe7; no_hermes = $false; ffmpeg_dir = $FfmpegDir
 }
 $cfg | ConvertTo-Json | Set-Content "$DataRoot\config\service.json" -Encoding UTF8
-Run $workerPython @('-m', 'second_brain.cli', 'check', '--config', "$DataRoot\config\service.json")
+Run $workerPython @('-I', '-m', 'second_brain.cli', 'check', '--config', "$DataRoot\config\service.json")
 $binary = '"' + "$InstallDir\service\SecondBrain.Service.exe" + '" --python "' + $workerPython + '" --config "' + "$DataRoot\config\service.json" + '" --service-name ' + $ServiceName
 if (-not [System.Diagnostics.EventLog]::SourceExists($ServiceName)) { [System.Diagnostics.EventLog]::CreateEventSource($ServiceName, 'Application') }
 # Virtual service account: no stored user password and no interactive login.

@@ -28,9 +28,8 @@ sealed class PipelineWorker(IConfiguration config, ILogger<PipelineWorker> logge
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true,
                 WorkingDirectory = AppContext.BaseDirectory
             };
-            foreach (var arg in new[] { "-u", "-m", "second_brain.cli", "run", "--config", settings, "--stdin-control" })
+            foreach (var arg in new[] { "-I", "-X", "utf8", "-u", "-m", "second_brain.cli", "run", "--config", settings, "--stdin-control" })
                 process.StartInfo.ArgumentList.Add(arg);
-            process.StartInfo.Environment["PYTHONUTF8"] = "1";
             if (!process.Start()) throw new InvalidOperationException("Python worker did not start");
             job.Assign(process);
             logger.LogInformation("Second Brain worker started");
