@@ -11,7 +11,7 @@ public partial class App : Application
     TrayIcon? tray;
     HoverCard? card;
     MainWindow? window;
-    SpeakerReview? legacySpeakers;
+    ReviewSession? session;
     string statusPath = "";
     string reviewDirectory = "";
     DateTime lastHover;
@@ -21,19 +21,18 @@ public partial class App : Application
         base.OnStartup(e);
         mutex = new Mutex(true, "Local\\SecondBrain.Tray", out bool created);
         if (!created) { Shutdown(); return; }
-        // Interim: keyboard input for the WinForms speaker window until the WPF Speakers page replaces it.
-        System.Windows.Forms.Integration.WindowsFormsHost.EnableWindowsFormsInterop();
 
         string? path = e.Args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
         statusPath = path is not null
             ? Path.GetFullPath(path)
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "SecondBrain", "status", "status.json");
         reviewDirectory = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(statusPath))!, "review");
+        session = new ReviewSession(reviewDirectory);
 
         card = new HoverCard();
         tray = new TrayIcon();
         tray.OpenRequested += () => ShowWindow(null);
-        tray.SpeakersRequested += OpenSpeakers;
+        tray.SpeakersRequested += () => ShowWindow("Speakers");
         tray.Hovered += () => { lastHover = DateTime.UtcNow; card?.ShowNearCursor(); };
         tray.QuitRequested += Quit;
         timer.Tick += (_, _) => Tick();
@@ -56,24 +55,13 @@ public partial class App : Application
 
     void ShowWindow(string? page)
     {
-        if (window is null)
-        {
-            window = new MainWindow();
-            window.SpeakersRequested += OpenSpeakers;
-        }
+        window ??= new MainWindow(session!);
         window.Update(ServiceStatus.Read(statusPath, DateTimeOffset.UtcNow));
         if (page is not null) window.Navigate(page);
         window.Show();
         if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
         window.Activate();
         card?.Hide();
-    }
-
-    void OpenSpeakers()
-    {
-        if (legacySpeakers is null || legacySpeakers.IsDisposed) legacySpeakers = new SpeakerReview(reviewDirectory);
-        legacySpeakers.Show();
-        legacySpeakers.Activate();
     }
 
     void Quit()
@@ -83,7 +71,6 @@ public partial class App : Application
         tray = null;
         window?.CloseForReal();
         card?.Close();
-        legacySpeakers?.Dispose();
         mutex?.ReleaseMutex();
         Shutdown();
     }

@@ -1,3 +1,5 @@
+using SecondBrain.Status;
+
 namespace SecondBrain.Tray;
 
 static class Formats
@@ -14,4 +16,12 @@ static class Formats
         var local = time.ToLocalTime();
         return local.Date == now.ToLocalTime().Date ? local.ToString("HH:mm:ss") : local.ToString("MMM d, HH:mm");
     }
+
+    // Match scores are cosine similarities, not probabilities (docs/speakers.md).
+    public static string State(Speaker speaker) => speaker.State switch
+    {
+        "confirmed" => "Confirmed",
+        "matched" => speaker.Score is { } score ? $"Voice match ({score:0.00})" : "Voice match",
+        _ => "Unidentified",
+    };
 }

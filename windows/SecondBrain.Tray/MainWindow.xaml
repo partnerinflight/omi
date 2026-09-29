@@ -24,6 +24,18 @@
                         <TextBlock Text="Overview" VerticalAlignment="Center" />
                     </StackPanel>
                 </ListBoxItem>
+                <ListBoxItem Tag="Speakers">
+                    <DockPanel Width="170">
+                        <Border x:Name="SpeakersBadge" DockPanel.Dock="Right" Background="{DynamicResource AccentFillColorDefaultBrush}"
+                                CornerRadius="9" MinWidth="20" Padding="6,0" Visibility="Collapsed" VerticalAlignment="Center">
+                            <TextBlock x:Name="SpeakersBadgeText" FontSize="11" HorizontalAlignment="Center" Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+                        </Border>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Glyph}" Text="&#xE720;" Margin="0,0,12,0" />
+                            <TextBlock Text="Speakers" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </DockPanel>
+                </ListBoxItem>
                 <ListBoxItem Tag="Activity">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource Glyph}" Text="&#xE81C;" Margin="0,0,12,0" />

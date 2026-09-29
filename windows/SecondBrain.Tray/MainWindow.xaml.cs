@@ -9,16 +9,22 @@ public partial class MainWindow : Window
 {
     readonly OverviewPage overview = new();
     readonly ActivityPage activity = new();
+    readonly SpeakersPage speakers;
     readonly Dictionary<string, FrameworkElement> pages;
     bool exiting;
 
-    public event Action? SpeakersRequested;
-
-    public MainWindow()
+    internal MainWindow(ReviewSession session)
     {
         InitializeComponent();
-        pages = new() { ["Overview"] = overview, ["Activity"] = activity };
-        overview.ReviewSpeakersRequested += () => SpeakersRequested?.Invoke();
+        speakers = new SpeakersPage(session);
+        pages = new() { ["Overview"] = overview, ["Speakers"] = speakers, ["Activity"] = activity };
+        overview.ReviewSpeakersRequested += () => Navigate("Speakers");
+        // Poll the speaker catalog only while the window is visible.
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) session.Start();
+            else { session.Stop(); speakers.StopPlayback(); }
+        };
         var settings = WindowSettings.Load();
         settings?.ApplyTo(this);
         Navigate(settings?.Page ?? "Overview");
@@ -44,6 +50,8 @@ public partial class MainWindow : Window
             Health.Stopped => "Service stopped",
             _ => "Service unavailable",
         };
+        SpeakersBadge.Visibility = status.UnidentifiedSpeakers > 0 ? Visibility.Visible : Visibility.Collapsed;
+        SpeakersBadgeText.Text = status.UnidentifiedSpeakers.ToString();
         overview.Update(status);
         activity.Update(status);
     }
