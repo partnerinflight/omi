@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 from second_brain.io import InstanceLock, write_json
 from second_brain.queue import Queue
-from second_brain.runtime import Runtime
+from second_brain.runtime import Runtime, kill_tree
 from second_brain.vault import NoteConflict, publish
 from second_brain.adaptive.pipeline import parse_vibe_text
 from second_brain.adaptive.runners.moss_cpp_runner import normalize_segments
@@ -120,6 +120,48 @@ except RuntimeError:
         self.assertEqual(parse_vibe_text(ref, 14, 18, "w1"), "w1:0: inside")
         with self.assertRaises(ValueError):
             normalize_segments({"unexpected": "schema"})
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
+class StdinControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_processing_completes_with_supervisor_pipe_open(self):
+        from dataclasses import asdict
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = configuration(root)
+            settings = root / "service.json"
+            write_json(settings, {k: str(v) if isinstance(v, Path) else v for k, v in asdict(cfg).items()})
+            env = os.environ.copy()
+            repo = Path(__file__).resolve().parents[1]
+            env["PYTHONPATH"] = os.pathsep.join([str(repo / "src"), str(repo / "omi/firmware/scripts/omi-local")])
+            kwargs = {"start_new_session": True} if os.name != "nt" else {}
+            with (root / "worker.log").open("wb") as output:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "second_brain.cli", "run", "--config", str(settings), "--stdin-control",
+                    stdin=asyncio.subprocess.PIPE, stdout=output, stderr=output, env=env, **kwargs,
+                )
+                try:
+                    async with asyncio.timeout(30):
+                        while not cfg.status_file.exists():
+                            self.assertIsNone(proc.returncode, (root / "worker.log").read_text())
+                            await asyncio.sleep(0.05)
+                        status = json.loads(cfg.status_file.read_text())
+                        await upload(status["receiver"]["port"], records())
+                        while True:
+                            status = json.loads(cfg.status_file.read_text())
+                            if status["counts"].get("complete"):
+                                break
+                            self.assertFalse(status["counts"].get("failed"), status)
+                            await asyncio.sleep(0.05)
+                    self.assertEqual(len(list(cfg.vault_path.rglob("*.md"))), 1)
+                    proc.stdin.write(b"stop\n")
+                    await proc.stdin.drain()
+                    await asyncio.wait_for(proc.wait(), 10)
+                    self.assertEqual(proc.returncode, 0)
+                finally:
+                    await kill_tree(proc)
+                    proc.stdin.close()
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
