@@ -41,7 +41,10 @@ owner thread. Manual pause drains an end marker, disables acoustic wake, and
 powers down the microphone rail. It overrides other awake LED states with a
 200 ms red pulse every 3 seconds; sound cannot resume it. Resume failures stay
 paused. Acoustic wake vibrates for 80 ms only after a successful microphone
-start. `test_manual_recording_c.py` exercises production button/owner paths,
+start and at least `CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS` (5 min) of
+acoustic sleep. Every mic restart drops `CONFIG_OMI_MIC_START_DISCARD_MS`
+(500 ms) of PCM before recording or VOX tracking, which hides the PDM startup
+transient and the wake vibration. `test_manual_recording_c.py` exercises production button/owner paths,
 PCM suppression, LED timing, and failures. `test_disconnect_power_c.py` covers
 SD ownership during BLE disconnect, including manual pause.
 

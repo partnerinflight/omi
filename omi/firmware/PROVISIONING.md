@@ -183,6 +183,10 @@ uploads can continue while the microphone sleeps.
 Firmware `3.0.22-localwifi.11` adds a brief **80 ms vibration** when sound wakes
 the microphone from VOX silence and recording successfully starts. Starting at
 boot or resuming with the button does not add this sound-wake vibration.
+From `3.0.22-localwifi.14` the vibration only happens when the microphone had
+been asleep for at least 5 minutes, so short wake/sleep cycles in a quiet room
+resume silently. The first 500 ms after the microphone restarts is not recorded,
+so recordings no longer begin with the startup pop or the vibration.
 
 **Click and release the button** (less than one second) to pause recording;
 click again to resume. Pausing closes the current recording and turns the

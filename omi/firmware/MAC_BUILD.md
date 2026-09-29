@@ -22,7 +22,7 @@ mkdir -p "$HOME/ncs/v2.9.0"
 cd "$HOME/ncs/v2.9.0"
 west init -m https://github.com/nrfconnect/sdk-nrf --mr v2.9.0 .
 # Activate only CV1 build dependencies (west still resolves imported manifests).
-west config manifest.project-filter '-.*,+zephyr,+mcuboot,+mbedtls,+oberon-psa-crypto,+nrfxlib,+trusted-firmware-m,+bsim,+nanopb,+cmsis,+cmsis-dsp,+hal_nordic,+hal_st,+hostap,+littlefs,+nrf_wifi,+segger,+tinycrypt,+zcbor,+libmetal,+open-amp'
+west config manifest.project-filter -- '-.*,+zephyr,+mcuboot,+mbedtls,+oberon-psa-crypto,+nrfxlib,+trusted-firmware-m,+bsim,+nanopb,+cmsis,+cmsis-dsp,+hal_nordic,+hal_st,+hostap,+littlefs,+nrf_wifi,+segger,+tinycrypt,+zcbor,+libmetal,+open-amp'
 west update -o=--depth=1 -n
 west blobs fetch nrf_wifi
 west zephyr-export

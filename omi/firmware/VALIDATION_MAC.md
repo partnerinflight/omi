@@ -393,3 +393,36 @@ and zero dropped. Fresh battery: 3957 mV / 69%, sample age 2365 ms, error 0,
 charging signal inactive. No recordings or settings were erased. Physical
 sensitivity in the owner's room remains a user test, not a bench-calibrated
 result. Evidence: parent `.inspection/firmware13-{upload,activate,postflash-probe,health}.log`.
+
+## Quiet wake cycles and startup audio — 2026-09-29
+
+Firmware `3.0.22-localwifi.14` follows an analysis of the owner's recordings
+from `.13`. Quiet rooms produced 30–60 s acoustic wake/sleep cycles (22 wakes
+in 40 minutes), each with an 80 ms vibration, and every recording began with a
+full-scale PDM startup pop that settles in about 550 ms. Changes:
+
+- `CONFIG_OMI_VAD_ABS_THRESHOLD` rises from 300 to 400 at the owner's request.
+  Replaying the recordings lost no speech-band activity at 400.
+- A sound wake vibrates only after at least 5 minutes of acoustic sleep
+  (`CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS=300000`), still only after a
+  successful microphone start.
+- Every microphone restart (acoustic wake or manual resume) drops 500 ms of PCM
+  before recording or VOX tracking (`CONFIG_OMI_MIC_START_DISCARD_MS=500`),
+  covering the startup transient and the wake vibration.
+
+All 72 host/native tests pass; native tests cover the sleep-duration gate
+(including uptime wrap) and the discarded startup blocks. NCS 2.9.0 Wi-Fi
+sysbuild passes on a fresh macOS install: app 872568 flash / 428808 RAM bytes.
+Both OTA images pass MCUboot signature verification.
+Archive: `~/omi-firmware/Omi_CV1_OTA_3.0.22-localwifi.14.zip`.
+ZIP SHA-256: `7dc6a05ecef0a371786892664d1e9e4aa631e099baaf08d59fe579084796cea9`.
+App digest: `ff79a90f15eca7ba7fb1276f5807fb61c357224e932c0f1d4a65a8c4ab261f3a`.
+Network digest: `b1c10471e12e2c718f341d177b69224e4faf9f2eb6871248823539a53b6bf8d4`.
+
+Installed on the owner's Omi over BLE SMP with `~/omi-firmware/flash_omi.py`
+(outside the repository). Both staged digests matched before activation; after
+reset, SMP reports the expected app digest active/confirmed and GATT reports
+`.14`. The network core is not listed by SMP after its copy; BLE works through
+it. Clock synchronized, battery 93%, ring `[401814, 524472)` with zero dropped
+packets. No recordings or settings were erased. Quiet-room vibration and
+startup audio remain user tests on the device.
