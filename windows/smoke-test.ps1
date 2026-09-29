@@ -57,6 +57,13 @@ try {
         Where-Object { $_.Message -like "*$name*" -or $_.Message -like '*Second Brain*' } |
         Select-Object -First 10 TimeCreated, Message | Format-List | Out-Host
     Get-Content "$root\machine\data\service.log" -Tail 60 -ErrorAction SilentlyContinue | Out-Host
+    Get-Content "$root\machine\status\status.json" -ErrorAction SilentlyContinue | Out-Host
+    Get-ChildItem "$root\machine\data\jobs" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('pipeline.log', 'progress.json') } |
+        ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName -Tail 60 | Out-Host }
+    Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -in @('python.exe', 'ffmpeg.exe', 'ffprobe.exe') } |
+        Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-List | Out-Host
     throw
 } finally {
     & "$PSScriptRoot\uninstall.ps1" -ServiceName $name
