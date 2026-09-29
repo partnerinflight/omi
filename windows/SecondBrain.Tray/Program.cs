@@ -53,10 +53,10 @@ sealed class TrayContext : ApplicationContext
     }
     void Refresh()
     {
-        var status = Snapshot.Read(path, DateTimeOffset.UtcNow);
+        var status = ServiceStatus.Read(path, DateTimeOffset.UtcNow);
         icon.Text = status.Tooltip;
-        icon.Icon = status.Healthy ? SystemIcons.Information : SystemIcons.Warning;
-        details.Text = status.Details;
+        icon.Icon = status.Health == Health.Running ? SystemIcons.Information : SystemIcons.Warning;
+        details.Text = status.Title + Environment.NewLine + status.Reason;
     }
     void ShowCard()
     {
