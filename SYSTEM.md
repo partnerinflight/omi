@@ -255,16 +255,21 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
 
 ## Verification, known gaps, and agent rules
 
-- Last code snapshot: `16f0e68b6` fixes Windows lock contention. 28 pipeline tests
-  pass on Windows CI; all 100 pipeline + receiver/native tests pass on macOS.
-  CI run `36485644232` passed Linux contracts and Windows build/tests but failed
-  the SCM service-start smoke step. Owner later reports service running and
-  uploads/queue populated; this does not prove complete processing or login-free
-  restart on that machine. See [validation](docs/validation.md).
+- Verified code: `d103c03ec`. All 101 pipeline + receiver/native tests pass on
+  macOS/Linux; 29 pipeline tests pass on Windows. Windows CI also verifies clean
+  wheel installation, service/tray builds, and actual SCM Session 0 upload →
+  fixture ASR → note → speaker naming → restart without duplicate notes or lost
+  names. Pinned MOSS source builds on Windows. See [validation](docs/validation.md).
+- Setup audit fixed two Windows failures: developer `PYTHONPATH` metadata made
+  pip skip service wheels; inherited supervisor stdin stalled child Python
+  startup before ASR. Installer/checks now use isolated Python and reinstall
+  wheels; processing children receive `DEVNULL` stdin. Keep these boundaries.
 - Active owner reports: processing exceeds deadline; repeated upload
   `IncompleteReadError`; original recordings sound very quiet except close speech.
-  Root causes remain unconfirmed. Inspect per-attempt logs/config before raising
-  timeout. Interrupted sockets differ from processing timeouts; durable ACK/resume
+  The service-startup stall above is reproduced/fixed in CI; the owner's exact
+  timeout cause and real-model throughput still need validation. Inspect attempt
+  logs/config before raising timeout. Interrupted sockets differ from processing
+  timeouts; durable ACK/resume
   prevents deleting unacknowledged records, but repeated interruptions need diagnosis.
 - `.13` deployed; saved gain read back as level 6. Recent sample had low average
   level with full-scale peaks; no controlled speech comparison yet. Do not claim

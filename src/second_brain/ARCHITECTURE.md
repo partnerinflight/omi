@@ -32,10 +32,14 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
 ## Windows ownership
 
 The .NET service runs under a virtual service account in Session 0. It starts
-Python with explicit paths, waits for a graceful stdin stop, and kills the
-process tree if it cannot stop in time. A Job Object kills descendants even if
+Python in isolated mode with explicit paths, waits for a graceful stdin stop,
+and kills the process tree if it cannot stop in time. A Job Object kills descendants even if
 the supervisor dies; abnormal exits trigger SCM recovery. The service does not
 rely on the desktop, current user PATH, GUI, model downloads, or mapped drives.
+Processing subprocesses receive closed stdin; the supervisor control pipe belongs
+only to the worker. Inheriting its pending read stalled child startup on Windows.
+Installer/check commands also use isolated Python so source-checkout metadata
+cannot substitute for installed wheels.
 
 The tray is a separate WinForms process. Its read-only status file contains
 counts, stage names and sanitized operations. It tolerates replacement while

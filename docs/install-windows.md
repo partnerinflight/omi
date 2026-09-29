@@ -7,7 +7,8 @@ Git; inference uses local files. Internet is needed during initial setup.
 
 ## Prerequisites (Windows x64)
 
-Install machine-wide Python 3.12 (recommended for model wheel compatibility),
+Use PowerShell 7 for the setup commands (the tested shell). Install machine-wide
+Python 3.12 (recommended for model wheel compatibility),
 .NET 10 SDK, Git, current CMake, ffmpeg/ffprobe, and Visual Studio 2022 or 2026 Build Tools with
 **Desktop development with C++**. Reopen PowerShell after installing them.
 The C++ toolchain/CMake are unnecessary if supplying a working `-MossBinaryDir`.
