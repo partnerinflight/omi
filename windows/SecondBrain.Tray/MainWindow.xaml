@@ -1,0 +1,37 @@
+<Window x:Class="SecondBrain.Tray.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Second Brain" Width="1100" Height="760" MinWidth="900" MinHeight="620"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <DockPanel Background="{DynamicResource LayerFillColorDefaultBrush}">
+            <StackPanel DockPanel.Dock="Top" Margin="20,24,20,24">
+                <TextBlock Text="Second Brain" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock Text="Omi recordings → Obsidian" Style="{StaticResource Caption}" />
+            </StackPanel>
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="20,16">
+                <Ellipse x:Name="ServiceDot" Width="10" Height="10" Margin="0,0,8,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="ServiceText" Style="{StaticResource Caption}" VerticalAlignment="Center" />
+            </StackPanel>
+            <ListBox x:Name="Nav" Margin="8,0" BorderThickness="0" Background="Transparent" SelectionChanged="Nav_SelectionChanged">
+                <ListBoxItem Tag="Overview">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Glyph}" Text="&#xE80F;" Margin="0,0,12,0" />
+                        <TextBlock Text="Overview" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ListBoxItem>
+                <ListBoxItem Tag="Activity">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Glyph}" Text="&#xE81C;" Margin="0,0,12,0" />
+                        <TextBlock Text="Activity" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ListBoxItem>
+            </ListBox>
+        </DockPanel>
+        <ContentControl x:Name="PageHost" Grid.Column="1" Margin="32,24,32,24" />
+    </Grid>
+</Window>

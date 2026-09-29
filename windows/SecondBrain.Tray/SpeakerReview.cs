@@ -1,5 +1,7 @@
+using System.Drawing;
 using System.Media;
 using System.Text.Json;
+using System.Windows.Forms;
 
 namespace SecondBrain.Tray;
 
