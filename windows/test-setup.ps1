@@ -35,5 +35,8 @@ try {
         $rejected = $true
     }
     if (-not $rejected) { throw 'Native failure was ignored.' }
+    # GitHub's pwsh wrapper propagates LASTEXITCODE after the script returns.
+    # The nonzero code above was intentional and has now been asserted.
+    $global:LASTEXITCODE = 0
     Write-Host 'PASS: pinned checkout repeatability, dirty-source protection, config backup/preservation, native failure propagation.'
 } finally { Remove-Item $root -Recurse -Force }
