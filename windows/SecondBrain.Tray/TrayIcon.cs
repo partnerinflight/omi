@@ -7,7 +7,15 @@ namespace SecondBrain.Tray;
 
 sealed class TrayIcon : IDisposable
 {
-    readonly Forms.NotifyIcon icon = new() { Icon = Drawing.SystemIcons.Information, Visible = true, Text = "Second Brain: loading status" };
+    // Brain icon with a health dot: none when running, amber for attention, red when stopped.
+    static readonly Drawing.Icon Running = Load("brain.ico"), Attention = Load("brain-attention.ico"), Stopped = Load("brain-stopped.ico");
+    readonly Forms.NotifyIcon icon = new() { Icon = Running, Visible = true, Text = "Second Brain: loading status" };
+
+    static Drawing.Icon Load(string name)
+    {
+        using var stream = System.Windows.Application.GetResourceStream(new Uri($"pack://application:,,,/Assets/{name}")).Stream;
+        return new Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize);
+    }
 
     public event Action? OpenRequested;
     public event Action? SpeakersRequested;
@@ -35,7 +43,8 @@ sealed class TrayIcon : IDisposable
     public void Update(ServiceStatus status)
     {
         icon.Text = status.Tooltip;
-        icon.Icon = status.Health == Health.Running ? Drawing.SystemIcons.Information : Drawing.SystemIcons.Warning;
+        var wanted = status.Health switch { Health.Running => Running, Health.Attention => Attention, _ => Stopped };
+        if (!ReferenceEquals(icon.Icon, wanted)) icon.Icon = wanted;
     }
 
     public void Dispose()

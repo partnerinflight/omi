@@ -1,7 +1,7 @@
 <Window x:Class="SecondBrain.Tray.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Second Brain" Width="1100" Height="760" MinWidth="900" MinHeight="620"
+        Title="Second Brain" Icon="/Assets/brain.ico" Width="1100" Height="760" MinWidth="900" MinHeight="620"
         WindowStartupLocation="CenterScreen">
     <Grid>
         <Grid.ColumnDefinitions>
