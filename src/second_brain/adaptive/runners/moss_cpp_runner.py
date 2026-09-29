@@ -86,6 +86,14 @@ def main():
         payload["stderr"] = proc.stderr
         payload["raw_stdout"] = proc.stdout
 
+        # moss-transcribe exits 1 with exactly this last line only when the model produced no
+        # text (noise, music, unintelligible audio). That is "no speech", not a broken recording.
+        if proc.returncode == 1 and proc.stderr.strip().splitlines()[-1:] == ["transcription failed"]:
+            payload.update(result=[], segments=[], no_speech=True, status="ok")
+            print(f"[MOSS] done in {elapsed:.1f}s; no speech recognized", flush=True)
+            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return
+
         if proc.returncode != 0:
             raise RuntimeError(f"moss-transcribe exited with {proc.returncode}: {proc.stderr[-2000:]}")
 

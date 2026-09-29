@@ -123,6 +123,40 @@ except RuntimeError:
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
+class MossRunnerTests(unittest.TestCase):
+    """The real runner script against a fake moss-transcribe that mimics the CLI's exit paths."""
+
+    def run_runner(self, fake):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        output = root / "c0000.json"
+        runner = Path(__file__).resolve().parents[1] / "src/second_brain/adaptive/runners/moss_cpp_runner.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), "--command-json", json.dumps([sys.executable, "-c", fake]),
+             "--model", "m.gguf", "--audio", str(root / "c0000.wav"), "--output", str(output)],
+            capture_output=True, text=True,
+        )
+        return proc, json.loads(output.read_text()) if output.exists() else None
+
+    def test_empty_transcript_is_no_speech_not_a_failed_recording(self):
+        # moss-transcribe prints this and exits 1 only when the model produced no text (src/cli.cpp).
+        proc, payload = self.run_runner(
+            "import sys; sys.stderr.write('[mt I] backend: CPU\\ntranscription failed\\n'); sys.exit(1)"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((payload["status"], payload["segments"], payload["no_speech"]), ("ok", [], True))
+
+    def test_other_moss_failures_still_fail_the_job(self):
+        for fake in [
+            "import sys; sys.stderr.write('load failed\\n'); sys.exit(1)",
+            "import sys; sys.stderr.write('transcription failed\\n'); sys.exit(3)",
+            "import sys; sys.stderr.write('transcription failed\\nthen something else broke\\n'); sys.exit(1)",
+        ]:
+            proc, payload = self.run_runner(fake)
+            self.assertNotEqual(proc.returncode, 0, fake)
+            self.assertEqual(payload["status"], "error", fake)
+
+
 class StdinControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_processing_completes_with_supervisor_pipe_open(self):
         from dataclasses import asdict
