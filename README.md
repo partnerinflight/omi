@@ -3,6 +3,13 @@
 A local pipeline for one paired Omi and a Windows PC. The old Omi desktop,
 mobile, cloud and web applications have been removed from this fork.
 
+New agents: read [SYSTEM.md](SYSTEM.md) for the complete system contract,
+implemented Hermes integration, operational boundaries, and known gaps.
+
+For a fresh machine, use [single-checkout Windows setup](docs/install-windows.md).
+`windows/setup.ps1` builds the app and MOSS, downloads configured engine/model
+dependencies, verifies the installed packages, and installs the service.
+
 ```text
 Omi CV1 → authenticated Wi-Fi upload :7331 → durable .opus recordings
   → SQLite queue → MOSS speech recognition + speaker labels
@@ -60,14 +67,11 @@ ASR fixture. Fixture success does **not** measure speech recognition accuracy.
 
 Copy `config\pipeline.example.json` to a private configuration file, then set
 MOSS binary/model paths and VibeVoice's environment/local model directory to
-match the Windows machine. Existing working MOSS binaries can be copied using
-`windows\setup-engines.ps1 -Config <file>`; it also prepares the VibeVoice Python
-environment. Model weights are not bundled. Set `vibe_7b_model` to a **local
-absolute directory**; if it does not exist, `install.ps1` downloads
-`microsoft/VibeVoice-ASR-Streaming-7B` (override with `-VibeModelRepo`) into it
-once, using the VibeVoice environment. An interrupted download stays in
-`<dir>.partial` and resumes on the next run. The service itself runs with
-Hugging Face offline mode enabled and never downloads models.
+match the Windows machine. `windows\setup-engines.ps1 -Config <file>` builds
+pinned MOSS source (or accepts `-MossBinaryDir`), downloads its Q5_K model, and
+prepares VibeVoice's environment and checkpoint. Model weights are downloaded
+outside Git before unattended service use; use a **local directory** for
+`vibe_7b_model`. The service runs with Hugging Face offline mode enabled.
 
 The imported policy uses MOSS for the first pass, optional Hermes scoring
 (disabled by default), and selective VibeVoice 7B refinement. `-SkipVibe7` can
@@ -164,8 +168,8 @@ restart the tray. No data directory should be deleted during an upgrade.
 
 ## Firmware
 
-The latest candidate remains `3.0.22-localwifi.12`: 30-second VOX, brief wake
-vibration, button pause/resume, red paused flashes, and a 20-second setup hold.
-This pipeline work does not deploy it. See [Mac build](omi/firmware/MAC_BUILD.md),
+The last verified deployment is `3.0.22-localwifi.13`: 30-second VOX with PCM
+threshold 300, brief wake vibration, button pause/resume, red paused flashes,
+and a 20-second setup hold. See [Mac build](omi/firmware/MAC_BUILD.md),
 [provisioning](omi/firmware/PROVISIONING.md), and
 [validation history](omi/firmware/VALIDATION_MAC.md).

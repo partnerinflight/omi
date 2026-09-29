@@ -106,7 +106,11 @@ class Runtime:
                 env["PATH"] = cfg.ffmpeg_dir + os.pathsep + env.get("PATH", "")
             kwargs = {"start_new_session": True} if os.name != "nt" else {"creationflags": 0x08000000}
             with (attempt / "pipeline.log").open("wb") as output:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=output, stderr=output, env=env, **kwargs)
+                # Only the worker reads the supervisor's control pipe. Inheriting
+                # its pending Windows read can stall a child's Python startup.
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=output, stderr=output, env=env, **kwargs
+                )
                 deadline = time.monotonic() + cfg.job_timeout_seconds
                 try:
                     while proc.returncode is None:

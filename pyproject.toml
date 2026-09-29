@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "second-brain-local"
-version = "0.2.0"
+version = "0.2.1"
 description = "Omi ingestion, adaptive diarized transcription, and Obsidian delivery"
 requires-python = ">=3.12"
 license = {text = "MIT"}
-dependencies = []
+dependencies = ["omi-local==0.2.0"]
 
 [project.scripts]
 second-brain = "second_brain.cli:main"

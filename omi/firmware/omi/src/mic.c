@@ -86,7 +86,11 @@ static atomic_t aad_wake_pending = ATOMIC_INIT(0); /* WAKE edge seen by ISR */
 static atomic_t aad_woke = ATOMIC_INIT(0);         /* tell mic ctx it just woke */
 static atomic_t aad_in_sleep = ATOMIC_INIT(0);     /* mic is in hardware AAD sleep */
 static atomic_t aad_req_sleep = ATOMIC_INIT(0);    /* silence timer asked to sleep */
+/* PCM blocks to drop after a mic start: PDM startup transient + wake haptic. */
+static atomic_t mic_discard_blocks = ATOMIC_INIT(0);
+#define MIC_START_DISCARD_BLOCKS ((CONFIG_OMI_MIC_START_DISCARD_MS + 99) / 100)
 static int64_t aad_last_voice_ms;
+static uint32_t aad_sleep_started_ms; /* owner-only: when the current AAD sleep began */
 static atomic_t manual_pause_requested;
 static atomic_t manual_paused;
 static uint32_t manual_pause_started_ms;
@@ -131,6 +135,12 @@ static void process_audio_buffer(void *buffer, uint32_t size)
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused)) {
+        k_mem_slab_free(&mem_slab, buffer);
+        return;
+    }
+    /* Neither record nor VOX-track the settling audio after a restart. */
+    if (atomic_get(&mic_discard_blocks) > 0) {
+        atomic_dec(&mic_discard_blocks);
         k_mem_slab_free(&mem_slab, buffer);
         return;
     }
@@ -433,6 +443,7 @@ static void enter_hw_aad(void)
         sd_request_power(false);
     }
 
+    aad_sleep_started_ms = k_uptime_get_32();
     atomic_set(&aad_in_sleep, 1);
 
     atomic_clear(&aad_wake_pending);
@@ -454,7 +465,8 @@ static void exit_hw_aad(void)
     t5838_aad_release_clk();  /* hand CLK back to the PDM peripheral */
     atomic_set(&aad_woke, 1); /* reset silence timer in mic ctx */
     sd_request_power(true);   /* power on + remount SD before audio starts flowing */
-    if (mic_resume()) {       /* dmic START reclaims CLK via pinctrl */
+    atomic_set(&mic_discard_blocks, MIC_START_DISCARD_BLOCKS);
+    if (mic_resume()) { /* dmic START reclaims CLK via pinctrl */
         /* Restore acoustic mode and retry on the next sound edge. */
         pdm_hw_disable();
         t5838_aad_enter();
@@ -463,7 +475,11 @@ static void exit_hw_aad(void)
     }
     atomic_set(&aad_in_sleep, 0);
 #ifdef CONFIG_OMI_ENABLE_HAPTIC
-    if (!atomic_get(&manual_pause_requested))
+    /* Only signal a wake after a long sleep; short wake/sleep cycles in a quiet
+     * room would otherwise vibrate every minute or so. The motor runs inside the
+     * discarded startup window, so it never reaches the recording. */
+    uint32_t slept_ms = k_uptime_get_32() - aad_sleep_started_ms;
+    if (!atomic_get(&manual_pause_requested) && slept_ms >= CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS)
         play_haptic_milli(80);
 #endif
     LOG_INF("AAD: WAKE -> mic resumed");
@@ -513,6 +529,7 @@ static void exit_manual_pause(void)
     atomic_clear(&aad_wake_pending);
     atomic_clear(&aad_req_sleep);
     atomic_set(&aad_woke, 1);
+    atomic_set(&mic_discard_blocks, MIC_START_DISCARD_BLOCKS);
     int ret = mic_resume();
     if (ret) {
         /* Stay physically off and paused; a later click can retry resume. */

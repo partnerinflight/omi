@@ -47,6 +47,24 @@ try {
     $process = Get-Process -Id $svc.ProcessId
     if ($process.SessionId -ne 0) { throw 'Service is not running in Session 0' }
     Write-Host "PASS: virtual service account, Session 0, synthetic upload, adaptive pipeline, vault publication, restart without duplication. Evidence: $root"
+} catch {
+    # Synthetic fixture only: surface startup diagnostics before cleanup removes
+    # the service. Never collect logs from the user's production service here.
+    Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=(Get-Date).AddMinutes(-10) } -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProviderName -in @($name, '.NET Runtime', 'Application Error') } |
+        Select-Object -First 10 TimeCreated, ProviderName, Message | Format-List | Out-Host
+    Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Service Control Manager'; StartTime=(Get-Date).AddMinutes(-10) } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -like "*$name*" -or $_.Message -like '*Second Brain*' } |
+        Select-Object -First 10 TimeCreated, Message | Format-List | Out-Host
+    Get-Content "$root\machine\data\service.log" -Tail 60 -ErrorAction SilentlyContinue | Out-Host
+    Get-Content "$root\machine\status\status.json" -ErrorAction SilentlyContinue | Out-Host
+    Get-ChildItem "$root\machine\data\jobs" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('pipeline.log', 'progress.json') } |
+        ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName -Tail 60 | Out-Host }
+    Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -in @('python.exe', 'ffmpeg.exe', 'ffprobe.exe') } |
+        Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-List | Out-Host
+    throw
 } finally {
     & "$PSScriptRoot\uninstall.ps1" -ServiceName $name
 }

@@ -104,6 +104,25 @@ config OMI_AAD_SETTLE_MS
          arming the WAKE interrupt. Lets the mic settle its noise floor and
          swallow the entry transient so it does not immediately false-wake."
 
+config OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS
+    int "Minimum AAD sleep before a sound wake vibrates (ms)"
+    range 0 86400000
+    default 300000
+    depends on OMI_ENABLE_T5838_AAD
+    help
+        "A sound wake vibrates only when the mic was in hardware AAD sleep for
+         at least this long. Shorter wake/sleep cycles resume silently."
+
+config OMI_MIC_START_DISCARD_MS
+    int "Audio discarded after the mic restarts (ms)"
+    range 0 2000
+    default 500
+    depends on OMI_ENABLE_T5838_AAD
+    help
+        "After an acoustic wake or manual resume, drop this much PCM (rounded up
+         to 100 ms blocks) before recording and VOX tracking. Covers the PDM
+         startup transient and the wake vibration."
+
 config OMI_WIFI_UPLOAD
     bool "Upload recordings over Wi-Fi to one local receiver while charging"
     depends on OMI_ENABLE_OFFLINE_STORAGE && WIFI_NRF70 && NET_SOCKETS && NET_TCP && NET_DHCPV4

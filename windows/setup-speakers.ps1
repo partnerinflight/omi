@@ -2,9 +2,11 @@ param(
     [Parameter(Mandatory=$true)][string]$Python,
     [Parameter(Mandatory=$true)][string]$PipelineConfig,
     [string]$EngineRoot = 'C:\second-brain-asr-engines\speaker-recognition',
-    [string]$Revision = 'main'
+    [string]$Revision = ''
 )
-$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/setup-common.ps1"
+if (-not $Revision) { $Revision = (Get-EngineLock).speaker_model.revision }
+if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Use a full model commit SHA for -Revision.' }
 function Run([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed with exit code $LASTEXITCODE" }
@@ -21,6 +23,6 @@ Run $encoder @('-c', 'import sys; from huggingface_hub import snapshot_download;
 $cfg = Get-Content $PipelineConfig -Raw | ConvertFrom-Json
 $cfg | Add-Member -NotePropertyName speaker_python -NotePropertyValue $encoder -Force
 $cfg | Add-Member -NotePropertyName speaker_model -NotePropertyValue $model -Force
-$cfg | ConvertTo-Json -Depth 30 | Set-Content $PipelineConfig -Encoding UTF8
+Save-PipelineConfig $PipelineConfig $cfg
 Write-Host 'Speaker encoder downloaded and configured. Install/reinstall the service to grant it model access.'
 Write-Host 'No recordings or voice profiles were uploaded. Runtime inference uses these local weights offline.'

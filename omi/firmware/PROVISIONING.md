@@ -171,7 +171,8 @@ Existing stored audio retains the previous timestamp-gap splitting behavior;
 this change does not retrospectively detect silence inside old recordings.
 
 `CONFIG_OMI_VAD_HOLD_MS=30000` sets the silence interval and
-`CONFIG_OMI_VAD_ABS_THRESHOLD=250` sets the PCM threshold. The hardware wake
+`CONFIG_OMI_VAD_ABS_THRESHOLD=300` sets the PCM threshold in `.13` (previously
+250). The hardware wake
 threshold is separately defined in `t5838_aad.c`; room noise and distance affect
 what counts as sound. Hardware acoustic wake has startup latency and no pre-roll.
 BLE bulk downloads defer microphone sleep until the download ends; Wi-Fi
@@ -182,6 +183,10 @@ uploads can continue while the microphone sleeps.
 Firmware `3.0.22-localwifi.11` adds a brief **80 ms vibration** when sound wakes
 the microphone from VOX silence and recording successfully starts. Starting at
 boot or resuming with the button does not add this sound-wake vibration.
+From `3.0.22-localwifi.14` the vibration only happens when the microphone had
+been asleep for at least 5 minutes, so short wake/sleep cycles in a quiet room
+resume silently. The first 500 ms after the microphone restarts is not recorded,
+so recordings no longer begin with the startup pop or the vibration.
 
 **Click and release the button** (less than one second) to pause recording;
 click again to resume. Pausing closes the current recording and turns the

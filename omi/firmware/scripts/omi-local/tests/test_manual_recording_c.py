@@ -31,12 +31,14 @@ class ManualRecordingTests(unittest.TestCase):
 #define CONFIG_OMI_ENABLE_HAPTIC 1
 #define K_FOREVER 0
 #define AAD_PDM_SETTLE_MS 20
+#define CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS 300000
+#define MIC_START_DISCARD_BLOCKS 5
 #define ARG_UNUSED(x) ((void)(x))
 #define LOG_INF(...) ((void)0)
 #define LOG_ERR(...) ((void)0)
 static int aad_sem,aad_in_sleep,aad_woke,aad_wake_pending,aad_req_sleep;
-static int manual_pause_requested,manual_paused;
-static uint32_t manual_pause_started_ms,now;
+static int manual_pause_requested,manual_paused,mic_discard_blocks;
+static uint32_t manual_pause_started_ms,aad_sleep_started_ms,now;
 static bool manual_end_pending,aad_thread_started=true,is_connected,upload;
 static bool running=true,rail=true,irq,sd=true,race_pause;
 static int flushes,flush_error,resume_error,pause_error,buzzes,disabled;
@@ -59,7 +61,7 @@ void sd_request_power(bool on){sd=on;}
 bool wifi_upload_active(void){return upload;}
 int mic_pause(void){running=false;return pause_error;}
 int codec_end_recording(void){assert(!running);flushes++;return flush_error;}
-int mic_resume(void){if(resume_error)return resume_error;assert(rail);running=true;return 0;}
+int mic_resume(void){assert(mic_discard_blocks==5);mic_discard_blocks=0;if(resume_error)return resume_error;assert(rail);running=true;return 0;}
 void play_haptic_milli(int ms){assert(ms==80 && running);buzzes++;}
 void enter_hw_aad(void){running=false;aad_in_sleep=1;if(race_pause)manual_pause_requested=1;}
 ''' + '\n'.join(function(SRC/'mic.c',n) for n in names) + r'''
@@ -77,7 +79,11 @@ int main(void){
  now=2899;assert(mic_manual_pause_led_on());
  assert(!mic_toggle_manual_pause());step();
  assert(!manual_paused && running && rail && sd && aad_woke && !buzzes);
- /* Sound wake vibrates exactly once, only after a successful start. */
+ /* A short acoustic sleep resumes silently. */
+ aad_sleep_started_ms=now;now+=299999;
+ running=false;aad_in_sleep=1;aad_wake_pending=1;step();assert(running && !aad_in_sleep && !buzzes);
+ /* A long sleep vibrates exactly once, only after a successful start, across uptime wrap. */
+ aad_sleep_started_ms=UINT32_MAX-1000;now=298999;
  running=false;aad_in_sleep=1;aad_wake_pending=1;step();assert(running && !aad_in_sleep && buzzes==1);
  aad_wake_pending=1;step();assert(buzzes==1);
  /* A pause from acoustic sleep doesn't emit an extra end marker. */
@@ -113,9 +119,10 @@ int main(void){
 #define MAX_FRAMES 1600
 #define __ASSERT_NO_MSG(x) assert(x)
 #define LOG_ERR(...) ((void)0)
-static int manual_pause_requested,manual_paused,mem_slab,forwarded,tracked,freed;
+static int manual_pause_requested,manual_paused,mic_discard_blocks,mem_slab,forwarded,tracked,freed;
 static int16_t mono_buffer[MAX_FRAMES];
 int atomic_get(int *p){return *p;}
+void atomic_dec(int *p){(*p)--;}
 void k_mem_slab_free(int *p,void *b){(void)p;(void)b;freed++;}
 void interleaved_stereo_to_mono(int16_t *i,size_t n,int16_t *out){(void)i;(void)n;(void)out;}
 void aad_track_silence(const int16_t *b,size_t n){(void)b;(void)n;tracked++;}
@@ -126,7 +133,11 @@ int main(void){int16_t samples[4]={0};
  manual_pause_requested=1;process_audio_buffer(samples,sizeof(samples));
  manual_pause_requested=0;manual_paused=1;process_audio_buffer(samples,sizeof(samples));
  assert(!forwarded && !tracked && freed==2);
- manual_paused=0;process_audio_buffer(samples,sizeof(samples));assert(forwarded==1 && tracked==1 && freed==3);return 0;}
+ manual_paused=0;process_audio_buffer(samples,sizeof(samples));assert(forwarded==1 && tracked==1 && freed==3);
+ /* Startup blocks after a restart are neither recorded nor VOX-tracked. */
+ mic_discard_blocks=2;process_audio_buffer(samples,sizeof(samples));process_audio_buffer(samples,sizeof(samples));
+ assert(forwarded==1 && tracked==1 && freed==5 && !mic_discard_blocks);
+ process_audio_buffer(samples,sizeof(samples));assert(forwarded==2 && tracked==2 && freed==6);return 0;}
 ''')
 
     def test_button_release_toggles_once_and_preserves_long_holds(self):

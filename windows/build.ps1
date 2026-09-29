@@ -17,9 +17,14 @@ try {
     Copy-Item (Join-Path $PSScriptRoot 'register-tray.ps1') 'dist/windows/register-tray.ps1' -Force
     New-Item -ItemType Directory -Force 'dist/windows/config' | Out-Null
     Copy-Item 'config/*.example.json' 'dist/windows/config/' -Force
+    Copy-Item 'config/engines.lock.json' 'dist/windows/config/' -Force
     Copy-Item (Join-Path $PSScriptRoot 'setup-engines.ps1') 'dist/windows/setup-engines.ps1' -Force
     Copy-Item (Join-Path $PSScriptRoot 'setup-speakers.ps1') 'dist/windows/setup-speakers.ps1' -Force
+    foreach ($file in @('setup-common.ps1', 'build-moss.ps1', 'download-model.py', 'run-audio.ps1')) {
+        Copy-Item (Join-Path $PSScriptRoot $file) "dist/windows/$file" -Force
+    }
     Copy-Item 'README.md' 'dist/windows/README.md' -Force
+    Copy-Item 'SYSTEM.md' 'dist/windows/SYSTEM.md' -Force
     New-Item -ItemType Directory -Force 'dist/windows/docs' | Out-Null
     Copy-Item 'docs/*.md' 'dist/windows/docs/' -Force
     Write-Host 'Built dist/windows. No service has been installed or started.'

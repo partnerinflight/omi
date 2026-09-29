@@ -4,6 +4,9 @@ This fork is now a local Omi-to-Obsidian product. The old upstream desktop,
 mobile, web, cloud backend and deployment tooling were removed at the user's
 explicit request. Do not reintroduce cloud dependencies or their old CI gates.
 
+Start with [SYSTEM.md](SYSTEM.md) for end-to-end intent, architecture, Hermes
+boundaries, deployment, and dated known gaps; then follow the component guides.
+
 - Keep changes on the current feature branch. Never push to or merge `main`
   without explicit instruction. Preserve existing uncommitted user work.
 - Firmware: read `omi/firmware/AGENTS.md`. Do not flash the user's device until

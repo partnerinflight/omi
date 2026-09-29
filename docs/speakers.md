@@ -46,7 +46,8 @@ For a prebuilt bundle, the script is `setup-speakers.ps1` in the extracted folde
 It creates a separate CPU Python environment, downloads the public
 [SpeechBrain ECAPA speaker model](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb),
 and sets `speaker_python` and `speaker_model` in the private pipeline config.
-An optional `-Revision` pins a Hugging Face revision. Runtime inference uses local
+The default revision is pinned in `config/engines.lock.json`; optional `-Revision`
+accepts a full Hugging Face commit SHA. Runtime inference uses local
 weights with downloads disabled. Model-file hashes identify the embedding space;
 embeddings from different model versions are never compared. The encoder uses
 SpeechBrain's [speaker embedding interface](https://speechbrain.readthedocs.io/en/latest/tutorials/tasks/speech-classification-from-scratch.html).

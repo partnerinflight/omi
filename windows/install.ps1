@@ -12,7 +12,6 @@ param(
     [string]$ReviewUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [ValidatePattern("^[A-Za-z][A-Za-z0-9]{0,48}$")][string]$ServiceName = "SecondBrain",
     [ValidateRange(1,65535)][int]$Port = 7331,
-    [string]$VibeModelRepo = 'microsoft/VibeVoice-ASR-Streaming-7B',
     [switch]$SkipVibe7,
     [switch]$NoStart
 )
@@ -38,11 +37,13 @@ foreach ($component in @('service', 'tray')) {
     New-Item -ItemType Directory -Force "$InstallDir\$component" | Out-Null
     Copy-Item "$Bundle\$component\*" "$InstallDir\$component\" -Recurse -Force
 }
-Run $Python @('-m', 'venv', "$InstallDir\python")
+Run $Python @('-I', '-m', 'venv', "$InstallDir\python")
 $workerPython = "$InstallDir\python\Scripts\python.exe"
 $wheels = @(Get-ChildItem "$Bundle\python\*.whl" | ForEach-Object FullName)
 if ($wheels.Count -lt 2) { throw 'Bundle is missing Python wheels. Run windows/build.ps1 first.' }
-Run $workerPython (@('-m', 'pip', 'install') + $wheels)
+# Developer PYTHONPATH/egg-info must not make pip skip the service's wheels.
+# Reinstall explicit wheels even when an earlier bundle used the same version.
+Run $workerPython (@('-I', '-m', 'pip', 'install', '--force-reinstall') + $wheels)
 $key = (Get-Content $SecretFile -Raw).Trim()
 if ($key -notmatch '^[0-9a-fA-F]{64}$') { throw 'Existing receiver pairing key must contain 64 hexadecimal characters.' }
 $targetKey = "$DataRoot\config\upload-secret.hex"
@@ -50,19 +51,6 @@ if ((Test-Path $targetKey) -and (Get-Content $targetKey -Raw).Trim() -ne $key) {
 [IO.File]::WriteAllText($targetKey, $key + "`n")
 $pipelineTarget = "$DataRoot\config\pipeline.json"
 if ([IO.Path]::GetFullPath($PipelineConfig) -ne [IO.Path]::GetFullPath($pipelineTarget)) { Copy-Item $PipelineConfig $pipelineTarget -Force }
-# One-time install-time download; the service itself runs offline and never fetches models.
-$pipeline = Get-Content $pipelineTarget -Raw | ConvertFrom-Json
-$vibeModel = $pipeline.vibe_7b_model
-if (-not $SkipVibe7 -and $vibeModel -and [IO.Path]::IsPathRooted($vibeModel) -and -not (Test-Path $vibeModel)) {
-    $vibePython = if ($pipeline.vibe_python) { $pipeline.vibe_python } else { Join-Path $pipeline.vibe_repo '.venv\Scripts\python.exe' }
-    if (-not (Test-Path $vibePython)) { throw 'VibeVoice Python environment is missing; run windows/setup-engines.ps1 first.' }
-    # Download into a staging folder so an interrupted download is never mistaken for a complete model.
-    $staging = $vibeModel + '.partial'
-    New-Item -ItemType Directory -Force (Split-Path -Parent $vibeModel) | Out-Null
-    Write-Host "Downloading $VibeModelRepo to $vibeModel (several GB, one time; rerun resumes)..."
-    Run $vibePython @('-c', 'import sys; from huggingface_hub import snapshot_download; snapshot_download(sys.argv[1], local_dir=sys.argv[2])', $VibeModelRepo, $staging)
-    Move-Item $staging $vibeModel
-}
 $cfg = [ordered]@{
     data_dir = "$DataRoot\data"; incoming_dir = [IO.Path]::GetFullPath($IncomingDir)
     secret_file = $targetKey; pipeline_config = $pipelineTarget
@@ -73,7 +61,7 @@ $cfg = [ordered]@{
 }
 $cfg | ConvertTo-Json | Set-Content "$DataRoot\config\service.json" -Encoding UTF8
 # Surface the preflight's own reasons instead of a bare exit code.
-$checkOutput = & $workerPython -m second_brain.cli check --config "$DataRoot\config\service.json"
+$checkOutput = & $workerPython -I -m second_brain.cli check --config "$DataRoot\config\service.json"
 if ($LASTEXITCODE -ne 0) {
     $report = try { ($checkOutput -join "`n") | ConvertFrom-Json } catch { $null }
     if ($report -and $report.errors) { throw ("Preflight check failed:`n" + (($report.errors | ForEach-Object { "  - $_" }) -join "`n")) }
