@@ -19,7 +19,12 @@ sealed class TrayIcon : IDisposable
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open Second Brain", null, (_, _) => OpenRequested?.Invoke());
         menu.Items.Add("Review speakers", null, (_, _) => SpeakersRequested?.Invoke());
-        menu.Items.Add("Windows Services", null, (_, _) => Process.Start(new ProcessStartInfo("services.msc") { UseShellExecute = true }));
+        menu.Items.Add("Windows Services", null, (_, _) =>
+        {
+            // WinForms menu events bypass WPF's exception handler; mmc can be blocked by policy.
+            try { Process.Start(new ProcessStartInfo("services.msc") { UseShellExecute = true }); }
+            catch (System.ComponentModel.Win32Exception) { Forms.MessageBox.Show("Windows Services could not be opened on this PC.", "Second Brain"); }
+        });
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Quit status app (service continues)", null, (_, _) => QuitRequested?.Invoke());
         icon.ContextMenuStrip = menu;

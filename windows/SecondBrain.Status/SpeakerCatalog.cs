@@ -25,8 +25,15 @@ public sealed record SpeakerCatalog(double Heartbeat, Person[] People, Speaker[]
 {
     static readonly JsonSerializerOptions Options = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
-    public static SpeakerCatalog Parse(string json) =>
-        JsonSerializer.Deserialize<SpeakerCatalog>(json, Options) ?? throw new JsonException("Empty speaker catalog");
+    // Valid JSON of the wrong shape is reported as unreadable here, so views never see null lists.
+    public static SpeakerCatalog Parse(string json)
+    {
+        var catalog = JsonSerializer.Deserialize<SpeakerCatalog>(json, Options) ?? throw new JsonException("Empty speaker catalog");
+        if (catalog.People is null || catalog.Speakers is null || catalog.People.Any(p => p is null)
+            || catalog.Speakers.Any(s => s is null || s.Clips is null || s.Clips.Any(c => c is null)))
+            throw new JsonException("Speaker catalog is missing required lists");
+        return catalog;
+    }
 
     public bool IsLive(DateTimeOffset now) => now.ToUnixTimeSeconds() - Heartbeat < 15;
 

@@ -52,5 +52,12 @@ static class CatalogTests
         Check.That(catalog.IsLive(DateTimeOffset.FromUnixTimeSeconds(1010)), "fresh catalog is live");
         Check.That(!catalog.IsLive(DateTimeOffset.FromUnixTimeSeconds(1016)), "stale catalog is not live");
         Check.Throws<System.Text.Json.JsonException>(() => SpeakerCatalog.Parse(Fixtures.CatalogJson[..200]), "truncated catalog");
+        // Valid JSON with missing lists must be rejected as unreadable, not crash the UI later.
+        Check.Throws<System.Text.Json.JsonException>(() => SpeakerCatalog.Parse("""{"heartbeat": 1, "people": null, "speakers": []}"""), "null people");
+        Check.Throws<System.Text.Json.JsonException>(() => SpeakerCatalog.Parse("""{"heartbeat": 1, "people": []}"""), "missing speakers");
+        Check.Throws<System.Text.Json.JsonException>(() => SpeakerCatalog.Parse(
+            """{"heartbeat": 1, "people": [], "speakers": [{"id": "o1", "job": "j", "display": "Speaker 1", "recorded": "r", "state": "unidentified", "embedding_status": "x", "clips": null}]}"""),
+            "null clips");
+        Check.Throws<System.Text.Json.JsonException>(() => SpeakerCatalog.Parse("[]"), "array root");
     }
 }

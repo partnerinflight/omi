@@ -40,6 +40,7 @@ public sealed class ReviewClient(string directory)
         if (!File.Exists(path)) return null;
         using var doc = JsonDocument.Parse(SharedFile.ReadAllText(path));
         var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) throw new JsonException("Speaker response is not an object");
         bool ok = root.TryGetProperty("ok", out var value) && value.ValueKind == JsonValueKind.True;
         string? error = root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
         return new ReviewResponse(ok, ok ? null : error ?? "The service rejected the change.");

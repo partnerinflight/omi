@@ -16,9 +16,18 @@ public partial class App : Application
     string reviewDirectory = "";
     DateTime lastHover;
 
+    static readonly string ErrorLogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SecondBrain", "tray-errors.log");
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        // Last-chance net: the tray runs unattended all day, so an unexpected error in a
+        // handler or timer tick is logged and survived instead of silently closing the app.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            ErrorLog.Append(ErrorLogPath, args.Exception, DateTimeOffset.Now);
+            args.Handled = true;
+        };
         mutex = new Mutex(true, "Local\\SecondBrain.Tray", out bool created);
         if (!created) { Shutdown(); return; }
 

@@ -39,6 +39,10 @@ static class ReviewClientTests
             File.WriteAllText(Path.Combine(root, "responses", rename + ".json"), $"{{\"id\": \"{rename}\", \"ok\": false, \"error\": \"Person no longer exists\"}}");
             Check.Equal<ReviewResponse?>(new ReviewResponse(false, "Person no longer exists"), client.TryReadResponse(rename), "error response");
 
+            string oddId = Guid.NewGuid().ToString();
+            File.WriteAllText(Path.Combine(root, "responses", oddId + ".json"), "[1, 2]");
+            Check.Throws<JsonException>(() => client.TryReadResponse(oddId), "non-object response is unreadable data");
+
             var good = new Clip(0, 1, "", "clean", "o1-0.wav");
             Check.Equal(Path.Combine(root, "clips", "o1-0.wav"), client.ClipPath(good), "clip path");
             foreach (var bad in new[] { "..\\secret.wav", "sub/o1.wav", "C:o1.wav", "o1.mp3", "", ".." })
