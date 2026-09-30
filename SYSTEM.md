@@ -123,6 +123,9 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    Directory fsync is a no-op on Windows, so after a power loss a rename the
    client was already told is committed can be lost; the client has then
    deleted its copy. Accepted platform limit, as for other receiver renames.
+   The client is `mac/SecondBrainCapture` (menu-bar app; see its README). It opens a
+   short connection per operation, sends CAPTURE_OPEN when a meeting starts, and uploads
+   stereo Opus CAF (L = owner mic, R = meeting app) after the meeting ends.
 
 ## Adaptive processing and memory policy
 
