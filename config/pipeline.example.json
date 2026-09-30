@@ -6,7 +6,7 @@
   "moss_cpp_source_dir": "C:\\moss-transcribe.cpp\\build\\bin\\Release",
   "moss_cpp_engine_dir": "C:\\second-brain-asr-engines\\moss-transcribe-cpp",
   "moss_model": "C:\\moss-transcribe.cpp\\models\\moss-transcribe-q5_k.gguf",
-  "moss_threads": 8,
+  "moss_threads": 16,
   "moss_max_new": 2048,
   "vibe_repo": "C:\\second-brain-asr-engines\\VibeVoice",
   "vibe_7b_model": "C:\\second-brain-asr-engines\\models\\VibeVoice-ASR-Streaming-7B",
