@@ -15,6 +15,10 @@ final class CaptureController {
     private var uploads: UploadQueue?
     private var timers: [Timer] = []
     private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var sleeping = false
+    private var sessionStartedAt: TimeInterval = 0
+    private var quickInterrupts = 0
 
     private(set) var captureError: String?
     private(set) var uploadError: String?
@@ -58,7 +62,12 @@ final class CaptureController {
         // Going to sleep ends the capture so its span stays true; the next tick starts a new one.
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sleeping = true
             self?.interrupt()
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sleeping = false
         }
         kickUploads()
     }
@@ -86,12 +95,32 @@ final class CaptureController {
         onChange?()
     }
 
+    /// An audio device change. Repeated changes right after a capture starts mean the devices are
+    /// flapping: stop trying for this meeting instead of restarting in a loop.
+    private func deviceChanged() {
+        guard let app = recordingApp else { return }
+        if ProcessInfo.processInfo.systemUptime - sessionStartedAt < 10 {
+            quickInterrupts += 1
+        } else {
+            quickInterrupts = 0
+        }
+        guard quickInterrupts >= 3 else { return interrupt() }
+        quickInterrupts = 0
+        captureError = "Audio devices keep changing; not recording \(app)"
+        notify(captureError!)
+        _ = detector.skip()
+        end(discard: false)
+        onChange?()
+    }
+
     /// App quit: finish the active capture (recovery completes encoding on next launch if needed).
     func shutdown() {
         timers.forEach { $0.invalidate() }
         timers = []
         if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
         sleepObserver = nil
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        wakeObserver = nil
         if session != nil {
             _ = detector.endCapture()
             end(discard: false)
@@ -99,11 +128,12 @@ final class CaptureController {
     }
 
     private func tick() {
-        guard micAuthorized, let event = detector.update(AudioProcesses.snapshot(), now: now) else { return }
+        guard !sleeping, micAuthorized, let event = detector.update(AudioProcesses.snapshot(), now: now) else { return }
         switch event {
         case let .start(app, processes, device):
             begin(app: app, processes: processes, device: device)
         case .stop:
+            quickInterrupts = 0
             end(discard: false)
         }
         onChange?()
@@ -117,9 +147,10 @@ final class CaptureController {
             try capture.start(processes: processes, inputDevice: device)
             capture.onInterrupted = { [weak self, weak capture] in
                 guard let self, let capture, self.session === capture else { return }
-                self.interrupt()
+                self.deviceChanged()
             }
             session = capture
+            sessionStartedAt = ProcessInfo.processInfo.systemUptime
             captureError = nil
         } catch {
             spool.delete(record.captureID)
