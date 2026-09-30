@@ -88,7 +88,7 @@ the filtered signal):
 - `CONFIG_OMI_VAD_WINDOW_BLOCKS` default 5
 
 **Threshold tuning before flashing.** A host tool
-(`scripts/omi-local/tools/vox_replay.py` plus a small C harness) compiles the production
+(`python -m omi_local.vox_replay`, which compiles the production filter via ctypes) compiles the production
 `vox_filter.c` and replays the owner's pulled `.opus` recordings through it, reporting per
 file: awake seconds under the current `.14` rule versus the new rule, and how much
 speech-band activity each rule keeps. The threshold is chosen where speech files keep
