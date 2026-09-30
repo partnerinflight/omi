@@ -120,8 +120,9 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    Whole files land in `incoming/meetings/` only after a verified atomic commit
    (length and SHA-256); capture markers live in `.captures/` and completion
    receipts in `.ready/`. The pipeline does not yet process these receipts.
-   Directory fsync is a no-op on Windows, so a committed rename can be lost on
-   power loss there; the client re-uploads because it never saw a durable ACK.
+   Directory fsync is a no-op on Windows, so after a power loss a rename the
+   client was already told is committed can be lost; the client has then
+   deleted its copy. Accepted platform limit, as for other receiver renames.
 
 ## Adaptive processing and memory policy
 
@@ -266,8 +267,10 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
 
 ## Verification, known gaps, and agent rules
 
-- Verified code: `d103c03ec`. As of 2026-09-29 all 147 tests (32 pipeline + 115
-  receiver/native) pass on macOS/Linux via `scripts/test.py`; 29 pipeline tests pass on Windows. Windows CI also verifies clean
+- Verified code: `d103c03ec`: 29 pipeline tests pass on Windows. On branch
+  `feature/meeting-capture` (receiver v2, 2026-09-29) all 147 tests (32 pipeline
+  + 115 receiver/native) pass on macOS via `scripts/test.py`; Windows is not yet
+  re-verified for that branch. Windows CI also verifies clean
   wheel installation, service/tray builds, and actual SCM Session 0 upload →
   fixture ASR → note → speaker naming → restart without duplicate notes or lost
   names. Pinned MOSS source builds on Windows. See [validation](docs/validation.md).
