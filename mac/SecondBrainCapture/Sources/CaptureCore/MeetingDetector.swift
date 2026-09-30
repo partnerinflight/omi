@@ -65,7 +65,8 @@ public final class MeetingDetector {
     /// "Skip this meeting": stop now and ignore the app until it releases the microphone.
     public func skip() -> DetectorEvent? {
         guard let app = activeApp else { return nil }
-        skippedApp = app
+        // If the app already released the mic (grace period), there is nothing left to ignore.
+        skippedApp = releasedAt == nil ? app : nil
         activeApp = nil
         releasedAt = nil
         return .stop
@@ -74,6 +75,15 @@ public final class MeetingDetector {
     /// Stop any capture and start none before `until`; `pause(until: 0)` resumes.
     public func pause(until: Double) -> DetectorEvent? {
         pausedUntil = until
+        guard activeApp != nil else { return nil }
+        activeApp = nil
+        releasedAt = nil
+        return .stop
+    }
+
+    /// End any active capture without changing pause or skip state (e.g. after a sleep/wake gap);
+    /// the next update starts a new capture if the app still holds the mic.
+    public func endCapture() -> DetectorEvent? {
         guard activeApp != nil else { return nil }
         activeApp = nil
         releasedAt = nil

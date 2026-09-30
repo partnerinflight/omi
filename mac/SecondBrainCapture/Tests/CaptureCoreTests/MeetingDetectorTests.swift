@@ -71,4 +71,42 @@ final class MeetingDetectorTests: XCTestCase {
         XCTAssertEqual(make().update([zoom, chime], now: 0),
                        .start(app: "com.amazon.Amazon-Chime", processes: [30], inputDevice: nil))
     }
+
+    func testHelperOnlyInputStartsAndKeepsCapture() {
+        let helperInput = AudioProcess(objectID: 11, bundleID: "us.zoom.xos.helper", isRunningInput: true, inputDevices: [88])
+        let d = make()
+        XCTAssertEqual(d.update([zoomIdle, helperInput], now: 0),
+                       .start(app: "us.zoom.xos", processes: [10, 11], inputDevice: 88))
+        XCTAssertNil(d.update([zoomIdle, helperInput], now: 100))
+        XCTAssertEqual(d.activeApp, "us.zoom.xos")
+    }
+
+    func testSkipDuringGraceClearsWhenAppHadReleasedMic() {
+        let d = make()
+        _ = d.update([zoom], now: 0)
+        XCTAssertNil(d.update([zoomIdle], now: 10))
+        XCTAssertEqual(d.skip(), .stop)
+        XCTAssertEqual(d.update([zoom], now: 15), .start(app: "us.zoom.xos", processes: [10], inputDevice: 77))
+    }
+
+    func testEndCaptureRestartsWithoutTouchingPause() {
+        let d = make()
+        _ = d.update([zoom], now: 0)
+        XCTAssertEqual(d.endCapture(), .stop)
+        XCTAssertEqual(d.update([zoom], now: 1), .start(app: "us.zoom.xos", processes: [10], inputDevice: 77))
+
+        let p = make()
+        _ = p.pause(until: 3600)
+        XCTAssertNil(p.endCapture())
+        XCTAssertEqual(p.pausedUntil, 3600)
+    }
+
+    func testSkipThenDifferentAppStarts() {
+        let chime = AudioProcess(objectID: 30, bundleID: "com.amazon.Amazon-Chime", isRunningInput: true)
+        let d = make()
+        _ = d.update([zoom], now: 0)
+        XCTAssertEqual(d.skip(), .stop)
+        XCTAssertEqual(d.update([zoom, chime], now: 1),
+                       .start(app: "com.amazon.Amazon-Chime", processes: [30], inputDevice: nil))
+    }
 }
