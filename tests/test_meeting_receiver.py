@@ -70,6 +70,7 @@ class MeetingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((meetings / f"{CID}.caf").read_bytes(), DATA)
         self.assertTrue((meetings / ".ready" / f"{CID}.json").exists())
         self.runtime.discover()
+        self.assertFalse(self.runtime.queue.known(meetings / f"{CID}.caf"))
         self.assertIsNone(self.runtime.queue.claim())  # Plan 2 adds meeting processing
 
 

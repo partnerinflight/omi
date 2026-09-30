@@ -142,6 +142,9 @@ class FileStoreTests(unittest.TestCase):
         self.store.commit("AA-BB", CID)
         (self.root / f"{cid2}.caf").write_bytes(b"x")
         (self.root / f"{cid2}.json").write_text("not json")
+        cid3 = "ee" * 16
+        (self.root / f"{cid3}.caf").write_bytes(b"x")
+        (self.root / f"{cid3}.json").write_text("null")
         (self.root / ".captures" / f"{CID}.json").write_text(json.dumps({"capture_id": CID, "state": "open"}))
         fresh = RecordingStore(self.root)
         with self.assertLogs("omi_local.file_store", level="ERROR"):

@@ -190,5 +190,5 @@ class FileStore:
                 self._expect(side["capture_id"]).unlink(missing_ok=True)
                 self._close_marker(side["client"], side["capture_id"], side)
                 self.committed(audio, side)
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, TypeError):
                 log.exception("recovery failed for %s", audio)

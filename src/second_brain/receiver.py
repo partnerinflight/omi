@@ -62,6 +62,6 @@ class MeetingStore(FileStore):
     separate from Omi receipts, and are published only after the file is durable."""
 
     def committed(self, audio: Path, sidecar: dict):
-        receipt = self.root / ".ready" / f"{sidecar['capture_id']}.json"
+        receipt = self.root / ".ready" / f"{audio.stem}.json"
         if not receipt.exists():
             write_json(receipt, {"audio": str(audio), "metadata": {**sidecar, "source": "meeting"}})
