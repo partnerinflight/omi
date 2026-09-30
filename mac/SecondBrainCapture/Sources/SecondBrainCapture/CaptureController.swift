@@ -1,5 +1,6 @@
 import AVFoundation
 import CaptureCore
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -13,7 +14,7 @@ final class CaptureController {
     private let work = DispatchQueue(label: "capture.work")
     private var uploads: UploadQueue?
     private var timers: [Timer] = []
-    private var lastTick = Date().timeIntervalSince1970
+    private var sleepObserver: NSObjectProtocol?
 
     private(set) var captureError: String?
     private(set) var uploadError: String?
@@ -48,10 +49,17 @@ final class CaptureController {
 
     func start() {
         recoverSpool()
+        // .common mode keeps the timers running while a menu is open.
         timers = [
-            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() },
-            Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.kickUploads() },
+            Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tick() },
+            Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.kickUploads() },
         ]
+        for timer in timers { RunLoop.main.add(timer, forMode: .common) }
+        // Going to sleep ends the capture so its span stays true; the next tick starts a new one.
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.interrupt()
+        }
         kickUploads()
     }
 
@@ -70,15 +78,27 @@ final class CaptureController {
         onChange?()
     }
 
-    private func tick() {
-        // The Mac slept (timers did not fire): end the capture so its wall-clock span stays
-        // true; the next tick starts a new capture if the call goes on.
-        if now - lastTick > 10, session != nil {
+    /// Sleep or an audio device change: end the capture; the next tick starts a fresh one if the call goes on.
+    private func interrupt() {
+        guard session != nil else { return }
+        _ = detector.endCapture()
+        end(discard: false)
+        onChange?()
+    }
+
+    /// App quit: finish the active capture (recovery completes encoding on next launch if needed).
+    func shutdown() {
+        timers.forEach { $0.invalidate() }
+        timers = []
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        sleepObserver = nil
+        if session != nil {
             _ = detector.endCapture()
             end(discard: false)
-            onChange?()
         }
-        lastTick = now
+    }
+
+    private func tick() {
         guard micAuthorized, let event = detector.update(AudioProcesses.snapshot(), now: now) else { return }
         switch event {
         case let .start(app, processes, device):
@@ -95,6 +115,10 @@ final class CaptureController {
             try spool.save(record)
             let capture = try CaptureSession(record: record, spool: spool)
             try capture.start(processes: processes, inputDevice: device)
+            capture.onInterrupted = { [weak self, weak capture] in
+                guard let self, let capture, self.session === capture else { return }
+                self.interrupt()
+            }
             session = capture
             captureError = nil
         } catch {
@@ -109,7 +133,7 @@ final class CaptureController {
     private func end(discard: Bool) {
         guard let capture = session else { return }
         session = nil
-        var record = capture.record
+        let record = capture.record
         let frames: Int64
         do {
             frames = try capture.finish()
@@ -119,8 +143,8 @@ final class CaptureController {
             captureError = "Recording failed: \(error)"
             notify(captureError!)
         }
-        record.endMs = Int64(now * 1000)
-        let endMs = record.endMs
+        // The audio's true span, not the wall clock at the moment we noticed the end.
+        let endMs = record.startMs + frames * 1000 / 16000
         if discard || Double(frames) / 16000 < config.minCaptureSeconds {
             cancel(record.captureID, endMs: endMs)
         } else {

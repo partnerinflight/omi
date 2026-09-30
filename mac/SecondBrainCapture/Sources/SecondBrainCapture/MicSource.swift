@@ -3,7 +3,7 @@ import CoreAudio
 
 /// Captures one input device (default input if nil) with AVAudioEngine.
 final class MicSource {
-    private let engine = AVAudioEngine()
+    let engine = AVAudioEngine()
 
     /// `onBuffer` runs on the engine's audio thread.
     func start(device: AudioDeviceID?, onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws {

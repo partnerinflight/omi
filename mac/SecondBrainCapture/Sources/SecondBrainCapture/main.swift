@@ -12,13 +12,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: CaptureController?
     private var menu: StatusMenu?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.shutdown()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
             let controller = try CaptureController()
             self.controller = controller
             menu = StatusMenu(controller: controller)
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
-            try? SMAppService.mainApp.register()  // start at login
+            if !UserDefaults.standard.bool(forKey: "loginItemRegistered") {
+                try? SMAppService.mainApp.register()  // start at login, once
+                UserDefaults.standard.set(true, forKey: "loginItemRegistered")
+            }
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 DispatchQueue.main.async {
                     controller.micAuthorized = granted
