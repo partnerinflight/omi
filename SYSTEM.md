@@ -61,8 +61,8 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   separate tuning, startup latency, and no pre-roll.
 - Wake feedback: an 80 ms vibration only after at least 5 minutes of acoustic
   sleep; every mic restart discards 500 ms of PCM (startup transient + motor).
-- Normal recording: LEDs off. Acoustic silence: solid red. Successful acoustic
-  wake: 80 ms vibration. Short button release toggles manual pause/resume;
+- Normal recording: LEDs off. Acoustic silence: solid red. Acoustic wake after
+  5+ minutes asleep: 80 ms vibration. Short button release toggles manual pause/resume;
   paused microphone rail and acoustic wake are off, red flashes 200 ms every
   3 seconds. Pause is not persistent across reboot. Other warning/setup/upload
   LED priorities still apply; manual pause overrides awake indications.
