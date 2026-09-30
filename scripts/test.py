@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -14,3 +15,8 @@ for cwd in [root, receiver]:
     subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."], cwd=cwd, env=env, check=True
     )
+
+mac = root / "mac/SecondBrainCapture"
+if sys.platform == "darwin" and shutil.which("swift"):
+    # The integration test starts a loopback receiver with this interpreter.
+    subprocess.run(["swift", "test"], cwd=mac, env={**env, "SBC_RECEIVER_PYTHON": sys.executable}, check=True)
