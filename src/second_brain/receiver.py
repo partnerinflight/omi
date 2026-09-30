@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from omi_local.cli import SessionWriter
+from omi_local.file_store import FileStore
 from omi_local.server import SessionWriterFactory
 from omi_local.state import StateStore
 from .config import read_json
@@ -54,3 +55,13 @@ class ReceiverFactory(SessionWriterFactory):
             if path.exists():
                 for state in read_json(path).values():
                     publish_receipts(self.dest, state.get("files", []))
+
+
+class MeetingStore(FileStore):
+    """Meeting captures from the Mac app. Receipts live in `<meetings>/.ready`,
+    separate from Omi receipts, and are published only after the file is durable."""
+
+    def committed(self, audio: Path, sidecar: dict):
+        receipt = self.root / ".ready" / f"{sidecar['capture_id']}.json"
+        if not receipt.exists():
+            write_json(receipt, {"audio": str(audio), "metadata": {**sidecar, "source": "meeting"}})

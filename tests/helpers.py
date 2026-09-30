@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import secrets
 import struct
@@ -86,6 +87,37 @@ async def upload(port, data, secret=SECRET):
         await writer.drain()
         kind, _ = await receive(reader)
         assert kind == U.MSG_BYE
+        return kind
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def upload_file(port, capture_id: bytes, data: bytes, metadata: dict, secret=SECRET):
+    """Minimal protocol-v2 client: open the capture, upload one file, return the final reply type."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        async def call(kind, payload=b""):
+            writer.write(U.frame(kind, payload))
+            await writer.drain()
+            return await receive(reader)
+
+        cn = secrets.token_bytes(16)
+        kind, challenge = await call(U.MSG_HELLO, U.encode_hello(b"\xaa\xbb\xcc\xdd\xee\xff", cn, U.VERSION_FILE))
+        assert kind == U.MSG_CHALLENGE
+        kind, _ = await call(U.MSG_AUTH, U.auth_tag(secret, U.LABEL_CLIENT, cn, challenge[:16]))
+        if kind != U.MSG_OK:
+            return kind
+        await call(U.MSG_CAPTURE_OPEN, U.encode_capture_open(capture_id, metadata["start_ms"], metadata["app"]))
+        kind, start = await call(U.MSG_FILE_BEGIN,
+                                 U.encode_file_begin(capture_id, len(data), hashlib.sha256(data).digest(), metadata))
+        assert kind == U.MSG_FILE_START
+        offset = U.parse_u64(start)
+        while offset < len(data):
+            kind, ack = await call(U.MSG_FILE_DATA, U.encode_file_data(offset, data[offset:offset + 16384]))
+            assert kind == U.MSG_FILE_ACK
+            offset = U.parse_u64(ack)
+        kind, _ = await call(U.MSG_FILE_END)
         return kind
     finally:
         writer.close()
