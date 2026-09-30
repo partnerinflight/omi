@@ -23,10 +23,17 @@ public final class Resampler {
         return converter
     }
 
+    private static func sameShape(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
+        a.sampleRate == b.sampleRate && a.channelCount == b.channelCount
+            && a.isInterleaved == b.isInterleaved && a.commonFormat == b.commonFormat
+    }
+
     private static func monoFormat(rate: Double) -> AVAudioFormat? {
         AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)
     }
 
+    /// Handles planar and interleaved Float32 only; non-Float32 input with more than two channels
+    /// yields nil (so `convert` returns []). Taps and mics deliver Float32.
     private static func averageToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard let format = monoFormat(rate: buffer.format.sampleRate),
               let mono = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength),
@@ -34,17 +41,25 @@ public final class Resampler {
         let frames = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
         mono.frameLength = buffer.frameLength
-        for i in 0..<frames {
-            var sum: Float = 0
-            for c in 0..<channels { sum += src[c][i] }
-            dst[i] = sum / Float(channels)
+        if buffer.format.isInterleaved {
+            for i in 0..<frames {
+                var sum: Float = 0
+                for c in 0..<channels { sum += src[0][i * channels + c] }
+                dst[i] = sum / Float(channels)
+            }
+        } else {
+            for i in 0..<frames {
+                var sum: Float = 0
+                for c in 0..<channels { sum += src[c][i] }
+                dst[i] = sum / Float(channels)
+            }
         }
         return mono
     }
 
     public func convert(_ original: AVAudioPCMBuffer) -> [Float] {
         var buffer = original
-        if buffer.format != inputFormat {
+        if !Self.sameShape(buffer.format, inputFormat) {
             guard let rebuilt = Self.makeConverter(for: buffer.format) else { return [] }
             converter = rebuilt
             inputFormat = buffer.format

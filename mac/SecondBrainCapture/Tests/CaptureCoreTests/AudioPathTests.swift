@@ -110,4 +110,40 @@ final class AudioPathTests: XCTestCase {
         XCTAssertEqual(Double(total), 16000, accuracy: 320)
         XCTAssertGreaterThan(peak, 0.3)
     }
+
+    func testResamplerDownmixesInterleavedSixChannels() throws {
+        let input = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, interleaved: true,
+                                                channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 6)!))
+        let resampler = try XCTUnwrap(Resampler(from: input))
+        var peak: Float = 0
+        for chunk in 0..<5 {
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: input, frameCapacity: 4800))
+            buffer.frameLength = 4800
+            let data = try XCTUnwrap(buffer.floatChannelData)[0]
+            for i in 0..<(4800 * 6) { data[i] = 0 }
+            for i in 0..<4800 {
+                data[i * 6 + 5] = 0.5 * sin(Float(chunk * 4800 + i) * 2 * .pi * 440 / 48000)
+            }
+            peak = max(peak, resampler.convert(buffer).map(abs).max() ?? 0)
+        }
+        XCTAssertGreaterThan(peak, 0.05)
+    }
+
+    func testEqualButDistinctFormatsDoNotRebuildConverter() throws {
+        let formats = try (0..<2).map { _ in try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)) }
+        let resampler = try XCTUnwrap(Resampler(from: formats[0]))
+        var total = 0
+        for chunk in 0..<10 {
+            let format = formats[chunk % 2]
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800))
+            buffer.frameLength = 4800
+            for c in 0..<2 {
+                for i in 0..<4800 {
+                    buffer.floatChannelData![c][i] = 0.5 * sin(Float(chunk * 4800 + i) * 2 * .pi * 440 / 48000)
+                }
+            }
+            total += resampler.convert(buffer).count
+        }
+        XCTAssertEqual(Double(total), 16000, accuracy: 320)
+    }
 }
