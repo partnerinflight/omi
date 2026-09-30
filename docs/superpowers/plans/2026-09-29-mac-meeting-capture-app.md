@@ -2377,30 +2377,32 @@ final class CaptureController {
             notify(captureError!)
         }
         record.endMs = Int64(now * 1000)
+        let endMs = record.endMs
         if discard || Double(frames) / 16000 < config.minCaptureSeconds {
             cancel(record)
         } else {
-            try? spool.save(record)
+            // Locked read-modify-write: the upload queue may be saving `opened` concurrently.
+            try? spool.update(record.captureID) { $0.endMs = endMs }
             work.async { self.finalize(record) }
         }
         kickUploads()
     }
 
     private func cancel(_ record: CaptureRecord) {
-        var cancelled = record
-        cancelled.state = .cancelled
+        let endMs = record.endMs
         spool.deleteAudio(record.captureID)
-        try? spool.save(cancelled)
+        try? spool.update(record.captureID) {
+            $0.state = .cancelled
+            $0.endMs = endMs
+        }
     }
 
     /// On `work`: encode the PCM, then mark the capture complete and try to upload.
     private func finalize(_ record: CaptureRecord) {
-        var complete = record
         do {
             try CaptureEncoder.encode(pcm: spool.pcmURL(record.captureID), to: spool.cafURL(record.captureID))
             try? FileManager.default.removeItem(at: spool.pcmURL(record.captureID))
-            complete.state = .complete
-            try spool.save(complete)
+            try spool.update(record.captureID) { $0.state = .complete }
         } catch {
             DispatchQueue.main.async {
                 self.captureError = "Encoding failed: \(error)"
@@ -2412,20 +2414,20 @@ final class CaptureController {
 
     /// Finish captures interrupted by a crash, sleep or quit.
     private func recoverSpool() {
-        for var record in spool.records() where record.state == .recording {
+        for var record in spool.records() where record.state == .recording {  // before uploads start: no race
             let pcm = spool.pcmURL(record.captureID)
             if !FileManager.default.fileExists(atPath: pcm.path),
                FileManager.default.fileExists(atPath: spool.cafURL(record.captureID).path) {
-                record.state = .complete  // encoded, but the state change was lost
-                try? spool.save(record)
+                try? spool.update(record.captureID) { $0.state = .complete }  // encoded, but the state change was lost
                 continue
             }
             let frames = (try? PCMWriter.truncateToWholeFrames(pcm)) ?? 0
             record.endMs = record.startMs + frames * 1000 / 16000
+            let endMs = record.endMs
             if Double(frames) / 16000 < config.minCaptureSeconds {
                 cancel(record)
             } else {
-                try? spool.save(record)
+                try? spool.update(record.captureID) { $0.endMs = endMs }
                 work.async { self.finalize(record) }
             }
         }
