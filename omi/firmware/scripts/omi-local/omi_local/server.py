@@ -113,7 +113,8 @@ class UploadServer:
         auth = parse(payload)
         expected = U.auth_tag(self.secret, U.LABEL_CLIENT, hello.client_nonce, server_nonce)
         if not hmac.compare_digest(auth.client_tag, expected):
-            log.warning("client %s failed authentication", hello.device_id_str)
+            log.warning("device %s from %s failed authentication", hello.device_id_str,
+                        writer.get_extra_info("peername"))
             await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_AUTH]))
             return None
         return auth
@@ -239,11 +240,15 @@ class UploadServer:
             current = None
             while True:
                 try:
-                    msg_type, payload = await self._read_frame(reader, U.MAX_FILE_PAYLOAD, DATA_TIMEOUT_S)
+                    hdr = await asyncio.wait_for(reader.readexactly(U.HEADER_LEN), DATA_TIMEOUT_S)
                 except asyncio.IncompleteReadError as e:
                     if not e.partial:
-                        return True  # clean close between messages
+                        return True  # clean close between messages (no header byte read)
                     raise
+                msg_type, length = U.parse_header(hdr)
+                if length > U.MAX_FILE_PAYLOAD:
+                    raise U.UploadProtocolError(f"frame too large ({length} bytes)")
+                payload = await asyncio.wait_for(reader.readexactly(length), DATA_TIMEOUT_S) if length else b""
                 if msg_type == U.MSG_CAPTURE_OPEN:
                     m = U.parse_capture_open(payload)
                     await asyncio.to_thread(self.files.open_capture, client, m.capture_id.hex(), m.start_ms, m.app)

@@ -197,6 +197,100 @@ class FileUploadServerTests(unittest.TestCase):
         run(self._serve(go))
         self.assertEqual(result["reply"], (U.MSG_REJECT, U.REJECT_PROTOCOL))
 
+    def _handshake(self, cid_bytes=b"\x02" * 6):
+        async def hs(reader, writer):
+            cn = secrets.token_bytes(16)
+            writer.write(U.frame(U.MSG_HELLO, U.encode_hello(cid_bytes, cn, U.VERSION_FILE)))
+            await writer.drain()
+            ch = (await reader.readexactly(U.HEADER_LEN + 48))[U.HEADER_LEN:]
+            return cn, ch[:16]
+        return hs
+
+    def test_truncated_frame_after_header_counts_as_failed(self):
+        holder = {}
+
+        async def go(port):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            cn, sn = await self._handshake()(reader, writer)
+            writer.write(U.frame(U.MSG_AUTH, U.auth_tag(self.secret, U.LABEL_CLIENT, cn, sn)))
+            await writer.drain()
+            await reader.readexactly(U.HEADER_LEN)  # OK
+            writer.write(bytes([U.MSG_FILE_DATA]) + (100).to_bytes(4, "big"))
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0.2)
+
+        server = run(self._serve(go))
+        self.assertEqual((server.sessions_ok, server.sessions_failed), (0, 1))
+
+    def test_bad_auth_tag_gets_reject_auth_and_no_files(self):
+        result = {}
+
+        async def go(port):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            await self._handshake()(reader, writer)
+            writer.write(U.frame(U.MSG_AUTH, b"\x00" * 32))
+            await writer.drain()
+            hdr = await reader.readexactly(U.HEADER_LEN)
+            result["reply"] = (hdr[0], (await reader.readexactly(1))[0])
+            writer.close()
+
+        run(self._serve(go))
+        self.assertEqual(result["reply"], (U.MSG_REJECT, U.REJECT_AUTH))
+        self.assertFalse((self.dest / "meetings").exists())
+
+    def test_oversized_preauth_frame_is_rejected(self):
+        result = {}
+
+        async def go(port):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            await self._handshake()(reader, writer)
+            writer.write(bytes([U.MSG_AUTH]) + (U.MAX_CTRL_PAYLOAD + 1).to_bytes(4, "big"))
+            await writer.drain()
+            hdr = await reader.readexactly(U.HEADER_LEN)
+            result["reply"] = (hdr[0], (await reader.readexactly(1))[0])
+            writer.close()
+
+        run(self._serve(go))
+        self.assertEqual(result["reply"], (U.MSG_REJECT, U.REJECT_PROTOCOL))
+
+    def test_busy_key_released_after_failed_connection(self):
+        bad = FakeFileClient(self.secret, bad_offset=True)
+        good = FakeFileClient(self.secret)
+
+        async def both(port):
+            await bad.run("127.0.0.1", port)
+            await good.run("127.0.0.1", port)
+
+        run(self._serve(both))
+        self.assertEqual((bad.result, good.result), (f"rejected {U.REJECT_PROTOCOL}", "ok"))
+
+    def test_second_connection_same_client_id_gets_busy(self):
+        result = {}
+        cid = b"\xaa\xbb\xcc\xdd\xee\xff"
+
+        async def open_authed(port):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            cn, sn = await self._handshake(cid)(reader, writer)
+            writer.write(U.frame(U.MSG_AUTH, U.auth_tag(self.secret, U.LABEL_CLIENT, cn, sn)))
+            await writer.drain()
+            hdr = await reader.readexactly(U.HEADER_LEN)
+            return reader, writer, hdr[0]
+
+        async def go(port):
+            r1, w1, first = await open_authed(port)
+            r2, w2, second = await open_authed(port)
+            result["types"] = (first, second)
+            if second == U.MSG_REJECT:
+                result["code"] = (await r2.readexactly(1))[0]
+            w2.close()
+            w1.close()
+
+        run(self._serve(go))
+        self.assertEqual(result["types"], (U.MSG_OK, U.MSG_REJECT))
+        self.assertEqual(result["code"], U.REJECT_BUSY)
+
     def test_v1_device_and_v2_client_share_one_receiver(self):
         ring = FakeRing(capacity=5000)
         ring.record_session(1_700_000_000, 100)
