@@ -139,11 +139,20 @@ IMPORTANCE_PATTERNS = {
     ],
 }
 
+# "like"/"love" alone are fillers ("it's like", "I love it"); a preference is stated about someone
+# ("she likes", "prefers"), and a change needs a subject ("I started", not "it started raining").
 DURABLE_PERSONAL_PATTERNS = [
-    r"\b(?:likes?|loves?|dislikes?|hates?|prefers?)\b",
-    r"\b(?:started|stopped|joined|quit|switched|changed)\b",
+    r"\b(?:likes|loves|hates|dislikes?|prefers?)\b",
+    r"\b(?:i|he|she|they|we)\s+(?:just\s+)?(?:started|stopped|joined|quit|switched|changed)\b",
     r"\b(?:is|was|will be)\s+(?:allergic|available|unavailable|interested|attending|taking)\b",
 ]
+
+# Everyday speech that matches a category without carrying durable information on its own.
+# A window whose only signal is one of these ("I'll get it", "let's go") is not kept for it.
+WEAK_SIGNAL_PATTERNS = {
+    "decision": [r"\blet'?s\b"],
+    "commitment": [r"\bi(?:'ll| will)\b", r"\bwe(?:'ll| will)\b"],
+}
 
 PLANNING_PATTERNS = [
     r"\bappointment\b",
@@ -480,6 +489,12 @@ def memory_gate_heuristic(text, segments, importance_score, importance_signals):
         "personal_durable_fact": _matches_any(DURABLE_PERSONAL_PATTERNS, lower),
     }
 
+    hits = [k for k, v in contains.items() if v]
+    if len(hits) == 1 and hits[0] in WEAK_SIGNAL_PATTERNS:
+        strong = [p for p in IMPORTANCE_PATTERNS[hits[0]] if p not in WEAK_SIGNAL_PATTERNS[hits[0]]]
+        if not _matches_any(strong, lower):
+            contains[hits[0]] = False
+
     # Determine a primary conversation type.
     if contains["decision"]:
         ctype = "decision"
@@ -608,6 +623,11 @@ def evaluate_memory_gate(cfg, gate, importance, word_count):
     if word_count < cfg.get("memory_gate_min_words", 10):
         return False, "too little content"
 
+    # Keyword signals fire on everyday speech; below this importance they are not trusted (0 = v3).
+    floor = cfg.get("memory_gate_min_importance", 0)
+    if importance < floor:
+        return False, f"importance {importance} below floor {floor}"
+
     ctype = gate.get("conversation_type", "other")
     durability = int(gate.get("durability", 0))
     retrieval = int(gate.get("retrieval_value", 0))
@@ -711,13 +731,34 @@ def vault_novelty(text, vault_index):
     return novelty, context
 
 
+def hermes_should_consult(cfg, heuristic_gate, importance, word_count):
+    """Mode "all" (v3) asks Hermes about every window. Mode "borderline" asks only about windows
+    the heuristic would keep with importance below hermes_borderline_max_importance."""
+    if cfg.get("hermes_scoring_mode", "all") != "borderline":
+        return True
+    keep, _ = evaluate_memory_gate(cfg, heuristic_gate, importance, word_count)
+    return keep and importance < cfg.get("hermes_borderline_max_importance", 45)
+
+
+def apply_hermes_verdict(cfg, llm, keep, reason):
+    """In borderline mode Hermes was asked precisely whether to keep, so its "no" drops the window.
+    Mode "all" keeps the v3 merge, where either source's durable signal keeps it."""
+    if keep and llm and cfg.get("hermes_scoring_mode", "all") == "borderline" and not llm.get("memory_keep"):
+        return False, "Hermes: " + (llm.get("memory_reason") or "not durable")
+    return keep, reason
+
+
 def hermes_score(cfg, transcript, heuristic, vault_context):
     if not cfg.get("hermes_scoring_enabled"):
         return None
     url = cfg.get("hermes_url")
     if not url or "YOUR-PI-IP" in url:
         return None
-    key = os.environ.get(cfg.get("hermes_api_key_env", "HERMES_API_KEY"), "")
+    # A service has no user environment: prefer a private key file next to the config.
+    if cfg.get("hermes_api_key_file"):
+        key = Path(cfg["hermes_api_key_file"]).read_text(encoding="utf-8").strip()
+    else:
+        key = os.environ.get(cfg.get("hermes_api_key_env", "HERMES_API_KEY"), "")
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -739,7 +780,7 @@ Return ONLY valid JSON:
   "durability": integer 0-100,
   "actionability": integer 0-100,
   "retrieval_value": integer 0-100,
-  "contains": {
+  "contains": {{
     "decision": boolean,
     "task": boolean,
     "commitment": boolean,
@@ -747,7 +788,7 @@ Return ONLY valid JSON:
     "project_information": boolean,
     "date_or_event": boolean,
     "personal_durable_fact": boolean
-  },
+  }},
   "memory_keep": boolean,
   "memory_reason": "brief explanation of why this does or does not belong in durable memory"
 }}
@@ -1098,7 +1139,7 @@ def main():
         memory_h = memory_gate_heuristic(text, w["segments"], imp_h, imp_hits)
 
         llm = None
-        if cfg.get("hermes_scoring_enabled"):
+        if cfg.get("hermes_scoring_enabled") and hermes_should_consult(cfg, memory_h, imp_h, len(text.split())):
             try:
                 llm = hermes_score(cfg, format_segments(w["segments"]), heuristic, vault_ctx)
             except Exception as exc:
@@ -1128,7 +1169,9 @@ def main():
 
         preliminary_memory_gate = merge_memory_gate(memory_h, llm_memory)
         words = len(text.split())
-        pre_keep, pre_keep_reason = evaluate_memory_gate(cfg, preliminary_memory_gate, importance, words)
+        pre_keep, pre_keep_reason = apply_hermes_verdict(
+            cfg, llm, *evaluate_memory_gate(cfg, preliminary_memory_gate, importance, words)
+        )
 
         tier = (
             "vibe7"
@@ -1284,11 +1327,10 @@ def main():
             }
 
         final_memory_gate = merge_memory_gate(final_memory_h, llm_memory)
-        memory_keep, memory_reason = evaluate_memory_gate(
+        memory_keep, memory_reason = apply_hermes_verdict(
             cfg,
-            final_memory_gate,
-            item["scores"]["importance"],
-            len(final_text.split()),
+            item.get("hermes_scores"),
+            *evaluate_memory_gate(cfg, final_memory_gate, item["scores"]["importance"], len(final_text.split())),
         )
 
         item["memory_gate"] = final_memory_gate

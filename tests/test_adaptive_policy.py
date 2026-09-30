@@ -126,9 +126,97 @@ def test_hotwords_are_bounded_and_include_static():
     assert len(words) <= CFG["hotword_max_terms"]
 
 
+def test_filler_like_and_a_lone_ill_are_not_durable():
+    # Real chatter the v3 keywords kept: filler "like" and one "I'll" are not durable information.
+    for text in ["Oh, that's how I like it. I just been enjoying it. I don't know what they are.",
+                 "Uh I bet. I'll race it. Yeah, that's that's that's. Oh yeah. It can slide in."]:
+        gate = m.memory_gate_heuristic(text, seg(text), 30, m.importance_heuristic(text, seg(text))[1])
+        keep, _ = m.evaluate_memory_gate(CFG, gate, 30, len(text.split()))
+        assert not gate["durable_signal"], text
+        assert keep is False, text
+
+
+def test_stated_preferences_and_backed_commitments_still_count():
+    text = "Daniel likes sushi but he is allergic to shellfish, so keep that in mind."
+    gate = m.memory_gate_heuristic(text, seg(text), 40, m.importance_heuristic(text, seg(text))[1])
+    assert gate["contains"]["personal_durable_fact"]
+    text = "I'll call the dentist tomorrow and book the cleaning for Daniel."
+    gate = m.memory_gate_heuristic(text, seg(text), 60, m.importance_heuristic(text, seg(text))[1])
+    assert gate["contains"]["commitment"] and gate["contains"]["task"]
+    assert m.evaluate_memory_gate(CFG, gate, 60, len(text.split()))[0] is True
+
+
+def test_importance_floor_is_off_by_default_and_drops_low_importance_windows():
+    text = "We decided DeepQuill should launch at 39 dollars next Friday."
+    gate = m.memory_gate_heuristic(text, seg(text), 25, ["decision", "project", "numbers/dates"])
+    assert m.evaluate_memory_gate(CFG, gate, 25, len(text.split()))[0] is True
+    keep, reason = m.evaluate_memory_gate(dict(CFG, memory_gate_min_importance=30), gate, 25, len(text.split()))
+    assert keep is False and "floor" in reason
+
+
+def test_hermes_is_consulted_only_for_borderline_keeps_and_can_veto_them():
+    text = "I'll call the dentist tomorrow morning and book the cleaning for next week."
+    gate = m.memory_gate_heuristic(text, seg(text), 35, ["commitment", "task"])
+    words = len(text.split())
+    borderline = dict(CFG, hermes_scoring_mode="borderline", hermes_borderline_max_importance=45)
+    assert m.hermes_should_consult(CFG, gate, 35, words) is True, "default mode asks about every window"
+    assert m.hermes_should_consult(borderline, gate, 35, words) is True
+    assert m.hermes_should_consult(borderline, gate, 80, words) is False, "clearly important: no call"
+    chatter = m.memory_gate_heuristic("Yeah. Oh yeah. So. Okay then.", seg("Yeah."), 10, [])
+    assert m.hermes_should_consult(borderline, chatter, 10, 5) is False, "already dropped: no call"
+    no = {"memory_keep": False, "memory_reason": "small talk"}
+    assert m.apply_hermes_verdict(borderline, no, True, "kept") == (False, "Hermes: small talk")
+    assert m.apply_hermes_verdict(borderline, None, True, "kept") == (True, "kept"), "Hermes down: keep"
+    assert m.apply_hermes_verdict(CFG, no, True, "kept") == (True, "kept"), "v3 merge unchanged in default mode"
+
+
+def test_hermes_key_can_come_from_a_private_file():
+    import http.server, json, tempfile, threading
+    from pathlib import Path
+    seen = []
+
+    class Hermes(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append(self.headers.get("Authorization"))
+            reply = {"importance": 20, "novelty": 10, "asr_uncertainty": 5, "memory_keep": False, "memory_reason": "chatter"}
+            body = json.dumps({"choices": [{"message": {"content": json.dumps(reply)}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Hermes)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "hermes-key.txt"
+            key.write_text("gateway-secret\n")
+            cfg = dict(hermes_scoring_enabled=True, hermes_url=f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                       hermes_api_key_file=str(key))
+            result = m.hermes_score(cfg, "Yeah. Okay.", {}, [])
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen == ["Bearer gateway-secret"]
+    assert (result["memory_keep"], result["memory_reason"]) == (False, "chatter")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(
         unittest.FunctionTestCase(value)
         for name, value in globals().items()
         if name.startswith("test_") and callable(value)
     )
+
+
+def load_tests(loader, tests, pattern):
+    """These are plain test functions; wrap them so the unittest runner in scripts/test.py runs them."""
+    suite = unittest.TestSuite()
+    for name, test in sorted(globals().items()):
+        if name.startswith("test_") and callable(test):
+            suite.addTest(unittest.FunctionTestCase(test, description=name))
+    return suite

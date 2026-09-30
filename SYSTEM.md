@@ -163,8 +163,11 @@ are authoritative; explain deliberate policy changes.
 - Refinement outside the target window is excluded. VibeVoice timestamps are
   approximate. Missing/empty/error refinement results fall back to MOSS with
   recorded warnings; process-level failures can still fail the whole job.
-- Final gate: fewer than ten words are rejected; durable signals pass; ephemeral
-  categories normally fail. Otherwise durability ≥58 and retrieval ≥55 pass,
+- Final gate: fewer than ten words are rejected; windows below
+  `memory_gate_min_importance` (default 0 = off) are rejected; durable signals
+  pass; ephemeral categories normally fail. Filler "like"/"love" and a lone
+  "I'll"/"we'll"/"let's" are not durable signals (2026-09-30: on 300 real windows
+  these fillers had kept 53 conversations of chatter and a novel read aloud). Otherwise durability ≥58 and retrieval ≥55 pass,
   or importance ≥90 with retrieval ≥48 overrides. Novelty alone never keeps a
   window. Both publication flags must be true: `memory_keep` and
   `route_to_knowledge_router`.
@@ -185,10 +188,17 @@ Implementation: `hermes_score()` in [pipeline.py](src/second_brain/adaptive/pipe
   `/v1/chat/completions` endpoint, and set `hermes_model`. `no_hermes` in service
   config overrides it. The `YOUR-PI-IP` example is a placeholder, not discovery.
 - POST JSON with `model`, system/user `messages`, and `temperature: 0`; default
-  request timeout 90 seconds. Optional bearer token comes from the environment
-  variable named by `hermes_api_key_env` (default `HERMES_API_KEY`). The Windows
-  service must inherit it; a user's interactive shell variable is insufficient.
-  The installer does not provision this secret. Never commit it.
+  request timeout 90 seconds. Optional bearer token comes from the private file
+  `hermes_api_key_file` (preferred for the service: keep it in the ProgramData
+  config folder) or else the environment variable named by `hermes_api_key_env`
+  (default `HERMES_API_KEY`), which the service must inherit. The installer does
+  not provision this secret. Never commit it.
+- `hermes_scoring_mode`: `all` (v3) scores every window, and either source's
+  durable signal keeps it. `borderline` asks Hermes only about windows the
+  heuristic would keep with importance below `hermes_borderline_max_importance`
+  (default 45), and Hermes's `memory_keep: false` then drops them; if Hermes fails,
+  the heuristic decision stands. Before 2026-09-30 the prompt could not be built
+  (unescaped braces), so no Hermes scoring had ever run.
 - Request contains the timestamped anonymous-speaker MOSS transcript, heuristic
   scores, and up to three nearby vault note paths/excerpts (800 characters each).
   These data leave the Windows worker for the configured endpoint. This scorer
