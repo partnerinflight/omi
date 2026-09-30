@@ -616,7 +616,14 @@ config OMI_VAD_WINDOW_BLOCKS
     depends on OMI_ENABLE_T5838_AAD
 ```
 
-In `FW/omi.conf`, replace `CONFIG_OMI_VAD_ABS_THRESHOLD=400` with the value T chosen in Task 3, and add below it:
+In `FW/src/t5838_aad.c`, raise the hardware wake threshold one step (owner decision): replace
+`#define T5838_AAD_A_THR_75dB 0x06` with `#define T5838_AAD_A_THR_80dB 0x08`, update the call
+`reg_write(T5838_REG_AAD_A_THR, T5838_AAD_A_THR_75dB);` to use `T5838_AAD_A_THR_80dB`, and
+change the comment above it to say mode A uses an 80 dB threshold (0x00 = 60 dB in 2.5 dB
+steps) so that typing wakes the mic less often. Also update the log line in `t5838_aad_enter`
+that says `75dB` to `80dB`.
+
+In `FW/omi.conf`, replace `CONFIG_OMI_VAD_ABS_THRESHOLD=400` with `CONFIG_OMI_VAD_ABS_THRESHOLD=200` (chosen in Task 3), and add below it:
 
 ```
 CONFIG_OMI_VAD_SUSTAIN_BLOCKS=3
@@ -631,7 +638,7 @@ Expected: all OK.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add omi/firmware/omi/src/mic.c omi/firmware/omi/Kconfig omi/firmware/omi/omi.conf omi/firmware/scripts/omi-local/tests/test_vox_c.py
+git add omi/firmware/omi/src/mic.c omi/firmware/omi/src/t5838_aad.c omi/firmware/omi/Kconfig omi/firmware/omi/omi.conf omi/firmware/scripts/omi-local/tests/test_vox_c.py
 git commit -m "firmware: reset the silence timer only on sustained speech-band sound"
 ```
 

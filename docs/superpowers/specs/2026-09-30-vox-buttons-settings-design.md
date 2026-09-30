@@ -98,8 +98,17 @@ chosen number and the per-file table go into `VALIDATION_MAC.md`.
 **Known limits, unchanged by this work.** Waking from hardware sleep is the T5838's own
 75 dB acoustic detector, so loud typing can still wake the device; the difference is that
 it returns to sleep after the 30 s hold instead of staying awake, and does not vibrate.
-Raising the T5838 threshold (`T5838_AAD_A_THR_75dB`) is a separate one-line change and is
-out of scope here.
+The owner chose to raise the T5838 mode-A wake threshold one step to 80 dB SPL (register
+value 0x08; the driver's existing constants give 0x00 = 60 dB and 0x06 = 75 dB, i.e. 2.5 dB
+per step), so typing wakes the microphone less often. This needs an on-device check because
+the replay cannot model hardware wake.
+
+**Tuning outcome (2026-09-30).** The original selection rule (typing/rumble total awake time
+halved) was unreachable: every wake stays awake at least the 30 s hold, and most typing files
+sit at that floor. Measured instead as awake time above the floor, threshold 200 halves the
+typing/rumble excess (52% kept) while speech keeps 96% of its awake time (worst long session
+86%, whose losses are pauses that hardware wake can reopen). A second high-pass section was
+tried and rejected: it trades speech for typing at almost the same rate. The owner chose 200.
 
 Native tests: a 100 Hz tone at keystroke level is rejected; simulated keystroke clicks
 (single loud blocks) are rejected; a 1 kHz tone at speech level is accepted; 3 of 5
