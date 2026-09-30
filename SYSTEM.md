@@ -49,16 +49,18 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
 [wifi_upload.c](omi/firmware/omi/src/wifi_upload.c).
 
 - Hardware: Omi CV1, nRF5340 + nRF7002, T5838 microphone; NCS 2.9.0.
-  Last installed/verified image: `3.0.22-localwifi.13`.
+  Last installed/verified image: `3.0.22-localwifi.14`.
 - Capture: 16 kHz, 16-bit PCM; stereo PDM is averaged to mono and Opus encoded.
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
   unread records are not overwritten. Track dropped counts.
-- VOX: average absolute PCM amplitude threshold **300**, continuous silence
+- VOX: average absolute PCM amplitude threshold **400**, continuous silence
   **30,000 ms**; any qualifying block resets the timer. This detects level, not
   speech. Trailing silence remains recorded. PCM/codec/packer drain before an
   explicit recording-end marker and acoustic sleep. Hardware acoustic wake has
   separate tuning, startup latency, and no pre-roll.
+- Wake feedback: an 80 ms vibration only after at least 5 minutes of acoustic
+  sleep; every mic restart discards 500 ms of PCM (startup transient + motor).
 - Normal recording: LEDs off. Acoustic silence: solid red. Successful acoustic
   wake: 80 ms vibration. Short button release toggles manual pause/resume;
   paused microphone rail and acoustic wake are off, red flashes 200 ms every

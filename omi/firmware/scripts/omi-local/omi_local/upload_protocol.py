@@ -12,6 +12,21 @@ TCP, big-endian, each message is [type:u8][len:u32][payload]:
 Tags are HMAC-SHA256(secret, label || client_nonce || server_nonce) with label
 "omi-local-srv" (receiver proves itself first) / "omi-local-cli".
 
+Protocol v2 (file clients such as the Mac meeting-capture app): HELLO ver=2,
+the same CHALLENGE, then AUTH carrying only client_tag:32, answered by OK 0x18.
+  C->S CAPTURE_OPEN   0x10  capture_id:16 start_ms:u64 app:utf8(<=256)   -> OK
+  C->S CAPTURE_CANCEL 0x11  capture_id:16                                -> OK
+  C->S FILE_BEGIN     0x12  capture_id:16 total_len:u64 sha256:32 json   -> FILE_START 0x15 offset:u64
+  C->S FILE_DATA      0x13  offset:u64 bytes(<=64 KiB)                   -> FILE_ACK 0x16 persisted:u64
+  C->S FILE_END       0x14                                               -> FILE_BYE 0x17 committed:u8
+Offsets must equal the durable length; violations are REJECT_PROTOCOL. A length
+overrun or SHA-256 mismatch at FILE_END discards the partial; a FILE_END with
+fewer bytes than declared is rejected but the partial is kept so the client can
+resume. A cancelled capture is final: its partial is deleted and a later
+FILE_BEGIN for it is REJECT_PROTOCOL. Only one v2 connection per client id at a
+time (otherwise REJECT_BUSY; clients should retry). The client closes the
+socket when done.
+
 Pure data helpers + BLE provisioning TLVs; no sockets here.
 """
 
