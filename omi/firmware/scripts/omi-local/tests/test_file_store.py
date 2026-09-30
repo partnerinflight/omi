@@ -127,6 +127,35 @@ class FileStoreTests(unittest.TestCase):
         self.store.append(CID, offset, DATA[offset:])
         self.assertEqual(self.store.commit("AA-BB", CID).read_bytes(), DATA)
 
+    def test_begin_requires_capture_timing_and_app(self):
+        bad = [{k: v for k, v in META.items() if k != "end_ms"},
+               {k: v for k, v in META.items() if k != "start_ms"},
+               {k: v for k, v in META.items() if k != "app"},
+               {**META, "start_ms": 5, "end_ms": 4},
+               {**META, "start_ms": -1},
+               {**META, "start_ms": True},
+               {**META, "end_ms": "61000"},
+               {**META, "start_ms": 1000.0},
+               {**META, "app": ""},
+               {**META, "app": 7}]
+        for meta in bad:
+            with self.subTest(meta=meta), self.assertRaises(FileMismatch):
+                self.store.begin("AA-BB", CID, len(DATA), SHA, meta)
+        self.assertFalse(self.root.exists() and any(self.root.glob("*.partial*")))
+
+    def test_close_keeps_open_marker_values_and_takes_end_from_sidecar(self):
+        self.store.open_capture("AA-BB", CID, 1000, "us.zoom.xos")
+        self.upload()
+        self.store.commit("AA-BB", CID)
+        m = self.store.capture_state(CID)
+        self.assertEqual((m["state"], m["start_ms"], m["app"], m["end_ms"]), ("closed", 1000, "us.zoom.xos", 61000))
+
+    def test_close_marker_never_replaces_values_with_none(self):
+        self.store.open_capture("AA-BB", CID, 1000, "us.zoom.xos")
+        self.store._close_marker("AA-BB", CID, {})
+        m = self.store.capture_state(CID)
+        self.assertEqual((m["start_ms"], m["app"]), (1000, "us.zoom.xos"))
+
     def test_metadata_cannot_override_reserved_sidecar_keys(self):
         meta = {**META, "sha256": "x", "file": "y", "complete": False, "capture_id": "z"}
         offset = self.store.begin("AA-BB", CID, len(DATA), SHA, meta)

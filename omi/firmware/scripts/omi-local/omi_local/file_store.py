@@ -95,13 +95,18 @@ class FileStore:
         current = self.capture_state(cid) or {"capture_id": cid, "client": client}
         if current.get("state") == "closed":
             return
-        self._write_marker(cid, {**current, "state": "closed", "start_ms": sidecar.get("start_ms"),
-                                        "end_ms": sidecar.get("end_ms"), "app": sidecar.get("app"),
+        self._write_marker(cid, {**current, "state": "closed", "start_ms": sidecar.get("start_ms", current.get("start_ms")),
+                                        "end_ms": sidecar.get("end_ms", current.get("end_ms")),
+                                        "app": sidecar.get("app", current.get("app")),
                                         "updated": time.time()})
 
     # --- file transfer -------------------------------------------------------
     def begin(self, client: str, cid: str, total_len: int, sha256: str, metadata: dict) -> int:
         """Return how many bytes of this file are already durable (0 = start over)."""
+        s, e, app = metadata.get("start_ms"), metadata.get("end_ms"), metadata.get("app")
+        if (any(type(v) is not int for v in (s, e)) or not 0 <= s <= e
+                or not isinstance(app, str) or not app):
+            raise FileMismatch("FILE_BEGIN metadata needs start_ms <= end_ms (ints) and app")
         audio = self._audio(cid)
         state = self.capture_state(cid)
         if state and state.get("state") == "cancelled":
