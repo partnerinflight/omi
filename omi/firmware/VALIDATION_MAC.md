@@ -467,3 +467,25 @@ Typing/rumble files that are not pinned at the 30.0 s floor for every threshold
 | omi_20260929-153148_seq000000458151 | 39.8 | 40.5 | 40.2 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
 | omi_20260929-155605_seq000000474775 | 46.4 | 46.7 | 42.2 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
 | omi_20260929-155659_seq000000475353 | 30.0 | 30.5 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
+
+## Firmware 3.0.22-localwifi.15 — 2026-09-30
+
+Changes since `.14`:
+
+- Button gestures are hold-then-release with 1/2/3 vibration pulses as the hold
+  crosses each threshold: pause/resume at 3–5 s, power off at 10–15 s, setup mode
+  at 20 s or more.
+- VOX measures the speech band (250 Hz high-pass, 3.4 kHz low-pass) and stays awake
+  on 3 of 5 blocks above `CONFIG_OMI_VAD_ABS_THRESHOLD=200`
+  (see "Speech-band VOX threshold" above).
+- Hardware wake sensitivity is 80 dB (T5838 0x08). This needs on-device confirmation.
+
+Full suite (`scripts/test.py`): 32 + 124 Python tests OK, 69 Swift tests, 0 failures.
+NCS 2.9.0 Wi-Fi sysbuild passes: app 873008 flash (91.92% of 949760) / 428880 RAM bytes.
+Both OTA images pass MCUboot signature verification (`imgtool verify`).
+Archive: `~/omi-firmware/Omi_CV1_OTA_3.0.22-localwifi.15.zip`.
+ZIP SHA-256: `e79c051b6f174d924d338d274b74b3438656f63128cfb0ce6cb88be95c686af2`.
+App digest: `4b641c58cb02f8ab86c8221c5c8c64ae75ed86d9451575c457e7378ef3e92462`.
+Network digest: `e63567ebf757c0a974b72454ac2a473ba13b4f768d6b444f79efaf0e7288fa4e`.
+
+Built only; not installed on a device yet.
