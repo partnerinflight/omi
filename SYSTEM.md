@@ -54,20 +54,25 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
   unread records are not overwritten. Track dropped counts.
-- VOX: average absolute PCM amplitude threshold **400**, continuous silence
-  **30,000 ms**; any qualifying block resets the timer. This detects level, not
-  speech. Trailing silence remains recorded. PCM/codec/packer drain before an
-  explicit recording-end marker and acoustic sleep. Hardware acoustic wake has
-  separate tuning, startup latency, and no pre-roll.
+- VOX: built `.15` (not yet installed; `.14` behavior differs): level measured
+  after 250 Hz high-pass / 3.4 kHz low-pass, threshold **200**, continuous silence
+  **30,000 ms**; the timer resets only when at least 3 of the last 5 100 ms blocks
+  reach the threshold. This detects speech-band level, not speech.
+  Trailing silence remains recorded. PCM/codec/packer drain before an
+  explicit recording-end marker and acoustic sleep. Hardware acoustic wake
+  (80 dB in `.15`, was 75 dB) has separate tuning, startup latency, and no pre-roll.
 - Wake feedback: an 80 ms vibration only after at least 5 minutes of acoustic
   sleep; every mic restart discards 500 ms of PCM (startup transient + motor).
 - Normal recording: LEDs off. Acoustic silence: solid red. Acoustic wake after
-  5+ minutes asleep: 80 ms vibration. Short button release toggles manual pause/resume;
+  5+ minutes asleep: 80 ms vibration. Built `.15` (not yet installed): every gesture is
+  hold-then-release; release at 3–5 s toggles manual pause/resume;
   paused microphone rail and acoustic wake are off, red flashes 200 ms every
   3 seconds. Pause is not persistent across reboot. Other warning/setup/upload
   LED priorities still apply; manual pause overrides awake indications.
-- Wi-Fi build: release button at 3–5 seconds to power off; hold 20 seconds to
-  enter setup. **The 20-second action opens setup; it is not a reboot.**
+- Button, built `.15`: release at 10–15 s (2 pulses at 10 s) powers off; release at
+  20 s or more (3 pulses at 20 s) enters setup (Wi-Fi build only; BLE-only has no
+  setup). Short clicks and 5–10 s / 15–20 s releases do nothing.
+  **The 20-second action opens setup; it is not a reboot.**
 - Setup: temporary `OMI-Setup-XXXX`, HTTP `192.168.4.1`; configure SSID/password,
   receiver hostname/IPv4/port, and existing 64-hex-character pairing key. Portal
   expires after five minutes; configured boot does not expose it automatically.

@@ -36,19 +36,25 @@ Normal recording uses no LEDs; acoustic sleep uses solid red. Preserve the
 higher-priority setup/upload/storage/clock warnings. `test_led_state_c.py`
 executes the production selector across charging, connection and warning states.
 
-Short button releases (40–999 ms) toggle manual pause through the microphone
-owner thread. Manual pause drains an end marker, disables acoustic wake, and
-powers down the microphone rail. It overrides other awake LED states with a
-200 ms red pulse every 3 seconds; sound cannot resume it. Resume failures stay
-paused. Acoustic wake vibrates for 80 ms only after a successful microphone
-start and at least `CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS` (5 min) of
-acoustic sleep. Every mic restart drops `CONFIG_OMI_MIC_START_DISCARD_MS`
-(500 ms) of PCM before recording or VOX tracking, which hides the PDM startup
-transient and the wake vibration. `test_manual_recording_c.py` exercises production button/owner paths,
-PCM suppression, LED timing, and failures. `test_disconnect_power_c.py` covers
-SD ownership during BLE disconnect, including manual pause.
+Every button gesture is hold-then-release (`button_hold.h`): release at 3–5 s toggles
+manual pause (1 pulse at 3 s), 10–15 s powers off (2 pulses at 10 s), and 20 s or more
+opens Wi-Fi setup (3 pulses at 20 s; Wi-Fi build only, the BLE-only build caps at 2
+pulses). Short clicks and releases in the 5–10 s / 15–20 s dead bands do nothing. The
+action is decided by the hold length at the last poll the button was seen pressed, so it
+matches the pulse the user felt. Pulses play while held, so resume waits 150 ms for the
+motor before powering the mic; the 500 ms startup discard
+(`CONFIG_OMI_MIC_START_DISCARD_MS`) still applies. Manual pause runs through the
+microphone owner thread: it drains an end marker, disables acoustic wake and powers down
+the mic rail; while paused, red pulses 200 ms every 3 s and sound cannot resume it.
+Resume failures stay paused. Acoustic wake vibrates for 80 ms only after a successful mic
+start and at least `CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS` (5 min) of acoustic sleep.
+Short taps still send the BLE tap/double-tap notifications. `test_wifi_config_c.py` and
+`test_manual_recording_c.py` execute the production policy, handler and owner paths;
+`test_disconnect_power_c.py` covers SD ownership during BLE disconnect, including manual
+pause. Keep the portal help in sync.
 
-The Wi-Fi setup hold is 20 seconds from `.12`; it is not a reboot. Keep the
-3–5 second power-off release window separate, so an abandoned 5–20 second
-hold does nothing. Native hold-policy and button-handler tests cover both
-thresholds and ensure one action per hold. Keep the portal help in sync.
+The silence timer measures a 250 Hz–3.4 kHz band-passed level (`vox_filter.c`) and needs
+3 of the last 5 100 ms blocks at `CONFIG_OMI_VAD_ABS_THRESHOLD` (200), so keystrokes do
+not keep the mic awake. Hardware acoustic wake is 80 dB (T5838 register 0x08; 2.5 dB
+steps assumed, confirm on device). Tune the threshold with
+`python -m omi_local.vox_replay <recordings>`; evidence is in `VALIDATION_MAC.md`.
