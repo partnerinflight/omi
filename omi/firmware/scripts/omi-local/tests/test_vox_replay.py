@@ -16,6 +16,13 @@ class AwakeSecondsTests(unittest.TestCase):
         self.assertEqual(V.awake_seconds([5.0], duration=20.0, hold=30.0), 20.0)
 
 
+class RawResetTimesTests(unittest.TestCase):
+    def test_threshold_boundary_and_block_end_timestamps(self):
+        block = V.BLOCK
+        pcm = array('h', [400] * block + [399] * block + [-400] * block)
+        self.assertEqual(V.raw_reset_times(pcm, threshold=400), [0.1, 0.3])
+
+
 @unittest.skipUnless(shutil.which('cc') and V.FILTER_SOURCE.exists(), 'native compiler and firmware source needed')
 class ProductionFilterTests(unittest.TestCase):
     def test_levels_and_resets_use_the_firmware_filter(self):
