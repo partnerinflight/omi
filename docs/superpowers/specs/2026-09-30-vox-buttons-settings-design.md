@@ -39,8 +39,9 @@ New map, one action per hold, always confirmed by vibration **while still holdin
 - **Resume order**: vibrate, wait for the motor to stop, then power the microphone rail
   and start the PDM. The existing 500 ms startup discard remains as a second layer, so
   motor noise cannot reach a recording.
-- **Pause order**: stop the microphone first, then vibrate, so the confirmation is not
-  recorded in the tail of the closing file.
+- **Pause order**: the 3 s confirmation vibrates while the button is still held, so it
+  (like the press itself) lands in the last second of the file that the pause then
+  closes. No second vibration is played after the microphone stops.
 - The red LED pulse every 3 s while paused is unchanged. A failed resume stays paused
   and keeps its error path.
 
