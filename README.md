@@ -135,8 +135,17 @@ local mailbox. It cannot read the pairing key or stop the service.
 - This is an additive vault writer, not a semantic merger into existing people,
   project or task notes. Existing notes are only read for novelty/hotwords.
 - Filtered conversation remains in private job results and is not published.
-  Audio/transcripts are not deleted automatically; plan archive retention to
-  suit your disk capacity.
+- **Audio is deleted after processing** (`delete_audio_after_processing`, on by
+  default). Once a recording's note is published and its job is complete, the
+  service deletes the original Omi recording, its sidecar and receipt, and all
+  working audio (chunk/window WAVs). Transcripts, manifests and logs are kept;
+  notes say "Audio deleted after processing" instead of linking a file. Failed or
+  pending recordings keep their audio for retry, and speaker-review clips stay
+  until you name or discard the speaker. A startup sweep finishes deletions
+  interrupted by a crash and applies the policy to recordings completed earlier.
+  Deleted audio cannot be reprocessed. Meeting captures are not deleted: planned
+  Omi dedupe needs their audio. Set the option to `false` in `service.json` to
+  keep audio (for example while debugging a recording).
 - SQLite records jobs, attempts, errors and operations. Interrupted jobs resume
   after service restart. Failed jobs retry with backoff, then stay visible.
   A completed manifest is reused after a publication failure, avoiding another

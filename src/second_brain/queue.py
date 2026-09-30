@@ -112,6 +112,10 @@ class Queue:
                 "INSERT INTO events(time,kind,job,detail) VALUES(?,'failed',?,?)", (time.time(), job["id"], error)
             )
 
+    def completed(self):
+        with self.connect() as db:
+            return [dict(r) for r in db.execute("SELECT id,audio FROM jobs WHERE state='complete'")]
+
     def retry_failed(self):
         with self.connect() as db:
             return db.execute(

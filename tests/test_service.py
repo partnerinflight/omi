@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import dataclasses
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 from second_brain.io import InstanceLock, write_json
 from second_brain.queue import Queue
+from second_brain.receiver import ReceiverFactory
 from second_brain.runtime import Runtime, kill_tree
 from second_brain.vault import NoteConflict, publish
 from second_brain.adaptive.pipeline import parse_vibe_text
@@ -56,10 +58,19 @@ class QueueAndVaultTests(unittest.TestCase):
         self.assertEqual(first, publish(self.cfg.vault_path, self.cfg.vault_folder, recovered, manifest))
         self.assertEqual(len(list(self.cfg.vault_path.rglob("*.md"))), 1)
         note = self.cfg.vault_path / first[0]
+        self.assertIn("Source audio", note.read_text(), "audio kept: the note links it")
         note.write_text("human edit")
         with self.assertRaises(NoteConflict):
             publish(self.cfg.vault_path, self.cfg.vault_folder, recovered, manifest)
         self.assertEqual(note.read_text(), "human edit")
+
+        # When audio is deleted after processing, a new note must not link the soon-missing file.
+        other = self.root / "vault2"
+        other.mkdir()
+        [name] = publish(other, self.cfg.vault_folder, recovered, manifest, audio_retained=False)
+        text = (other / name).read_text()
+        self.assertIn("Audio deleted after processing", text)
+        self.assertNotIn(Path(recovered["audio"]).as_uri(), text)
 
     def test_failed_jobs_are_visible_and_explicitly_retryable(self):
         job = self.queue.claim()
@@ -123,6 +134,81 @@ except RuntimeError:
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
+class AudioRetentionTests(unittest.TestCase):
+    """Completed recordings lose all audio; everything else keeps it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.cfg = configuration(self.root)
+        self.runtime = Runtime(self.cfg)
+
+    def recording(self, name, folder=None):
+        folder = folder or self.cfg.incoming_dir
+        audio = folder / f"{name}.opus"
+        audio.write_bytes(name.encode() * 100)
+        metadata = {"device": "112233445566", "start_seq": len(name), "complete": True}
+        write_json(audio.with_suffix(".json"), metadata)
+        receipt = self.cfg.incoming_dir / ".ready" / f"{name}-receipt.json"
+        write_json(receipt, {"audio": str(audio), "metadata": metadata})
+        key = self.runtime.queue.enqueue(audio, metadata)
+        work = self.cfg.data_dir / "jobs" / key / "attempt-1"
+        for part in ["coarse/c0000.wav", "windows/w0000.wav", "speaker-clips/s-0.wav"]:
+            (work / part).parent.mkdir(parents=True, exist_ok=True)
+            (work / part).write_bytes(b"RIFF")
+        write_json(work / "manifest.json", {"windows": []})
+        (work / "pipeline.log").write_text("log")
+        return key, audio, receipt, work
+
+    def test_completed_recording_loses_all_audio_and_keeps_text(self):
+        done, done_audio, done_receipt, done_work = self.recording("done")
+        waiting, waiting_audio, waiting_receipt, waiting_work = self.recording("waiting")
+        self.runtime.queue.complete(done, {"notes": 1})
+        self.runtime.purge_completed_audio()
+        self.assertFalse(done_audio.exists() or done_audio.with_suffix(".json").exists() or done_receipt.exists())
+        self.assertEqual(list(done_work.rglob("*.wav")), [], "working audio deleted")
+        self.assertTrue((done_work / "manifest.json").exists() and (done_work / "pipeline.log").exists(), "text kept")
+        for path in [waiting_audio, waiting_audio.with_suffix(".json"), waiting_receipt, waiting_work / "coarse/c0000.wav"]:
+            self.assertTrue(path.exists(), f"pending/failed recording keeps {path.name} for retry")
+        self.runtime.purge_completed_audio()  # the startup sweep is idempotent
+
+    def test_receiver_recovery_does_not_resurrect_a_deleted_recording(self):
+        done, audio, receipt, _ = self.recording("done")
+        write_json(self.cfg.incoming_dir / ".omi-local" / "state.json", {"dev": {"files": [{"file": str(audio)}]}})
+        self.runtime.queue.complete(done, {})
+        self.runtime.purge_completed_audio()
+        ReceiverFactory(self.cfg.incoming_dir).recover_receipts()
+        self.assertEqual(list((self.cfg.incoming_dir / ".ready").glob("*.json")), [])
+
+    def test_meeting_audio_is_kept_for_omi_dedupe(self):
+        # Planned Omi dedupe correlates later Omi jobs against meeting audio
+        # (docs/superpowers/specs/2026-09-29-meeting-capture-design.md), so meeting
+        # captures are not deleted at completion; only their working audio is.
+        meetings = self.cfg.incoming_dir / "meetings"
+        (meetings / ".ready").mkdir(parents=True)
+        key, audio, _, work = self.recording("meeting", folder=meetings)
+        write_json(meetings / ".ready" / "meeting.json", {"audio": str(audio), "metadata": {"source": "meeting"}})
+        self.runtime.queue.complete(key, {})
+        self.runtime.purge_completed_audio()
+        self.assertTrue(audio.exists() and audio.with_suffix(".json").exists() and (meetings / ".ready" / "meeting.json").exists())
+        self.assertEqual(list(work.rglob("*.wav")), [], "derived working audio still goes")
+
+    def test_never_deletes_outside_incoming_and_can_be_switched_off(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        outside, outside_audio, _, _ = self.recording("outside", folder=elsewhere)
+        self.runtime.queue.complete(outside, {})
+        self.runtime.purge_completed_audio()
+        self.assertTrue(outside_audio.exists(), "source outside the incoming directory is never touched")
+
+        kept, kept_audio, _, kept_work = self.recording("kept")
+        self.runtime.queue.complete(kept, {})
+        self.runtime.cfg = dataclasses.replace(self.cfg, delete_audio_after_processing=False)
+        self.runtime.purge_completed_audio()
+        self.assertTrue(kept_audio.exists() and (kept_work / "coarse/c0000.wav").exists(), "setting off keeps audio")
+
+
 class MossRunnerTests(unittest.TestCase):
     """The real runner script against a fake moss-transcribe that mimics the CLI's exit paths."""
 
@@ -237,7 +323,10 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
         text = notes[0].read_text()
         self.assertIn("c0000:S1", text)
         self.assertIn("c0000:S2", text)
-        self.assertIn("Source audio", text)
+        # Default: the original recording is deleted once its note is published.
+        self.assertIn("Audio deleted after processing", text)
+        self.assertEqual(list(self.cfg.incoming_dir.glob("*.opus")), [])
+        self.assertEqual(list((self.root / "data/jobs").rglob("*.wav")), [])
         self.assertIn("project launch", text)
         # The tray can listen and name speakers without reading private jobs.
         import uuid

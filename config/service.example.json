@@ -10,6 +10,7 @@
   "port": 7331,
   "speaker_match_threshold": 0.50,
   "speaker_match_margin": 0.05,
+  "delete_audio_after_processing": true,
   "poll_seconds": 2,
   "retry_seconds": 60,
   "max_attempts": 5,

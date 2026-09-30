@@ -13,7 +13,7 @@ class NoteConflict(RuntimeError):
     pass
 
 
-def publish(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
+def publish(vault: Path, folder: str, job: dict, manifest: dict, audio_retained: bool = True) -> list[str]:
     if not vault.is_dir():
         raise FileNotFoundError("Configured Obsidian vault is unavailable")
     root = vault.resolve()
@@ -42,7 +42,7 @@ def publish(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
             "recorded_at": metadata.get("first_utc", "unknown-time"),
             "device": metadata["device"],
             "source_sha256": job["sha256"],
-            "audio": Path(job["audio"]).as_uri(),
+            **({"audio": Path(job["audio"]).as_uri()} if audio_retained else {}),
             "start_seconds": window["start"],
             "end_seconds": window["end"],
             "asr_engine": window["final_engine"],
@@ -54,7 +54,9 @@ def publish(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
         lines += [
             f"# Omi conversation · {front['recorded_at']}",
             "",
-            f"[Source audio]({front['audio']}) · {window['start']:.1f}–{window['end']:.1f} seconds",
+            # The recording is deleted after processing unless retention is configured; never link a missing file.
+            (f"[Source audio]({front['audio']})" if audio_retained else "Audio deleted after processing")
+            + f" · {window['start']:.1f}–{window['end']:.1f} seconds",
             "",
             "Unnamed speaker labels are local to this recording/chunk. Named speakers include confirmation or voice-match provenance in the note properties.",
             "",

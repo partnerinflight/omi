@@ -157,8 +157,11 @@ are authoritative; explain deliberate policy changes.
   window. Both publication flags must be true: `memory_keep` and
   `route_to_knowledge_router`.
 - Every window retains a final transcript. Filtered windows get audit metadata;
-  kept windows get `router_queue` artifacts. No automatic archive retention or
-  deletion policy is implemented. Legacy `router_*` threshold settings remain
+  kept windows get `router_queue` artifacts. Audio of completed Omi recordings
+  (original, sidecar, receipt, working WAVs) is deleted after publication when
+  `delete_audio_after_processing` is on (default); text artifacts are kept, and a
+  startup sweep completes interrupted deletions. Meeting captures are exempt until
+  meeting processing/dedupe defines their retention. Legacy `router_*` threshold settings remain
   in the example but `should_route()` does not control the current final gate.
 
 ## Hermes: exact integration boundary

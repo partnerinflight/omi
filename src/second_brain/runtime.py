@@ -18,6 +18,7 @@ from .speakers import Speakers
 
 log = logging.getLogger("second_brain")
 STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
+AUDIO_SUFFIXES = {".opus", ".m4a", ".caf", ".wav", ".ogg", ".mp3", ".flac"}
 
 
 async def kill_tree(proc):
@@ -66,6 +67,41 @@ class Runtime:
             except (OSError, ValueError, KeyError) as e:
                 self.last_scan_error = f"Recording discovery failed ({type(e).__name__}); check private service log"
                 log.exception("Could not discover recording receipt %s", receipt.name)
+
+    def purge_audio(self, job_id, audio):
+        """Delete a completed recording's audio once its note is published (delete_audio_after_processing).
+        Transcripts, manifests and logs stay; failed or pending jobs are never passed here."""
+        if not self.cfg.delete_audio_after_processing:
+            return
+        incoming = self.cfg.incoming_dir.resolve()
+        source = Path(audio).resolve()
+        # Omi recordings only. Meeting captures stay: planned Omi dedupe correlates later jobs against
+        # meeting audio (docs/superpowers/specs/2026-09-29-meeting-capture-design.md).
+        if source.is_relative_to(incoming) and not source.is_relative_to(incoming / "meetings"):
+            # Receipt and sidecar first: the receiver republishes receipts from sidecars on startup.
+            for receipt in (incoming / ".ready").glob("*.json"):
+                try:
+                    if Path(read_json(receipt)["audio"]).resolve() == source:
+                        receipt.unlink(missing_ok=True)
+                except (OSError, ValueError, KeyError):
+                    continue
+            source.with_suffix(".json").unlink(missing_ok=True)
+            source.unlink(missing_ok=True)
+        work = self.cfg.data_dir / "jobs" / job_id
+        if work.is_dir():
+            for path in work.rglob("*"):
+                if path.is_file() and path.suffix.lower() in AUDIO_SUFFIXES:
+                    path.unlink(missing_ok=True)
+
+    def purge_audio_logged(self, job_id, audio):
+        try:
+            self.purge_audio(job_id, audio)
+        except OSError:
+            log.exception("Could not delete audio for completed job %s; the startup sweep retries", job_id)
+
+    def purge_completed_audio(self):
+        for job in self.queue.completed():
+            self.purge_audio_logged(job["id"], job["audio"])
 
     async def process(self, job):
         cfg = self.cfg
@@ -147,7 +183,9 @@ class Runtime:
             write_json(publication, self.speakers.render(job["id"], manifest))
         manifest = read_json(publication)
         self.queue.progress(job["id"], "publishing")
-        notes = await asyncio.to_thread(publish, cfg.vault_path, cfg.vault_folder, job, manifest)
+        notes = await asyncio.to_thread(
+            publish, cfg.vault_path, cfg.vault_folder, job, manifest, not cfg.delete_audio_after_processing
+        )
         return {
             "notes": len(notes),
             "warnings": len(manifest.get("fallbacks", [])),
@@ -171,6 +209,9 @@ class Runtime:
                     stage = (self.queue.snapshot()["current"] or {}).get("stage", "processing")
                     error = f"{stage}: {type(e).__name__}; see private job log"
                     self.queue.fail(job, error, self.cfg.retry_seconds, self.cfg.max_attempts)
+                else:
+                    # Only after the completion is recorded; a deletion error never fails a finished job.
+                    await asyncio.to_thread(self.purge_audio_logged, job["id"], job["audio"])
             else:
                 try:
                     await asyncio.wait_for(self.stop.wait(), timeout=self.cfg.poll_seconds)
@@ -223,6 +264,8 @@ class Runtime:
             factory.recover_receipts()
             meetings = MeetingStore(self.cfg.incoming_dir / "meetings")
             meetings.recover()
+            # Finish deletions interrupted by a crash, and apply the policy to jobs completed before it existed.
+            await asyncio.to_thread(self.purge_completed_audio)
             secret = load_or_create_secret(self.cfg.secret_file, create=False)
             self.server = UploadServer(
                 secret, self.cfg.incoming_dir, self.cfg.host, self.cfg.port, writer_factory=factory,

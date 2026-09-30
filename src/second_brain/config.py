@@ -29,6 +29,8 @@ class Config:
     ffmpeg_dir: str = ""
     speaker_match_threshold: float = 0.50  # calibrated on Omi audio; see scripts/speaker_calibration.py
     speaker_match_margin: float = 0.05
+    # Delete a recording's audio once its note is published (see docs/speakers.md, README).
+    delete_audio_after_processing: bool = True
 
     @property
     def review_dir(self):
