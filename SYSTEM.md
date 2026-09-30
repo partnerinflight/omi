@@ -272,8 +272,10 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
 
 - Verified code: `d103c03ec`: 29 pipeline tests pass on Windows. On branch
   `feature/meeting-capture` (receiver v2, 2026-09-29) all 147 tests (32 pipeline
-  + 115 receiver/native) pass on macOS via `scripts/test.py`, + 66 Swift tests (macOS only); Windows is not yet
-  re-verified for that branch. Windows CI also verifies clean
+  + 115 receiver/native) pass on macOS via `scripts/test.py`; Windows is not yet
+  re-verified for that branch. With the Mac capture app (`feature/mac-capture`,
+  2026-09-30), `scripts/test.py` also runs its 66 Swift tests on macOS, including
+  an upload against the real receiver. Windows CI also verifies clean
   wheel installation, service/tray builds, and actual SCM Session 0 upload →
   fixture ASR → note → speaker naming → restart without duplicate notes or lost
   names. Pinned MOSS source builds on Windows. See [validation](docs/validation.md).
