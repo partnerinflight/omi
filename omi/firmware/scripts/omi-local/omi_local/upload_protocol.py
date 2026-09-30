@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import struct
 from dataclasses import dataclass
 
@@ -26,6 +27,7 @@ from . import protocol as P
 
 MAGIC = b"OMIL"
 VERSION = 1
+VERSION_FILE = 2
 NONCE_LEN = 16
 TAG_LEN = 32
 SECRET_LEN = 32
@@ -43,6 +45,24 @@ MSG_ACK = 0x06
 MSG_DONE = 0x07
 MSG_BYE = 0x08
 MSG_REJECT = 0x7F
+
+# Protocol v2 (file client, e.g. the Mac meeting-capture app)
+MSG_CAPTURE_OPEN = 0x10
+MSG_CAPTURE_CANCEL = 0x11
+MSG_FILE_BEGIN = 0x12
+MSG_FILE_DATA = 0x13
+MSG_FILE_END = 0x14
+MSG_FILE_START = 0x15
+MSG_FILE_ACK = 0x16
+MSG_FILE_BYE = 0x17
+MSG_OK = 0x18
+
+CAPTURE_ID_LEN = 16
+SHA256_LEN = 32
+MAX_APP_LEN = 256
+MAX_METADATA_LEN = 4096
+MAX_FILE_CHUNK = 64 * 1024
+MAX_FILE_PAYLOAD = 8 + MAX_FILE_CHUNK  # largest v2 frame (FILE_DATA); FILE_BEGIN is smaller
 
 REJECT_AUTH = 1
 REJECT_PROTOCOL = 2
@@ -97,13 +117,13 @@ def parse_hello(payload: bytes) -> Hello:
     if len(payload) != 4 + 1 + DEVICE_ID_LEN + NONCE_LEN or payload[:4] != MAGIC:
         raise UploadProtocolError("bad HELLO")
     ver = payload[4]
-    if ver != VERSION:
+    if ver not in (VERSION, VERSION_FILE):
         raise UploadProtocolError(f"unsupported protocol version {ver}")
     return Hello(ver, bytes(payload[5:5 + DEVICE_ID_LEN]), bytes(payload[5 + DEVICE_ID_LEN:]))
 
 
-def encode_hello(device_id: bytes, client_nonce: bytes) -> bytes:
-    return MAGIC + bytes([VERSION]) + device_id + client_nonce
+def encode_hello(device_id: bytes, client_nonce: bytes, version: int = VERSION) -> bytes:
+    return MAGIC + bytes([version]) + device_id + client_nonce
 
 
 def encode_challenge(server_nonce: bytes, server_tag: bytes) -> bytes:
@@ -160,6 +180,91 @@ def encode_data(seq: int, records: bytes) -> bytes:
     if len(records) % P.RECORD_SIZE:
         raise ValueError("records must be whole")
     return struct.pack(">QH", seq, len(records) // P.RECORD_SIZE) + records
+
+
+# --- protocol v2: file client -----------------------------------------------------
+@dataclass(frozen=True)
+class FileAuth:
+    client_tag: bytes
+
+
+def parse_file_auth(payload: bytes) -> FileAuth:
+    if len(payload) != TAG_LEN:
+        raise UploadProtocolError("bad v2 AUTH")
+    return FileAuth(bytes(payload))
+
+
+@dataclass(frozen=True)
+class CaptureOpen:
+    capture_id: bytes
+    start_ms: int
+    app: str
+
+
+def encode_capture_open(capture_id: bytes, start_ms: int, app: str) -> bytes:
+    return capture_id + struct.pack(">Q", start_ms) + app.encode("utf-8")
+
+
+def parse_capture_open(payload: bytes) -> CaptureOpen:
+    head = CAPTURE_ID_LEN + 8
+    if len(payload) < head or len(payload) - head > MAX_APP_LEN:
+        raise UploadProtocolError("bad CAPTURE_OPEN")
+    try:
+        app = bytes(payload[head:]).decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise UploadProtocolError("CAPTURE_OPEN app is not UTF-8") from e
+    (start_ms,) = struct.unpack_from(">Q", payload, CAPTURE_ID_LEN)
+    return CaptureOpen(bytes(payload[:CAPTURE_ID_LEN]), start_ms, app)
+
+
+def parse_capture_id(payload: bytes) -> bytes:
+    if len(payload) != CAPTURE_ID_LEN:
+        raise UploadProtocolError("expected 16-byte capture id")
+    return bytes(payload)
+
+
+@dataclass(frozen=True)
+class FileBegin:
+    capture_id: bytes
+    total_len: int
+    sha256: bytes
+    metadata: dict
+
+
+def encode_file_begin(capture_id: bytes, total_len: int, sha256: bytes, metadata: dict) -> bytes:
+    return capture_id + struct.pack(">Q", total_len) + sha256 + json.dumps(metadata, sort_keys=True).encode("utf-8")
+
+
+def parse_file_begin(payload: bytes) -> FileBegin:
+    head = CAPTURE_ID_LEN + 8 + SHA256_LEN
+    if len(payload) < head or len(payload) - head > MAX_METADATA_LEN:
+        raise UploadProtocolError("bad FILE_BEGIN")
+    try:
+        metadata = json.loads(bytes(payload[head:]).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise UploadProtocolError("FILE_BEGIN metadata is not JSON") from e
+    if not isinstance(metadata, dict):
+        raise UploadProtocolError("FILE_BEGIN metadata must be an object")
+    (total_len,) = struct.unpack_from(">Q", payload, CAPTURE_ID_LEN)
+    return FileBegin(bytes(payload[:CAPTURE_ID_LEN]), total_len,
+                     bytes(payload[CAPTURE_ID_LEN + 8:head]), metadata)
+
+
+@dataclass(frozen=True)
+class FileData:
+    offset: int
+    data: bytes
+
+
+def encode_file_data(offset: int, data: bytes) -> bytes:
+    return struct.pack(">Q", offset) + data
+
+
+def parse_file_data(payload: bytes) -> FileData:
+    if len(payload) < 8 or len(payload) - 8 > MAX_FILE_CHUNK:
+        raise UploadProtocolError("bad FILE_DATA")
+    (offset,) = struct.unpack_from(">Q", payload, 0)
+    return FileData(offset, bytes(payload[8:]))
 
 
 # --- provisioning TLVs ----------------------------------------------------------
