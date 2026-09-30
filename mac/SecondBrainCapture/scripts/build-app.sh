@@ -10,6 +10,14 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/SecondBrainCapture"
 cp "$PKG/Resources/Info.plist" "$APP/Contents/Info.plist"
-codesign --force --sign - "$APP"
+# A stable signing identity keeps macOS privacy grants and firewall rules across rebuilds;
+# fall back to ad-hoc, which makes the system treat every build as a new app.
+IDENTITY="${SBC_SIGN_IDENTITY:-SecondBrainCapture Local}"
+if security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
+  codesign --force --sign "$IDENTITY" "$APP"
+else
+  echo "warning: signing identity '$IDENTITY' not found; signing ad-hoc (permissions reset each rebuild)" >&2
+  codesign --force --sign - "$APP"
+fi
 codesign --verify "$APP"
 echo "$APP"
