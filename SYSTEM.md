@@ -54,7 +54,7 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
   unread records are not overwritten. Track dropped counts.
-- VOX: built `.15` (not yet installed; `.14` behavior differs): level measured
+- VOX: `.15`: level measured
   after 250 Hz high-pass / 3.4 kHz low-pass, threshold **200**, continuous silence
   **30,000 ms**; the timer resets only when at least 3 of the last 5 100 ms blocks
   reach the threshold. This detects speech-band level, not speech.
@@ -64,7 +64,7 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
 - Wake feedback: an 80 ms vibration only after at least 5 minutes of acoustic
   sleep; every mic restart discards 500 ms of PCM (startup transient + motor).
 - Normal recording: LEDs off. Acoustic silence: solid red. Acoustic wake after
-  5+ minutes asleep: 80 ms vibration. Built `.15` (not yet installed): every gesture is
+  5+ minutes asleep: 80 ms vibration. `.15`: every gesture is
   hold-then-release; release at 3–5 s toggles manual pause/resume;
   paused microphone rail and acoustic wake are off, red flashes 200 ms every
   3 seconds. Pause is not persistent across reboot. Other warning/setup/upload
