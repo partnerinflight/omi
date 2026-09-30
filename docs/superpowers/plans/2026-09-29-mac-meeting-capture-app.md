@@ -2329,9 +2329,9 @@ final class CaptureController {
 
     private func tick() {
         // The Mac slept (timers did not fire): end the capture so its wall-clock span stays
-        // true; clearing the detector lets the next tick start a new capture if the call goes on.
+        // true; the next tick starts a new capture if the call goes on.
         if now - lastTick > 10, session != nil {
-            _ = detector.pause(until: 0)
+            _ = detector.endCapture()
             end(discard: false)
             onChange?()
         }
