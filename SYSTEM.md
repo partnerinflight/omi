@@ -116,6 +116,12 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
 5. Each attempt has its own directory/config/log. Completed `manifest.json`
    avoids repeating ASR after publication failure. `publication-manifest.json`
    freezes speaker names/content so crash replay remains deterministic.
+6. Receiver protocol v2 serves authenticated file clients (Mac meeting capture).
+   Whole files land in `incoming/meetings/` only after a verified atomic commit
+   (length and SHA-256); capture markers live in `.captures/` and completion
+   receipts in `.ready/`. The pipeline does not yet process these receipts.
+   Directory fsync is a no-op on Windows, so a committed rename can be lost on
+   power loss there; the client re-uploads because it never saw a durable ACK.
 
 ## Adaptive processing and memory policy
 
@@ -243,6 +249,9 @@ Default machine state (`service.json` may override paths):
 | `config/service.json`, `config/pipeline.json` | Service policy/paths versus model/gate/Hermes settings |
 | `config/upload-secret.hex` | Existing device pairing key; private |
 | `incoming/`, `.omi-local/state.json`, `devices/`, `.ready/` | Audio, receiver checkpoints, completion receipts |
+| `incoming/meetings/` | v2 whole-file meeting captures (audio + JSON sidecar), committed after verification |
+| `incoming/meetings/.captures/` | Per-capture open/closed/cancelled markers |
+| `incoming/meetings/.ready/` | v2 commit receipts; not yet consumed by the pipeline |
 | `data/queue.sqlite3`, `data/speakers.sqlite3` | Authoritative job and identity stores |
 | `data/service.log` | Rotating receiver/discovery/worker errors |
 | `data/jobs/<id>/attempt-N/pipeline.log`, `progress.json` | Detailed stage/model output; may contain transcripts |
@@ -257,8 +266,8 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
 
 ## Verification, known gaps, and agent rules
 
-- Verified code: `d103c03ec`. All 101 pipeline + receiver/native tests pass on
-  macOS/Linux; 29 pipeline tests pass on Windows. Windows CI also verifies clean
+- Verified code: `d103c03ec`. As of 2026-09-29 all 147 tests (32 pipeline + 115
+  receiver/native) pass on macOS/Linux via `scripts/test.py`; 29 pipeline tests pass on Windows. Windows CI also verifies clean
   wheel installation, service/tray builds, and actual SCM Session 0 upload →
   fixture ASR → note → speaker naming → restart without duplicate notes or lost
   names. Pinned MOSS source builds on Windows. See [validation](docs/validation.md).
