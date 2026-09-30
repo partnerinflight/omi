@@ -488,4 +488,10 @@ ZIP SHA-256: `e79c051b6f174d924d338d274b74b3438656f63128cfb0ce6cb88be95c686af2`.
 App digest: `4b641c58cb02f8ab86c8221c5c8c64ae75ed86d9451575c457e7378ef3e92462`.
 Network digest: `e63567ebf757c0a974b72454ac2a473ba13b4f768d6b444f79efaf0e7288fa4e`.
 
-Built only; not installed on a device yet.
+Installed on the owner's Omi over BLE SMP with `~/omi-firmware/flash_omi.py` on
+2026-09-30. Both staged digests matched before activation. The replaced image was
+`9f0f7d1a…`, which matches no recorded build (installed after `.14` from an unknown source).
+The first status probe timed out while the images were being copied; afterwards SMP reports
+the expected app digest active/confirmed and GATT reports `.15`. Clock synchronized, battery
+100%, ring `[922539, 922762)` with zero dropped packets. Gestures, typing rejection and the
+80 dB hardware wake remain on-device user checks.

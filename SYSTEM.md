@@ -49,7 +49,7 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
 [wifi_upload.c](omi/firmware/omi/src/wifi_upload.c).
 
 - Hardware: Omi CV1, nRF5340 + nRF7002, T5838 microphone; NCS 2.9.0.
-  Last installed/verified image: `3.0.22-localwifi.14`.
+  Last installed/verified image: `3.0.22-localwifi.15`.
 - Capture: 16 kHz, 16-bit PCM; stereo PDM is averaged to mono and Opus encoded.
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
