@@ -1,6 +1,7 @@
 import AVFoundation
 import CaptureCore
 import AppKit
+import CoreAudio
 import Foundation
 import UserNotifications
 
@@ -160,6 +161,9 @@ final class CaptureController {
     }
 
     private func begin(app: String, processes: [UInt32], device: UInt32?) {
+        let publicDevices = AudioProcesses.objectIDs(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices)
+        let deviceDescription = device.map { "\($0) name=\(AudioProcesses.string($0, kAudioObjectPropertyName) ?? "?") public=\(publicDevices.contains($0))" } ?? "default"
+        log.notice("start \(app, privacy: .public) processes=\(processes, privacy: .public) mic=\(deviceDescription, privacy: .public)")
         let record = CaptureRecord(app: app, startMs: Int64(now * 1000))
         do {
             try spool.save(record)
@@ -263,6 +267,7 @@ final class CaptureController {
         guard let uploads else { return }
         let pending = uploads.run(now: Date().timeIntervalSince1970)
         let error = uploads.lastError
+        log.notice("uploads pending=\(pending) error=\(error ?? "none", privacy: .public)")
         DispatchQueue.main.async {
             self.pendingUploads = pending
             self.uploadError = error

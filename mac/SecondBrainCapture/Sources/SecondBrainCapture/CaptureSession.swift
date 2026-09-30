@@ -49,14 +49,30 @@ final class CaptureSession {
             tap.stop()
             throw error
         }
+        let startFormat = Self.inputFormat(of: mic.engine)
         engineObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: mic.engine, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            let now = Self.inputFormat(of: self.mic.engine)
+            guard AudioRoute.isDisruptive(engineRunning: self.mic.engine.isRunning, before: startFormat, after: now) else {
+                log.info("mic engine configuration change ignored: still running at \(now.sampleRate) Hz \(now.channels) ch")
+                return
+            }
+            log.notice("interrupt: mic engine configuration changed (running=\(self.mic.engine.isRunning), \(now.sampleRate) Hz \(now.channels) ch)")
+            self.onInterrupted?()
+        }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            log.notice("interrupt: default system output changed")
             self?.onInterrupted?()
         }
-        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.onInterrupted?() }
         outputListener = listener
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &outputAddress,
                                             DispatchQueue.main, listener)
+    }
+
+    private static func inputFormat(of engine: AVAudioEngine) -> AudioRoute.InputFormat {
+        let format = engine.inputNode.inputFormat(forBus: 0)
+        return AudioRoute.InputFormat(sampleRate: format.sampleRate, channels: format.channelCount)
     }
 
     /// Whether the app's audio (the tap) has carried any signal so far.
