@@ -167,6 +167,7 @@ static uint8_t hold_level_played;
 static uint32_t btn_release_time;
 static uint32_t btn_last_tap_time;
 static bool btn_is_pressed;
+static uint32_t btn_last_pressed_time; /* last poll that saw the button down: what the user felt */
 
 static u_int8_t btn_last_event = BUTTON_EVENT_NONE;
 
@@ -177,6 +178,9 @@ void check_button_level(struct k_work *work_item)
     u_int8_t btn_state = was_pressed ? BUTTON_PRESSED : BUTTON_RELEASED;
 
     ButtonEvent event = BUTTON_EVENT_NONE;
+
+    if (btn_state == BUTTON_PRESSED)
+        btn_last_pressed_time = current_time;
 
     // Debouncing pressed state
     if (btn_state == BUTTON_PRESSED && !btn_is_pressed) {
@@ -190,7 +194,9 @@ void check_button_level(struct k_work *work_item)
         // Check for double tap
         uint32_t press_duration = (btn_release_time - btn_press_start_time);
         /* Every gesture is hold-then-release; the vibration while held said which. */
-        switch (button_hold_action(press_duration, IS_ENABLED(CONFIG_OMI_WIFI_UPLOAD))) {
+        /* Act on the last hold the pulses could have signalled, not the release poll. */
+        uint32_t felt_duration = btn_last_pressed_time - btn_press_start_time;
+        switch (button_hold_action(felt_duration, IS_ENABLED(CONFIG_OMI_WIFI_UPLOAD))) {
         case HOLD_PAUSE_TOGGLE:
             if (!is_off) {
                 int ret = mic_toggle_manual_pause();

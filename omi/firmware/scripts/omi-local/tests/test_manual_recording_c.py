@@ -167,7 +167,7 @@ typedef enum { BUTTON_EVENT_NONE, BUTTON_EVENT_SINGLE_TAP, BUTTON_EVENT_DOUBLE_T
 struct k_work {int unused;};
 static bool was_pressed,btn_is_pressed,is_off;
 static uint8_t hold_level_played;
-static uint32_t now,current_time,btn_press_start_time,btn_release_time,btn_last_tap_time;
+static uint32_t now,current_time,btn_last_pressed_time,btn_press_start_time,btn_release_time,btn_last_tap_time;
 static u_int8_t btn_last_event;
 static int button_work,current_button_state,toggles,off,setup,buzz,last;
 uint32_t k_uptime_get_32(void){return now;}
@@ -185,13 +185,15 @@ int main(void){
  poll(2000,true);poll(4960,true);assert(!buzz);
  poll(5000,true);assert(buzz==1 && last==1 && !toggles);                  /* 1 pulse at 3 s, still held */
  poll(5040,true);assert(buzz==1);poll(6000,false);assert(toggles==1);    /* release at 4 s: pause toggle */
- poll(7000,true);poll(10000,true);assert(buzz==2);poll(13000,false);assert(toggles==1 && !off); /* 6 s: dead band */
+ poll(7000,true);poll(10000,true);assert(buzz==2);poll(12960,true);poll(13000,false);assert(toggles==1 && !off); /* 6 s: dead band */
  poll(14000,true);poll(17000,true);poll(24000,true);assert(buzz==4 && last==2);
  poll(25000,false);assert(off==1 && toggles==1);                           /* 11 s: power off */
- poll(26000,true);poll(43000,false);assert(off==1 && !setup);             /* 17 s: dead band */
+ poll(26000,true);poll(42960,true);poll(43000,false);assert(off==1 && !setup);             /* 17 s: dead band */
  poll(44000,true);poll(64000,true);assert(last==3 && !setup);             /* 3 pulses at 20 s, still held */
  poll(64040,false);assert(setup==1 && off==1);                            /* setup on release */
- is_off=true;poll(70000,true);poll(73500,false);assert(toggles==1);      /* no toggle while off */
+ is_off=true;poll(70000,true);poll(73460,true);poll(73500,false);assert(toggles==1);      /* no toggle while off */
+ is_off=false;poll(80000,true);poll(82960,true);poll(83000,false);assert(toggles==1 && buzz==7); /* 3 s pulse never played */
+ poll(90000,true);poll(93000,true);poll(93040,false);assert(toggles==2);  /* felt the 3 s pulse: toggle */
  return 0;
 }
 """)

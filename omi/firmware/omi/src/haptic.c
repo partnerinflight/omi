@@ -131,8 +131,11 @@ void play_haptic_milli(uint32_t duration)
         return;
     }
 
-    // Cancel any pending off work before proceeding
+    // Cancel any pending off work and in-flight pulse sequence before proceeding
     k_work_cancel_delayable(&haptic_off_work);
+    k_work_cancel_delayable(&pulse_work);
+    pulse_on = false;
+    pulses_left = 0;
 
     if (duration == 0) {
         // If duration is 0, ensure the pin is off and we are done.
@@ -186,5 +189,8 @@ void register_haptic_service(void)
 
 void haptic_off()
 {
+    k_work_cancel_delayable(&pulse_work);
+    pulse_on = false;
+    pulses_left = 0;
     gpio_pin_set_dt(&haptic_pin, 0);
 }
