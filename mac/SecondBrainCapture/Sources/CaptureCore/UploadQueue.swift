@@ -1,8 +1,8 @@
 import Foundation
 
 /// Delivers spooled work to the receiver, oldest first: CAPTURE_OPEN for captures being
-/// recorded, file uploads for complete ones, CAPTURE_CANCEL for skipped ones. Network
-/// trouble backs off (30 s doubling to 15 min); repeated protocol rejections mark a
+/// recorded, file uploads for complete ones, CAPTURE_CANCEL for skipped ones. Any
+/// error backs off (30 s doubling to 15 min); repeated protocol rejections mark a complete
 /// capture failed so it cannot block the rest. Call `run` from one background queue.
 public final class UploadQueue {
     public static let initialBackoff: Double = 30
@@ -34,18 +34,39 @@ public final class UploadQueue {
                 backoff = min(backoff * 2, Self.maxBackoff)
                 return pending()
             } catch {
+                // Only complete captures can be failed; an open recording must survive a receiver
+                // that is merely too old (or misconfigured) until it is upgraded.
                 try? spool.update(record.captureID) {
-                    guard $0.state == .recording || $0.state == .complete else { return }
+                    guard $0.state == .complete else { return }
                     $0.uploadFailures += 1
                     if $0.uploadFailures >= Self.maxProtocolFailures { $0.state = .failed }
                 }
                 passError = "\(error)"
             }
         }
-        backoff = Self.initialBackoff
-        nextAttempt = 0
         lastError = passError
+        if passError != nil {
+            nextAttempt = now + backoff
+            backoff = min(backoff * 2, Self.maxBackoff)
+        } else {
+            backoff = Self.initialBackoff
+            nextAttempt = 0
+        }
         return pending()
+    }
+
+    /// Give captures marked failed another chance (e.g. after the receiver was upgraded).
+    /// Only those whose audio is still spooled are revived.
+    public func resetFailed() {
+        for record in spool.records() where record.state == .failed {
+            guard FileManager.default.fileExists(atPath: spool.cafURL(record.captureID).path) else { continue }
+            _ = try? spool.update(record.captureID) {
+                $0.state = .complete
+                $0.uploadFailures = 0
+            }
+        }
+        nextAttempt = 0
+        backoff = Self.initialBackoff
     }
 
     /// Records the receiver still needs something for (an open recording counts once opened).

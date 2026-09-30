@@ -100,10 +100,10 @@ final class UploadQueueTests: XCTestCase {
         queue.run(now: 0)
         XCTAssertEqual(spool.records().first?.uploadFailures, 0)
         transport.error = UploadError.rejected(Wire.Reject.protocolError.rawValue)
-        for now in [100.0, 200, 300] { queue.run(now: now) }
+        for now in [1000.0, 2000, 3000] { queue.run(now: now) }
         XCTAssertEqual(spool.records().first?.state, .failed)
         let calls = transport.calls.count
-        XCTAssertEqual(queue.run(now: 400), 0)
+        XCTAssertEqual(queue.run(now: 4000), 0)
         XCTAssertEqual(transport.calls.count, calls)
     }
 
@@ -137,7 +137,40 @@ final class UploadQueueTests: XCTestCase {
         let after = spool.load(r.captureID)
         XCTAssertEqual(after?.opened, true)
         XCTAssertEqual(after?.uploadFailures, 1)
-        queue.run(now: 1)
+        queue.run(now: 1000)
         XCTAssertEqual(transport.calls.filter { $0.hasPrefix("open") }.count, 1)
+    }
+
+    func testRecordingStaysRecordingWhenReceiverRejectsProtocol() throws {
+        let r = try record("k", 1, .recording)
+        transport.error = UploadError.rejected(Wire.Reject.protocolError.rawValue)
+        for pass in 0..<5 { queue.run(now: 100_000 * Double(pass + 1)) }
+        XCTAssertEqual(spool.load(r.captureID)?.state, .recording)
+        XCTAssertEqual(spool.load(r.captureID)?.uploadFailures, 0)
+        XCTAssertEqual(transport.calls.count, 5)
+    }
+
+    func testProtocolErrorBacksOff() throws {
+        _ = try record("l", 1, .recording)
+        transport.error = UploadError.rejected(Wire.Reject.protocolError.rawValue)
+        queue.run(now: 0)
+        XCTAssertEqual(queue.nextAttempt, 30)
+        let calls = transport.calls.count
+        queue.run(now: 10)
+        XCTAssertEqual(transport.calls.count, calls)
+    }
+
+    func testResetFailedRevivesOnlyRecordsWithAudio() throws {
+        var a = try record("m", 1, .failed)
+        a.uploadFailures = 3
+        try spool.save(a)
+        try Data([1]).write(to: spool.cafURL(a.captureID))
+        var b = try record("n", 2, .failed)
+        b.uploadFailures = 3
+        try spool.save(b)
+        queue.resetFailed()
+        XCTAssertEqual(spool.load(a.captureID)?.state, .complete)
+        XCTAssertEqual(spool.load(a.captureID)?.uploadFailures, 0)
+        XCTAssertEqual(spool.load(b.captureID)?.state, .failed)
     }
 }

@@ -53,6 +53,7 @@ final class CaptureController {
 
     func start() {
         recoverSpool()
+        uploads?.resetFailed()  // a receiver upgrade deserves a fresh try; before the first pass
         // .common mode keeps the timers running while a menu is open.
         timers = [
             Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tick() },
