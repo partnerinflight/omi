@@ -91,6 +91,8 @@ static atomic_t aad_req_sleep = ATOMIC_INIT(0);    /* silence timer asked to sle
 static atomic_t mic_discard_blocks = ATOMIC_INIT(0);
 #define MIC_START_DISCARD_BLOCKS ((CONFIG_OMI_MIC_START_DISCARD_MS + 99) / 100)
 static int64_t aad_last_voice_ms;
+BUILD_ASSERT(CONFIG_OMI_VAD_SUSTAIN_BLOCKS <= CONFIG_OMI_VAD_WINDOW_BLOCKS,
+             "OMI_VAD_SUSTAIN_BLOCKS must not exceed OMI_VAD_WINDOW_BLOCKS");
 static uint32_t aad_sleep_started_ms; /* owner-only: when the current AAD sleep began */
 static atomic_t manual_pause_requested;
 static atomic_t manual_paused;

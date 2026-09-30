@@ -77,7 +77,7 @@ config OMI_ENABLE_T5838_AAD
 config OMI_VAD_ABS_THRESHOLD
     int "AAD silence-detection average absolute amplitude threshold"
     range 1 32767
-    default 600
+    default 200
     depends on OMI_ENABLE_T5838_AAD
     help
         "Average absolute amplitude of a 100 ms block after the speech-band filter
@@ -100,6 +100,9 @@ config OMI_VAD_WINDOW_BLOCKS
     range 1 8
     default 5
     depends on OMI_ENABLE_T5838_AAD
+    help
+        "Number of most recent 100 ms blocks (at most 8) in which OMI_VAD_SUSTAIN_BLOCKS
+         loud blocks are required; must be >= OMI_VAD_SUSTAIN_BLOCKS."
 
 config OMI_VAD_HOLD_MS
     int "AAD silence hold time before hardware sleep (ms)"

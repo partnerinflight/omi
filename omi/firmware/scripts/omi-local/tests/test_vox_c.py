@@ -46,7 +46,7 @@ static void block(const int16_t *b, int64_t t){now=t;aad_track_silence(b,1600);}
 int main(void){
  for(int i=0;i<1600;i++){
   speech[i]=(int16_t)(600*sin(2*PI*1000*i/16000.0));   /* ~380 after the filter */
-  hum[i]=(int16_t)(1200*sin(2*PI*100*i/16000.0));      /* ~120 after the filter */
+  hum[i]=(int16_t)(1000*sin(2*PI*100*i/16000.0));      /* ~100 after the filter */
  }
  for(int k=0;k<10;k++) block(hum,100+k*100);          /* loud low-frequency sound never counts */
  assert(aad_last_voice_ms==0);
@@ -56,8 +56,12 @@ int main(void){
  block(quiet,2500); assert(aad_last_voice_ms==2400);                     /* 2 of 5 */
  now=2400+29999; aad_track_silence(quiet,1600); assert(!aad_req_sleep);
  now=2400+30000; aad_track_silence(quiet,1600); assert(aad_req_sleep && aad_sem==1);
- aad_req_sleep=0; aad_woke=1; block(quiet,100000); assert(aad_last_voice_ms==100000);
- block(speech,100100); block(speech,100200); assert(aad_last_voice_ms==100000); /* wake cleared history */
+ aad_req_sleep=0;
+ block(speech,100000); block(speech,100100);          /* 2 loud blocks in history */
+ aad_woke=1; block(speech,100200);                    /* wake: reset -> history 1 of 5, timer refreshed by the wake itself */
+ assert(aad_last_voice_ms==100200);
+ block(speech,100300); assert(aad_last_voice_ms==100200); /* only 2 of 5 since the reset; without the reset it would be 4 */
+ aad_req_sleep=0; /* the first loud block after the long silence asked for sleep */
  syncing=true; block(quiet,200000); assert(!aad_req_sleep);
  syncing=false; block(quiet,200100); assert(aad_req_sleep);
  return 0;
