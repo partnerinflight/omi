@@ -49,18 +49,20 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
 [wifi_upload.c](omi/firmware/omi/src/wifi_upload.c).
 
 - Hardware: Omi CV1, nRF5340 + nRF7002, T5838 microphone; NCS 2.9.0.
-  Last installed/verified image: `3.0.22-localwifi.13`.
+  Last installed/verified image: `3.0.22-localwifi.14`.
 - Capture: 16 kHz, 16-bit PCM; stereo PDM is averaged to mono and Opus encoded.
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
   unread records are not overwritten. Track dropped counts.
-- VOX: average absolute PCM amplitude threshold **300**, continuous silence
+- VOX: average absolute PCM amplitude threshold **400**, continuous silence
   **30,000 ms**; any qualifying block resets the timer. This detects level, not
   speech. Trailing silence remains recorded. PCM/codec/packer drain before an
   explicit recording-end marker and acoustic sleep. Hardware acoustic wake has
   separate tuning, startup latency, and no pre-roll.
-- Normal recording: LEDs off. Acoustic silence: solid red. Successful acoustic
-  wake: 80 ms vibration. Short button release toggles manual pause/resume;
+- Wake feedback: an 80 ms vibration only after at least 5 minutes of acoustic
+  sleep; every mic restart discards 500 ms of PCM (startup transient + motor).
+- Normal recording: LEDs off. Acoustic silence: solid red. Acoustic wake after
+  5+ minutes asleep: 80 ms vibration. Short button release toggles manual pause/resume;
   paused microphone rail and acoustic wake are off, red flashes 200 ms every
   3 seconds. Pause is not persistent across reboot. Other warning/setup/upload
   LED priorities still apply; manual pause overrides awake indications.
@@ -114,6 +116,13 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
 5. Each attempt has its own directory/config/log. Completed `manifest.json`
    avoids repeating ASR after publication failure. `publication-manifest.json`
    freezes speaker names/content so crash replay remains deterministic.
+6. Receiver protocol v2 serves authenticated file clients (Mac meeting capture).
+   Whole files land in `incoming/meetings/` only after a verified atomic commit
+   (length and SHA-256); capture markers live in `.captures/` and completion
+   receipts in `.ready/`. The pipeline does not yet process these receipts.
+   Directory fsync is a no-op on Windows, so after a power loss a rename the
+   client was already told is committed can be lost; the client has then
+   deleted its copy. Accepted platform limit, as for other receiver renames.
 
 ## Adaptive processing and memory policy
 
@@ -242,6 +251,9 @@ Default machine state (`service.json` may override paths):
 | `config/service.json`, `config/pipeline.json` | Service policy/paths versus model/gate/Hermes settings |
 | `config/upload-secret.hex` | Existing device pairing key; private |
 | `incoming/`, `.omi-local/state.json`, `devices/`, `.ready/` | Audio, receiver checkpoints, completion receipts |
+| `incoming/meetings/` | v2 whole-file meeting captures (audio + JSON sidecar), committed after verification |
+| `incoming/meetings/.captures/` | Per-capture open/closed/cancelled markers |
+| `incoming/meetings/.ready/` | v2 commit receipts; not yet consumed by the pipeline |
 | `data/queue.sqlite3`, `data/speakers.sqlite3` | Authoritative job and identity stores |
 | `data/service.log` | Rotating receiver/discovery/worker errors |
 | `data/jobs/<id>/attempt-N/pipeline.log`, `progress.json` | Detailed stage/model output; may contain transcripts |
@@ -256,8 +268,10 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
 
 ## Verification, known gaps, and agent rules
 
-- Verified code: `d103c03ec`. All 101 pipeline + receiver/native tests pass on
-  macOS/Linux; 29 pipeline tests pass on Windows. Windows CI also verifies clean
+- Verified code: `d103c03ec`: 29 pipeline tests pass on Windows. On branch
+  `feature/meeting-capture` (receiver v2, 2026-09-29) all 147 tests (32 pipeline
+  + 115 receiver/native) pass on macOS via `scripts/test.py`; Windows is not yet
+  re-verified for that branch. Windows CI also verifies clean
   wheel installation, service/tray builds, and actual SCM Session 0 upload →
   fixture ASR → note → speaker naming → restart without duplicate notes or lost
   names. Pinned MOSS source builds on Windows. See [validation](docs/validation.md).

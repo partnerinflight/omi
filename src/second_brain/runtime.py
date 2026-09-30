@@ -12,7 +12,7 @@ from omi_local.server import UploadServer, load_or_create_secret
 from .config import Config, read_json
 from .io import InstanceLock, write_json
 from .queue import Queue
-from .receiver import ReceiverFactory
+from .receiver import MeetingStore, ReceiverFactory
 from .vault import publish
 from .speakers import Speakers
 
@@ -221,9 +221,12 @@ class Runtime:
             self.queue.recover()
             factory = ReceiverFactory(self.cfg.incoming_dir)
             factory.recover_receipts()
+            meetings = MeetingStore(self.cfg.incoming_dir / "meetings")
+            meetings.recover()
             secret = load_or_create_secret(self.cfg.secret_file, create=False)
             self.server = UploadServer(
-                secret, self.cfg.incoming_dir, self.cfg.host, self.cfg.port, writer_factory=factory
+                secret, self.cfg.incoming_dir, self.cfg.host, self.cfg.port, writer_factory=factory,
+                file_store=meetings,
             )
             await self.server.start()
             tasks = [

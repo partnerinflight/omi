@@ -44,7 +44,7 @@ class SessionWriterFactory:
 
 class UploadServer:
     def __init__(self, secret: bytes, dest: Path, host: str = "0.0.0.0", port: int = 7331,
-                 writer_factory: SessionWriterFactory | None = None) -> None:
+                 writer_factory: SessionWriterFactory | None = None, file_store=None) -> None:
         if len(secret) != U.SECRET_LEN:
             raise ValueError("secret must be 32 bytes")
         self.secret = secret
@@ -52,6 +52,7 @@ class UploadServer:
         self.host = host
         self.port = port
         self.writers = writer_factory or SessionWriterFactory(self.dest)
+        self.files = file_store  # omi_local.file_store.FileStore, or None to refuse v2 clients
         self._server: asyncio.base_events.Server | None = None
         self._busy: set[str] = set()
         self._connections = set()
@@ -99,6 +100,25 @@ class UploadServer:
         writer.write(U.frame(msg_type, payload))
         await writer.drain()
 
+    async def _authenticate(self, reader, writer, hello: U.Hello, parse):
+        """Mutual HMAC handshake shared by v1 devices and v2 file clients.
+        Returns the parsed AUTH, or None after sending REJECT_AUTH."""
+        server_nonce = _secrets.token_bytes(U.NONCE_LEN)
+        await self._send(writer, U.MSG_CHALLENGE,
+                         U.encode_challenge(server_nonce, U.auth_tag(self.secret, U.LABEL_SERVER,
+                                                                     hello.client_nonce, server_nonce)))
+        msg_type, payload = await self._read_frame(reader, U.MAX_CTRL_PAYLOAD, CTRL_TIMEOUT_S)
+        if msg_type != U.MSG_AUTH:
+            raise U.UploadProtocolError("expected AUTH")
+        auth = parse(payload)
+        expected = U.auth_tag(self.secret, U.LABEL_CLIENT, hello.client_nonce, server_nonce)
+        if not hmac.compare_digest(auth.client_tag, expected):
+            log.warning("device %s from %s failed authentication", hello.device_id_str,
+                        writer.get_extra_info("peername"))
+            await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_AUTH]))
+            return None
+        return auth
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         device = "?"
@@ -114,18 +134,11 @@ class UploadServer:
                 raise U.UploadProtocolError("expected HELLO")
             hello = U.parse_hello(payload)
             device = hello.device_id_str
-            server_nonce = _secrets.token_bytes(U.NONCE_LEN)
-            await self._send(writer, U.MSG_CHALLENGE,
-                             U.encode_challenge(server_nonce, U.auth_tag(self.secret, U.LABEL_SERVER,
-                                                                         hello.client_nonce, server_nonce)))
-            msg_type, payload = await self._read_frame(reader, U.MAX_CTRL_PAYLOAD, CTRL_TIMEOUT_S)
-            if msg_type != U.MSG_AUTH:
-                raise U.UploadProtocolError("expected AUTH")
-            auth = U.parse_auth(payload)
-            expected = U.auth_tag(self.secret, U.LABEL_CLIENT, hello.client_nonce, server_nonce)
-            if not hmac.compare_digest(auth.client_tag, expected):
-                log.warning("device %s from %s failed authentication", device, peer)
-                await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_AUTH]))
+            if hello.version == U.VERSION_FILE:
+                ok = await self._serve_file_client(reader, writer, hello)
+                return
+            auth = await self._authenticate(reader, writer, hello, U.parse_auth)
+            if auth is None:
                 return
             if device in self._busy:
                 await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_BUSY]))
@@ -208,6 +221,61 @@ class UploadServer:
                 await writer.wait_closed()
             except Exception:  # noqa: BLE001
                 pass
+
+    async def _serve_file_client(self, reader, writer, hello: U.Hello) -> bool:
+        """Protocol v2: capture markers and whole-file uploads (see file_store.py)."""
+        client = hello.device_id_str
+        if self.files is None:
+            raise U.UploadProtocolError("file uploads are not enabled on this receiver")
+        if await self._authenticate(reader, writer, hello, U.parse_file_auth) is None:
+            return False
+        key = "file:" + client
+        if key in self._busy:
+            await self._send(writer, U.MSG_REJECT, bytes([U.REJECT_BUSY]))
+            return False
+        self._busy.add(key)
+        try:
+            await self._send(writer, U.MSG_OK)
+            log.info("file client %s connected", client)
+            current = None
+            while True:
+                try:
+                    hdr = await asyncio.wait_for(reader.readexactly(U.HEADER_LEN), DATA_TIMEOUT_S)
+                except asyncio.IncompleteReadError as e:
+                    if not e.partial:
+                        return True  # clean close between messages (no header byte read)
+                    raise
+                msg_type, length = U.parse_header(hdr)
+                if length > U.MAX_FILE_PAYLOAD:
+                    raise U.UploadProtocolError(f"frame too large ({length} bytes)")
+                payload = await asyncio.wait_for(reader.readexactly(length), DATA_TIMEOUT_S) if length else b""
+                if msg_type == U.MSG_CAPTURE_OPEN:
+                    m = U.parse_capture_open(payload)
+                    await asyncio.to_thread(self.files.open_capture, client, m.capture_id.hex(), m.start_ms, m.app)
+                    await self._send(writer, U.MSG_OK)
+                elif msg_type == U.MSG_CAPTURE_CANCEL:
+                    cid = U.parse_capture_id(payload).hex()
+                    await asyncio.to_thread(self.files.cancel_capture, client, cid)
+                    await self._send(writer, U.MSG_OK)
+                elif msg_type == U.MSG_FILE_BEGIN:
+                    b = U.parse_file_begin(payload)
+                    current = b.capture_id.hex()
+                    offset = await asyncio.to_thread(self.files.begin, client, current, b.total_len,
+                                                     b.sha256.hex(), b.metadata)
+                    await self._send(writer, U.MSG_FILE_START, U.encode_u64(offset))
+                elif msg_type == U.MSG_FILE_DATA and current is not None:
+                    d = U.parse_file_data(payload)
+                    persisted = await asyncio.to_thread(self.files.append, current, d.offset, d.data)
+                    await self._send(writer, U.MSG_FILE_ACK, U.encode_u64(persisted))
+                elif msg_type == U.MSG_FILE_END and current is not None:
+                    await asyncio.to_thread(self.files.commit, client, current)
+                    log.info("file client %s: committed capture %s", client, current)
+                    await self._send(writer, U.MSG_FILE_BYE, b"\x01")
+                    current = None
+                else:
+                    raise U.UploadProtocolError(f"unexpected v2 message 0x{msg_type:02x}")
+        finally:
+            self._busy.discard(key)
 
     @staticmethod
     def _persist(session_writer, chunk: U.DataChunk) -> None:
