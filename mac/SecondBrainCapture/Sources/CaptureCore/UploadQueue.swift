@@ -34,12 +34,11 @@ public final class UploadQueue {
                 backoff = min(backoff * 2, Self.maxBackoff)
                 return pending()
             } catch {
-                var failed = record
-                failed.uploadFailures += 1
-                if failed.uploadFailures >= Self.maxProtocolFailures {
-                    failed.state = .failed
+                try? spool.update(record.captureID) {
+                    guard $0.state == .recording || $0.state == .complete else { return }
+                    $0.uploadFailures += 1
+                    if $0.uploadFailures >= Self.maxProtocolFailures { $0.state = .failed }
                 }
-                try? spool.save(failed)
                 passError = "\(error)"
             }
         }
@@ -55,21 +54,24 @@ public final class UploadQueue {
     }
 
     private func deliver(_ record: CaptureRecord) throws {
-        var r = record
-        switch r.state {
+        let id = record.captureID
+        switch record.state {
         case .recording, .complete:
-            if !r.opened {
-                try transport.openCapture(r)
-                r.opened = true
-                try spool.save(r)
+            var state = record.state
+            if !record.opened {
+                try transport.openCapture(record)
+                // Re-read under the lock: the controller may have changed the record during the network call.
+                guard let fresh = try spool.update(id, { $0.opened = true }) else { return }
+                state = fresh.state
             }
-            if r.state == .complete {
-                try transport.upload(r, file: spool.cafURL(r.captureID))
-                spool.delete(r.captureID)
+            if state == .complete {
+                let current = spool.load(id) ?? record
+                try transport.upload(current, file: spool.cafURL(id))
+                spool.delete(id)
             }
         case .cancelled:
-            try transport.cancelCapture(id: r.captureID)
-            spool.delete(r.captureID)
+            try transport.cancelCapture(id: id)
+            spool.delete(id)
         case .failed:
             break
         }

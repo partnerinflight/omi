@@ -4,6 +4,7 @@ import Foundation
 /// The directory is private to the user (0700); files are deleted only after the receiver commits them.
 public final class Spool {
     public let root: URL
+    private let lock = NSLock()
 
     public init(root: URL) throws {
         self.root = root
@@ -17,6 +18,34 @@ public final class Spool {
     public func recordURL(_ id: String) -> URL { root.appendingPathComponent("\(id).json") }
 
     public func save(_ record: CaptureRecord) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try write(record)
+    }
+
+    /// The record on disk, or nil if it is missing or unreadable.
+    public func load(_ id: String) -> CaptureRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return read(id)
+    }
+
+    /// Locked read-modify-write of the on-disk record; nil (and nothing written) if the record no longer exists.
+    @discardableResult
+    public func update(_ id: String, _ mutate: (inout CaptureRecord) -> Void) throws -> CaptureRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var record = read(id) else { return nil }
+        mutate(&record)
+        try write(record)
+        return record
+    }
+
+    private func read(_ id: String) -> CaptureRecord? {
+        try? JSONDecoder().decode(CaptureRecord.self, from: Data(contentsOf: recordURL(id)))
+    }
+
+    private func write(_ record: CaptureRecord) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let url = recordURL(record.captureID)
@@ -39,6 +68,8 @@ public final class Spool {
     }
 
     public func delete(_ id: String) {
+        lock.lock()
+        defer { lock.unlock() }
         deleteAudio(id)
         try? FileManager.default.removeItem(at: recordURL(id))
     }

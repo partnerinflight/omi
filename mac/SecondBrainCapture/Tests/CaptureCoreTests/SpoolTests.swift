@@ -96,4 +96,21 @@ final class SpoolTests: XCTestCase {
         try spool.save(a)
         XCTAssertEqual(spool.records(), [a, b])
     }
+
+    func testUpdateMutatesAndReturnsFreshRecord() throws {
+        let r = CaptureRecord(app: "a", startMs: 1)
+        try spool.save(r)
+        let updated = try spool.update(r.captureID) { $0.state = .complete; $0.endMs = 5 }
+        XCTAssertEqual(updated?.state, .complete)
+        XCTAssertEqual(spool.load(r.captureID), updated)
+        XCTAssertEqual(spool.load(r.captureID)?.endMs, 5)
+    }
+
+    func testUpdateOfDeletedRecordReturnsNilAndCreatesNothing() throws {
+        let r = CaptureRecord(app: "a", startMs: 1)
+        try spool.save(r)
+        spool.delete(r.captureID)
+        XCTAssertNil(try spool.update(r.captureID) { $0.opened = true })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: spool.recordURL(r.captureID).path))
+    }
 }

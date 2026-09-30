@@ -4,10 +4,18 @@ import XCTest
 final class FakeTransport: UploadTransport {
     var calls: [String] = []
     var error: Error?
+    var uploadError: Error?
+    var onOpen: ((CaptureRecord) -> Void)?
 
-    func openCapture(_ record: CaptureRecord) throws { try note("open \(record.captureID.prefix(2))") }
+    func openCapture(_ record: CaptureRecord) throws {
+        try note("open \(record.captureID.prefix(2))")
+        onOpen?(record)
+    }
     func cancelCapture(id: String) throws { try note("cancel \(id.prefix(2))") }
-    func upload(_ record: CaptureRecord, file: URL) throws { try note("upload \(record.captureID.prefix(2))") }
+    func upload(_ record: CaptureRecord, file: URL) throws {
+        try note("upload \(record.captureID.prefix(2))")
+        if let uploadError { throw uploadError }
+    }
 
     private func note(_ call: String) throws {
         calls.append(call)
@@ -97,5 +105,39 @@ final class UploadQueueTests: XCTestCase {
         let calls = transport.calls.count
         XCTAssertEqual(queue.run(now: 400), 0)
         XCTAssertEqual(transport.calls.count, calls)
+    }
+
+    func testCancelDuringOpenIsNotReverted() throws {
+        let r = try record("h", 1, .recording)
+        transport.onOpen = { [spool] rec in _ = try? spool!.update(rec.captureID) { $0.state = .cancelled } }
+        queue.run(now: 0)
+        XCTAssertEqual(spool.load(r.captureID)?.state, .cancelled)
+        XCTAssertEqual(spool.load(r.captureID)?.opened, true)
+        XCTAssertEqual(transport.calls, ["open hh"])
+    }
+
+    func testCompleteDuringOpenIsNotReverted() throws {
+        let r = try record("i", 1, .recording)
+        transport.onOpen = { [spool] rec in
+            _ = try? spool!.update(rec.captureID) { $0.state = .complete; $0.endMs = 99_000 }
+        }
+        queue.run(now: 0)
+        if let after = spool.load(r.captureID) {
+            XCTAssertEqual(after.state, .complete)
+            XCTAssertEqual(after.endMs, 99_000)
+        } else {
+            XCTAssertEqual(transport.calls, ["open ii", "upload ii"])
+        }
+    }
+
+    func testFailureAfterOpenKeepsOpenedAndCountsOnce() throws {
+        let r = try record("j", 1, .complete)
+        transport.uploadError = UploadError.protocolViolation("bad")
+        queue.run(now: 0)
+        let after = spool.load(r.captureID)
+        XCTAssertEqual(after?.opened, true)
+        XCTAssertEqual(after?.uploadFailures, 1)
+        queue.run(now: 1)
+        XCTAssertEqual(transport.calls.filter { $0.hasPrefix("open") }.count, 1)
     }
 }
