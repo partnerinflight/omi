@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleIdentifier</key>
     <string>com.partnerinflight.SecondBrainCapture</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
     <key>CFBundleName</key>
     <string>SecondBrainCapture</string>
     <key>CFBundleExecutable</key>
