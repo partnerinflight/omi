@@ -43,6 +43,12 @@ Optional switches:
 - `-SkipSpeakers`: skips encoder setup; existing configured encoder paths are
   preserved. To disable an existing encoder, explicitly clear both speaker fields.
 - `-MossBinaryDir 'C:\existing\moss\bin'`: reuse your existing executable/DLLs.
+- `-Cuda`: build MOSS for the NVIDIA GPU in this PC and set `moss_device` to
+  `cuda`. Needs the NVIDIA CUDA Toolkit (`CUDA_PATH`); its runtime DLLs are
+  copied next to the CLI, so the service does not depend on `PATH`. On a GTX
+  1660 Super (2026-09-30) it transcribed 3–4.7× faster than 16 CPU threads with
+  equivalent text. If the GPU is unavailable, MOSS falls back to the CPU; each
+  job's `pipeline.log` names the backend used (`[MOSS] done in … on CUDA0`).
 - `-PrepareOnly`: prepare engines/build/test without installing a service.
 - `-EngineRoot`, `-PipelineConfig`: change machine-local destinations.
 

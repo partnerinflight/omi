@@ -1028,6 +1028,8 @@ def main():
                 str(jout),
                 "--threads",
                 str(cfg["moss_threads"]),
+                "--device",
+                cfg.get("moss_device", "cpu"),
                 "--max-new",
                 str(cfg["moss_max_new"]),
             ],

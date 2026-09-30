@@ -8,6 +8,7 @@ param(
     [string]$EngineRoot = 'C:\second-brain-asr-engines',
     [string]$MossBinaryDir = '',
     [string]$ReviewUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    [switch]$Cuda,
     [switch]$SkipVibe7,
     [switch]$SkipSpeakers,
     [switch]$PrepareOnly
@@ -35,7 +36,7 @@ try {
         New-Item -ItemType Directory -Force (Split-Path $PipelineConfig -Parent) | Out-Null
         Copy-Item "$repo/config/pipeline.example.json" $PipelineConfig
     }
-    & "$PSScriptRoot/setup-engines.ps1" -Python $Python -Config $PipelineConfig -EngineRoot $EngineRoot -MossBinaryDir $MossBinaryDir -SkipVibe7:$SkipVibe7
+    & "$PSScriptRoot/setup-engines.ps1" -Python $Python -Config $PipelineConfig -EngineRoot $EngineRoot -MossBinaryDir $MossBinaryDir -Cuda:$Cuda -SkipVibe7:$SkipVibe7
     if (-not $SkipSpeakers) {
         & "$PSScriptRoot/setup-speakers.ps1" -Python $Python -PipelineConfig $PipelineConfig -EngineRoot "$EngineRoot/speaker-recognition"
     }

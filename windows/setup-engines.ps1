@@ -3,6 +3,8 @@ param(
     [string]$Python = 'python',
     [string]$EngineRoot = 'C:\second-brain-asr-engines',
     [string]$MossBinaryDir = '',
+    # Build MOSS for an NVIDIA GPU (CUDA Toolkit required) and run it there.
+    [switch]$Cuda,
     [switch]$SkipVibe7
 )
 . "$PSScriptRoot/setup-common.ps1"
@@ -22,9 +24,11 @@ if ($MossBinaryDir) {
     $MossBinaryDir = (Resolve-Path $MossBinaryDir).Path
     Invoke-Checked (Join-Path $MossBinaryDir 'moss-transcribe.exe') @('version')
 } else {
-    & "$PSScriptRoot/build-moss.ps1" -EngineRoot $EngineRoot
-    $MossBinaryDir = Join-Path $EngineRoot ('sources/moss-' + $lock.moss.revision.Substring(0,12) + '/build/Release')
+    & "$PSScriptRoot/build-moss.ps1" -EngineRoot $EngineRoot -Cuda:$Cuda
+    $MossBinaryDir = Join-Path $EngineRoot ('sources/moss-' + $lock.moss.revision.Substring(0,12) + $(if ($Cuda) { '/build-cuda/Release' } else { '/build/Release' }))
 }
+# moss-transcribe falls back to CPU when the requested device is unavailable.
+Set-ConfigValue $cfg 'moss_device' $(if ($Cuda) { 'cuda' } else { 'cpu' })
 $mossModel = Join-Path $EngineRoot ('models/moss-' + $lock.moss_model.revision.Substring(0,12))
 Invoke-Checked $setupPython @("$PSScriptRoot/download-model.py", '--lock', $lockPath, '--model', 'moss_model', '--destination', $mossModel)
 Set-ConfigValue $cfg 'moss_cpp_engine_dir' $MossBinaryDir

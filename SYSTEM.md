@@ -142,9 +142,11 @@ are authoritative; explain deliberate policy changes.
 - ffmpeg excludes long silence (defaults: −42 dB, ≥12 seconds); active spans
   become coarse chunks of at most 240 seconds. This is independent of Omi VOX.
 - MOSS C++ runs first on every coarse chunk using the configured GGUF. The
-  runner currently forces CPU, default 16 threads (on a 32-core Threadripper,
-  2026-09-30: 1.66x faster than 8 with identical output; 24-48 were no faster).
-  It consumes timestamps,
+  device is `moss_device` (default `cpu`; `cuda` with a `-Cuda` engine build,
+  3–4.7x faster than CPU on a GTX 1660 Super, 2026-09-30). CPU uses
+  `moss_threads`, default 16 (on a 32-core Threadripper 1.66x faster than 8 with
+  identical output; 24-48 were no faster). The log names the backend actually
+  used, since MOSS falls back to CPU silently. It consumes timestamps,
   transcript, and speaker fields from MOSS JSON. Diarization is built into MOSS;
   there is no separate diarization toggle. Missing labels become unknown.
 - Speaker labels are scoped by chunk/window, never global identities. Group

@@ -212,17 +212,28 @@ class AudioRetentionTests(unittest.TestCase):
 class MossRunnerTests(unittest.TestCase):
     """The real runner script against a fake moss-transcribe that mimics the CLI's exit paths."""
 
-    def run_runner(self, fake):
+    def run_runner(self, fake, *extra):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
         output = root / "c0000.json"
         runner = Path(__file__).resolve().parents[1] / "src/second_brain/adaptive/runners/moss_cpp_runner.py"
         proc = subprocess.run(
             [sys.executable, str(runner), "--command-json", json.dumps([sys.executable, "-c", fake]),
-             "--model", "m.gguf", "--audio", str(root / "c0000.wav"), "--output", str(output)],
+             "--model", "m.gguf", "--audio", str(root / "c0000.wav"), "--output", str(output), *extra],
             capture_output=True, text=True,
         )
         return proc, json.loads(output.read_text()) if output.exists() else None
+
+    def test_device_is_configurable_and_the_backend_actually_used_is_recorded(self):
+        # Echo MTD_DEVICE back as the transcript; report a backend like moss-transcribe does.
+        fake = ("import json, os, sys; sys.stderr.write('[mt I] backend: CUDA0\\n'); "
+                "print(json.dumps([dict(start=0, end=1, speaker='S01', text=os.environ['MTD_DEVICE'])]))")
+        for extra, device in [((), "cpu"), (("--device", "cuda"), "cuda")]:
+            proc, payload = self.run_runner(fake, *extra)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(payload["segments"][0]["text"], device)
+            self.assertEqual(payload["backend"], "CUDA0")
+            self.assertIn("on CUDA0", proc.stdout)
 
     def test_empty_transcript_is_no_speech_not_a_failed_recording(self):
         # moss-transcribe prints this and exits 1 only when the model produced no text (src/cli.cpp).

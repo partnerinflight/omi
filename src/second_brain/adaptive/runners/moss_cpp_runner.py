@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -57,6 +58,8 @@ def main():
     ap.add_argument("--audio", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--threads", type=int, default=8)
+    # moss-transcribe picks this backend (e.g. cpu, cuda) and falls back to CPU if it is missing.
+    ap.add_argument("--device", default="cpu")
     ap.add_argument("--max-new", type=int, default=2048)
     args = ap.parse_args()
 
@@ -66,11 +69,12 @@ def main():
         "model": args.model,
         "audio": str(Path(args.audio).resolve()),
         "threads": args.threads,
+        "device": args.device,
     }
 
     try:
         env = os.environ.copy()
-        env["MTD_DEVICE"] = "cpu"
+        env["MTD_DEVICE"] = args.device
         env["MTD_THREADS"] = str(args.threads)
 
         prefix = json.loads(args.command_json)
@@ -85,12 +89,16 @@ def main():
         payload["return_code"] = proc.returncode
         payload["stderr"] = proc.stderr
         payload["raw_stdout"] = proc.stdout
+        # The backend moss-transcribe actually used, so a silent CPU fallback is visible.
+        backends = re.findall(r"backend: (\S+)$", proc.stderr, re.MULTILINE)
+        payload["backend"] = backends[-1] if backends else None
+        where = f" on {payload['backend']}" if payload["backend"] else ""
 
         # moss-transcribe exits 1 with exactly this last line only when the model produced no
         # text (noise, music, unintelligible audio). That is "no speech", not a broken recording.
         if proc.returncode == 1 and proc.stderr.strip().splitlines()[-1:] == ["transcription failed"]:
             payload.update(result=[], segments=[], no_speech=True, status="ok")
-            print(f"[MOSS] done in {elapsed:.1f}s; no speech recognized", flush=True)
+            print(f"[MOSS] done in {elapsed:.1f}s{where}; no speech recognized", flush=True)
             out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return
 
@@ -101,7 +109,7 @@ def main():
         payload["result"] = parsed
         payload["segments"] = normalize_segments(parsed)
         payload["status"] = "ok"
-        print(f"[MOSS] done in {elapsed:.1f}s; {len(payload['segments'])} turns", flush=True)
+        print(f"[MOSS] done in {elapsed:.1f}s{where}; {len(payload['segments'])} turns", flush=True)
 
     except Exception as exc:
         payload["status"] = "error"
