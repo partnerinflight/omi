@@ -426,3 +426,31 @@ reset, SMP reports the expected app digest active/confirmed and GATT reports
 it. Clock synchronized, battery 93%, ring `[401814, 524472)` with zero dropped
 packets. No recordings or settings were erased. Quiet-room vibration and
 startup audio remain user tests on the device.
+
+## Upload completes after the charger signal drops — 2026-09-29
+
+Firmware `3.0.22-localwifi.15` follows a live diagnosis on `.14`: `omi-local
+wifi-status` reported `aborted (charger removed / busy)` at 100 % / 4215 mV
+with `charging signal: inactive` while the Omi sat on its charger. The CHG pin
+reports current flow, so a full battery ended automatic uploads mid-transfer
+(receiver log: repeated `TimeoutError`/`IncompleteReadError` after 2–21 minutes).
+A started upload now runs to completion; only a Wi-Fi setup request interrupts it.
+Starting still requires the charging signal. A native test executes the production
+abort rule and checks the upload loop no longer reads `is_charging`.
+
+Built and flashed from **Windows** ([WINDOWS_BUILD.md](WINDOWS_BUILD.md)): NCS
+2.9.0 Wi-Fi sysbuild, app 872552 flash / 428808 RAM bytes (16 bytes smaller than
+`.14`). Both OTA images pass MCUboot signature verification with the repository
+key, and a second build reproduced the application digest exactly.
+ZIP SHA-256: `2b06311bf2ed014da33538a1a76753dc915bd21dfb614b358f11e4a3aa392e1a`.
+App digest: `9f0f7d1a7a5966edf7187ed12a6e307ca42a83240c4f0013924818474c90470a`.
+
+Installed over BLE SMP with `scripts/windows/flash_omi.py`: application image
+only. The network-core image differed from `.14`'s only by embedded build paths
+(its digest changed between two Windows builds of identical code) and has no
+fallback, so `.14`'s network core was kept. The staged digest matched before
+reset; afterwards SMP reported the new app digest active and confirmed (no
+separate confirm step) and GATT reported `.15`. Ring intact, zero dropped
+packets, Wi-Fi upload configuration kept; a manual upload reached the receiver
+under `.15`. An automatic upload surviving a real charge-signal drop has not been
+observed yet.

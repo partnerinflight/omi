@@ -49,7 +49,7 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
 [wifi_upload.c](omi/firmware/omi/src/wifi_upload.c).
 
 - Hardware: Omi CV1, nRF5340 + nRF7002, T5838 microphone; NCS 2.9.0.
-  Last installed/verified image: `3.0.22-localwifi.14`.
+  Last installed/verified image: `3.0.22-localwifi.15` (2026-09-29, built and flashed from Windows; see `omi/firmware/WINDOWS_BUILD.md`).
 - Capture: 16 kHz, 16-bit PCM; stereo PDM is averaged to mono and Opus encoded.
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
@@ -73,7 +73,7 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   expires after five minutes; configured boot does not expose it automatically.
 - Automatic upload requires the charging signal, about one minute of queued
   audio, and a five-minute retry interval. BLE `upload-now` bypasses charging.
-  From `.15` (built, not yet installed) a started upload runs to completion: the
+  From `.15` a started upload runs to completion: the
   CHG signal only reports current flow, so a full battery on the charger drops it
   and `.14` aborted uploads mid-transfer ("aborted (charger removed / busy)",
   seen live 2026-09-29 at 100 %/4215 mV). Only a Wi-Fi setup request interrupts.
@@ -295,9 +295,9 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   timeouts; durable ACK/resume
   prevents deleting unacknowledged records. Diagnosed 2026-09-29 via
   `omi-local wifi-status`: interruptions were the firmware aborting automatic
-  uploads when the CHG signal dropped on a full battery (fixed in `.15`, pending
-  install), plus one receiver-side `WinError 1450` on the sidecar rename (now
-  retried). Upload throughput is ~1x real time (stop-and-wait durable ACKs).
+  uploads when the CHG signal dropped on a full battery (fixed in `.15`,
+  installed), plus one receiver-side `WinError 1450` on the sidecar rename (now
+  retried). Records hold ~100 ms of audio; manual uploads moved ~50 records/s, about 5x real time.
 - `.13` deployed; saved gain read back as level 6. Recent sample had low average
   level with full-scale peaks; no controlled speech comparison yet. Do not claim
   gain calibration, real ASR/diarization accuracy, or voice-match accuracy from
