@@ -8,12 +8,19 @@ public enum CaptureEncoder {
                                                 channels: 2, interleaved: true)!
 
     public static func encode(pcm: URL, to caf: URL) throws {
-        // AVAudioFile picks the container from the extension, so keep ".caf" last.
         let temporary = caf.deletingPathExtension().appendingPathExtension("tmp").appendingPathExtension("caf")
         try? FileManager.default.removeItem(at: temporary)
-        try write(pcm: pcm, to: temporary)
-        try? FileManager.default.removeItem(at: caf)
-        try FileManager.default.moveItem(at: temporary, to: caf)
+        do {
+            try write(pcm: pcm, to: temporary)
+            if FileManager.default.fileExists(atPath: caf.path) {
+                _ = try FileManager.default.replaceItemAt(caf, withItemAt: temporary)
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: caf)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
     }
 
     /// Separate function so the file is closed (and finalized) before the rename.
@@ -24,16 +31,19 @@ public enum CaptureEncoder {
         var description = AudioStreamBasicDescription(
             mSampleRate: 16000, mFormatID: kAudioFormatOpus, mFormatFlags: 0, mBytesPerPacket: 0,
             mFramesPerPacket: 320, mBytesPerFrame: 0, mChannelsPerFrame: 2, mBitsPerChannel: 0, mReserved: 0)
-        guard let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Stereo),
-              let opusFormat = AVAudioFormat(streamDescription: &description, channelLayout: layout),
+        guard let channelLayout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Stereo),
+              let opusFormat = AVAudioFormat(streamDescription: &description, channelLayout: channelLayout),
               let converter = AVAudioConverter(from: pcmFormat, to: opusFormat)
         else { throw CocoaError(.fileWriteUnknown) }
         converter.bitRate = 32000
+        let framesPerPacket = Int64(opusFormat.streamDescription.pointee.mFramesPerPacket)
 
-        var fileID: AudioFileID?
-        try check(AudioFileCreateWithURL(url as CFURL, kAudioFileCAFType, &description, .eraseFile, &fileID))
-        guard let fileID else { throw CocoaError(.fileWriteUnknown) }
-        defer { AudioFileClose(fileID) }
+        var created: AudioFileID?
+        try check(AudioFileCreateWithURL(url as CFURL, kAudioFileCAFType, &description, .eraseFile, &created))
+        guard let fileID = created else { throw CocoaError(.fileWriteUnknown) }
+        var closed = false
+        defer { if !closed { AudioFileClose(fileID) } }
+
         // Default header padding is ~32 KB, which is large for short captures; the packet table is
         // rewritten on close anyway.
         var reserve: Float64 = 0
@@ -43,22 +53,22 @@ public enum CaptureEncoder {
                 try check(AudioFileSetProperty(fileID, kAudioFilePropertyMagicCookieData, UInt32(cookie.count), $0.baseAddress!))
             }
         }
-        var layoutTag = layout.layout.pointee
+        var layout = channelLayout.layout.pointee
         try check(AudioFileSetProperty(fileID, kAudioFilePropertyChannelLayout,
-                                       UInt32(MemoryLayout<AudioChannelLayout>.size), &layoutTag))
+                                       UInt32(MemoryLayout<AudioChannelLayout>.size), &layout))
 
         let input = try FileHandle(forReadingFrom: pcm)
         defer { try? input.close() }
         let chunkFrames = 16000
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(chunkFrames)) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(chunkFrames))
+        else { throw CocoaError(.fileWriteUnknown) }
+        let output = AVAudioCompressedBuffer(format: opusFormat, packetCapacity: 32,
+                                             maximumPacketSize: converter.maximumOutputPacketSize)
         var inputDone = false
         var readError: Error?
+        var totalFrames: Int64 = 0
         var packetsWritten: Int64 = 0
         while true {
-            let output = AVAudioCompressedBuffer(format: opusFormat, packetCapacity: 32,
-                                                 maximumPacketSize: converter.maximumOutputPacketSize)
             var convertError: NSError?
             let status = converter.convert(to: output, error: &convertError) { _, inputStatus in
                 if inputDone { inputStatus.pointee = .endOfStream; return nil }
@@ -73,6 +83,7 @@ public enum CaptureEncoder {
                         buffer.int16ChannelData![0].update(from: raw.bindMemory(to: Int16.self).baseAddress!, count: frames * 2)
                     }
                     buffer.frameLength = AVAudioFrameCount(frames)
+                    totalFrames += Int64(frames)
                     inputStatus.pointee = .haveData
                     return buffer
                 } catch {
@@ -92,6 +103,17 @@ public enum CaptureEncoder {
             }
             if status == .endOfStream { break }
         }
+
+        // Declare the encoder delay and end padding so readers trim to the real duration.
+        let leading = Int64(max(0, converter.primeInfo.leadingFrames))
+        var info = AudioFilePacketTableInfo(
+            mNumberValidFrames: totalFrames,
+            mPrimingFrames: Int32(leading),
+            mRemainderFrames: Int32(max(0, packetsWritten * framesPerPacket - totalFrames - leading)))
+        try check(AudioFileSetProperty(fileID, kAudioFilePropertyPacketTableInfo,
+                                       UInt32(MemoryLayout<AudioFilePacketTableInfo>.size), &info))
+        closed = true
+        try check(AudioFileClose(fileID))
     }
 
     private static func check(_ status: OSStatus) throws {
