@@ -10,6 +10,15 @@ final class UploadClientTests: XCTestCase {
         }
     }
 
+    func testUploadOfMissingFileThrowsLocalFile() {
+        let client = UploadClient(host: "127.0.0.1", port: 1, secret: Data(count: 32), clientID: Data(count: 6),
+                                  timeoutSeconds: 2)
+        let record = CaptureRecord(captureID: "00112233445566778899aabbccddeeff", app: "a", startMs: 1, endMs: 2, state: .complete)
+        XCTAssertThrowsError(try client.upload(record, file: URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString)"))) { error in
+            guard case UploadError.localFile = error else { return XCTFail("\(error)") }
+        }
+    }
+
     func testAgainstRealReceiver() throws {
         guard let python = ProcessInfo.processInfo.environment["SBC_RECEIVER_PYTHON"] else {
             throw XCTSkip("set SBC_RECEIVER_PYTHON to a Python that can import omi_local")
@@ -30,11 +39,11 @@ final class UploadClientTests: XCTestCase {
             receiver.waitUntilExit()
         }
         var port: UInt16?
-        for _ in 0..<200 where port == nil {
+        for _ in 0..<200 where port == nil && receiver.isRunning {
             port = (try? String(contentsOf: portFile, encoding: .utf8)).flatMap { UInt16($0) }
             if port == nil { Thread.sleep(forTimeInterval: 0.05) }
         }
-        let bound = try XCTUnwrap(port, "receiver did not start")
+        let bound = try XCTUnwrap(port, "receiver did not start (running: \(receiver.isRunning), exit: \(receiver.isRunning ? -1 : receiver.terminationStatus))")
         let client = UploadClient(host: "127.0.0.1", port: bound, secret: secret, clientID: Data([1, 2, 3, 4, 5, 6]))
 
         let record = CaptureRecord(captureID: "00112233445566778899aabbccddeeff", app: "us.zoom.xos",

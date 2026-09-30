@@ -2,18 +2,20 @@ import CryptoKit
 import Darwin
 import Foundation
 
+// Every method throws only UploadError.
 public enum UploadError: Error, Equatable {
     case unreachable(String)
     case authFailed
     case rejected(UInt8)
     case protocolViolation(String)
+    case localFile(String)
 
     /// Worth retrying later without counting against the capture.
     public var isRetryable: Bool {
         switch self {
         case .unreachable, .authFailed: return true
         case .rejected(let code): return code == Wire.Reject.busy.rawValue
-        case .protocolViolation: return false
+        case .protocolViolation, .localFile: return false
         }
     }
 }
@@ -57,17 +59,27 @@ public final class UploadClient: UploadTransport {
     public func upload(_ record: CaptureRecord, file: URL) throws {
         let id = try Self.captureID(record.captureID)
         let (size, digest) = try Self.sizeAndDigest(file)
-        let begin = try Wire.fileBegin(id: id, totalLength: size, sha256: digest, metadata: record.uploadMetadata)
+        let begin = try Self.wire { try Wire.fileBegin(id: id, totalLength: size, sha256: digest, metadata: record.uploadMetadata) }
+        let handle = try Self.local { try FileHandle(forReadingFrom: file) }
+        defer { try? handle.close() }
         try session { c in
-            var offset = Int64(try Wire.readU64(c.expect(c.call(.fileBegin, begin), .fileStart)))
-            let handle = try FileHandle(forReadingFrom: file)
-            defer { try? handle.close() }
+            let start = try Self.wire { try Wire.readU64(c.expect(c.call(.fileBegin, begin), .fileStart)) }
+            guard let first = Int64(exactly: start), first >= 0, first <= size else {
+                throw UploadError.protocolViolation("bad FILE_START offset \(start)")
+            }
+            var offset = first
             while offset < size {
-                try handle.seek(toOffset: UInt64(offset))
-                let chunk = try handle.read(upToCount: Wire.maxChunk) ?? Data()
+                let want = Int(min(Int64(Wire.maxChunk), size - offset))
+                let chunk: Data = try Self.local {
+                    try handle.seek(toOffset: UInt64(offset))
+                    return try handle.read(upToCount: want) ?? Data()
+                }
                 guard !chunk.isEmpty else { throw UploadError.protocolViolation("file shrank during upload") }
-                let acked = Int64(try Wire.readU64(c.expect(c.call(.fileData, Wire.fileData(offset: offset, bytes: chunk)), .fileAck)))
-                guard acked == offset + Int64(chunk.count) else { throw UploadError.protocolViolation("unexpected ACK \(acked)") }
+                let reply = try c.expect(c.call(.fileData, Wire.fileData(offset: offset, bytes: chunk)), .fileAck)
+                let raw = try Self.wire { try Wire.readU64(reply) }
+                guard let acked = Int64(exactly: raw), acked == offset + Int64(chunk.count) else {
+                    throw UploadError.protocolViolation("unexpected ACK \(raw)")
+                }
                 offset = acked
             }
             guard try c.expect(c.call(.fileEnd), .fileBye) == Data([1]) else {
@@ -76,21 +88,31 @@ public final class UploadClient: UploadTransport {
         }
     }
 
+    static func wire<T>(_ body: () throws -> T) throws -> T {
+        do { return try body() } catch let e as Wire.Malformed { throw UploadError.protocolViolation(e.description) }
+    }
+
+    static func local<T>(_ body: () throws -> T) throws -> T {
+        do { return try body() } catch { throw UploadError.localFile("\(error)") }
+    }
+
     static func captureID(_ hex: String) throws -> Data {
         guard let id = Data(hex: hex), id.count == 16 else { throw UploadError.protocolViolation("bad capture id \(hex)") }
         return id
     }
 
     static func sizeAndDigest(_ url: URL) throws -> (Int64, Data) {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hash = SHA256()
-        var size: Int64 = 0
-        while let block = try handle.read(upToCount: 1 << 20), !block.isEmpty {
-            hash.update(data: block)
-            size += Int64(block.count)
+        try local {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hash = SHA256()
+            var size: Int64 = 0
+            while let block = try handle.read(upToCount: 1 << 20), !block.isEmpty {
+                hash.update(data: block)
+                size += Int64(block.count)
+            }
+            return (size, Data(hash.finalize()))
         }
-        return (size, Data(hash.finalize()))
     }
 
     private func session(_ body: (Connection) throws -> Void) throws {
@@ -125,7 +147,7 @@ final class Connection {
 
     func call(_ type: Wire.Msg, _ payload: Data = Data()) throws -> (UInt8, Data) {
         try send(Wire.frame(type, payload))
-        let (kind, length) = try Wire.parseHeader(readExact(Wire.headerLength))
+        let (kind, length) = try UploadClient.wire { try Wire.parseHeader(readExact(Wire.headerLength)) }
         guard length <= Wire.maxChunk + 64 else { throw UploadError.protocolViolation("reply too large") }
         return (kind, try readExact(length))
     }
@@ -145,6 +167,7 @@ final class Connection {
         var sent = 0
         while sent < data.count {
             let n = data.withUnsafeBytes { Darwin.send(fd, $0.baseAddress! + sent, data.count - sent, 0) }
+            if n < 0 && errno == EINTR { continue }
             guard n > 0 else { throw UploadError.unreachable(String(cString: strerror(errno))) }
             sent += n
         }
@@ -156,6 +179,7 @@ final class Connection {
         var got = 0
         while got < count {
             let n = out.withUnsafeMutableBytes { recv(fd, $0.baseAddress! + got, count - got, 0) }
+            if n < 0 && errno == EINTR { continue }
             guard n > 0 else { throw UploadError.unreachable(n == 0 ? "connection closed" : String(cString: strerror(errno))) }
             got += n
         }
@@ -195,7 +219,9 @@ final class Connection {
         if Darwin.connect(s, address, length) == 0 { return true }
         guard errno == EINPROGRESS else { return false }
         var poller = pollfd(fd: s, events: Int16(POLLOUT), revents: 0)
-        guard poll(&poller, 1, Int32(timeout * 1000)) == 1 else {
+        var ready = poll(&poller, 1, Int32(timeout * 1000))
+        while ready < 0 && errno == EINTR { ready = poll(&poller, 1, Int32(timeout * 1000)) }
+        guard ready == 1 else {
             errno = ETIMEDOUT
             return false
         }
