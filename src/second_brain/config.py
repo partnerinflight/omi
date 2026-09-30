@@ -27,8 +27,8 @@ class Config:
     skip_vibe7: bool = False
     no_hermes: bool = False
     ffmpeg_dir: str = ""
-    speaker_match_threshold: float = 0.50  # calibrated on Omi audio; see scripts/speaker_calibration.py
-    speaker_match_margin: float = 0.05
+    speaker_match_threshold: float = 0.40  # calibrated on Omi audio; see scripts/speaker_calibration.py
+    speaker_match_margin: float = 0.12
     # Delete a recording's audio once its note is published (see docs/speakers.md, README).
     delete_audio_after_processing: bool = True
 

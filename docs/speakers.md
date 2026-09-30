@@ -74,19 +74,23 @@ recognition is active. Set up the encoder before naming recordings that should
 become reusable voice references; already completed jobs are not automatically
 re-encoded after enabling/changing models.
 
-A future occurrence needs at least two usable clips whose embeddings all favor
-the same confirmed person. Every clip must exceed `speaker_match_threshold`
-(default cosine similarity 0.50) and beat the next person by
-`speaker_match_margin` (default 0.05). Unknown, short, ambiguous and conflicting
-evidence stays unidentified. Voice recognition is an estimate and can be
-corrected in the UI.
+A future occurrence is compared as a whole: the average of its clean clips'
+voiceprints against the average of each confirmed person's references. The best
+person must reach `speaker_match_threshold` (default cosine similarity 0.40) and
+beat the next person by `speaker_match_margin` (default 0.12). One clear clip is
+enough, and one quiet or muffled clip no longer vetoes an otherwise clear match.
+Unknown and ambiguous voices (near two people) stay unidentified. Voice
+recognition is an estimate and can be corrected in the UI.
 
-The defaults come from calibration on real Omi recordings (2026-09-29, 10
-confirmed rows across 3 people): samples of the same person scored median 0.46
-and never above 0.66, different people median 0.07 and at most 0.52, so the
-original 0.80 could never match. Replaying each confirmed row as unknown, 0.50 /
-0.05 named 5 of 10 correctly and none wrongly. That is a small sample: re-check
-as you confirm more people by running, as an administrator,
+The defaults come from calibration on real Omi recordings (2026-09-29, 26
+confirmed rows across 3 people). Replaying each confirmed row as unknown, the
+averaged rule at 0.40 / 0.12 named 17 correctly and none wrongly; the previous
+rule, which required every clip to match on its own at 0.50 / 0.05, named 6.
+The margin is the tight part: two similar voices in that data averaged about
+0.10 apart, and a margin of 0.10 named one row wrongly. Reference clips were
+often short and quiet, so individual clips scored low (same person median 0.34)
+even when their average was clear. Re-check as you confirm more people by
+running, as an administrator,
 
 ```powershell
 & 'C:\Program Files\SecondBrain\python\Scripts\python.exe' -I scripts\speaker_calibration.py

@@ -29,29 +29,31 @@ def unit(value):
     return [x / norm for x in numbers]
 
 
-def match(vectors, model, references, threshold=0.50, margin=0.05):
-    """Every query clip must agree; only manually confirmed references may enter."""
-    if len(vectors) < 2 or not model:
+def mean_unit(vectors):
+    total = [sum(column) for column in zip(*vectors)]
+    norm = math.sqrt(sum(x * x for x in total))
+    return [x / norm for x in total] if norm > 1e-8 else None
+
+
+def match(vectors, model, references, threshold=0.40, margin=0.12):
+    """Compare the row's average voiceprint with each confirmed person's average voiceprint.
+
+    Averaging lets clear clips outweigh a quiet or clipped one instead of one weak clip vetoing
+    the match; only manually confirmed references may enter."""
+    if not vectors or not model:
         return None, None
-    winners = []
-    scores = []
-    for vector in vectors:
-        by_person = {}
-        for person, reference_model, reference in references:
-            if model != reference_model or len(vector) != len(reference):
-                continue
-            score = sum(a * b for a, b in zip(vector, reference))
-            by_person[person] = max(by_person.get(person, -1), score)
-        ranking = sorted(by_person.items(), key=lambda item: item[1], reverse=True)
-        if not ranking:
-            return None, None
-        person, score = ranking[0]
-        runner_up = ranking[1][1] if len(ranking) > 1 else -1
-        if score < threshold or score - runner_up < margin:
-            return None, score
-        winners.append(person)
-        scores.append(score)
-    return (winners[0], min(scores)) if len(set(winners)) == 1 else (None, None)
+    query = mean_unit(vectors)
+    by_person = {}
+    for person, reference_model, reference in references:
+        if model == reference_model and len(reference) == len(vectors[0]):
+            by_person.setdefault(person, []).append(reference)
+    ranking = sorted(((sum(a * b for a, b in zip(query, c)), person) for person, refs in by_person.items()
+                      if (c := mean_unit(refs))), reverse=True) if query else []
+    if not ranking:
+        return None, None
+    score, person = ranking[0]
+    runner_up = ranking[1][0] if len(ranking) > 1 else -1
+    return (person, score) if score >= threshold and score - runner_up >= margin else (None, score)
 
 
 class Speakers:
@@ -66,7 +68,7 @@ class Speakers:
         finally:
             db.close()
 
-    def __init__(self, data_dir: Path, review_dir: Path, threshold=0.50, margin=0.05):
+    def __init__(self, data_dir: Path, review_dir: Path, threshold=0.40, margin=0.12):
         self.path = data_dir / "speakers.sqlite3"
         self.review = review_dir
         self.threshold, self.margin = threshold, margin

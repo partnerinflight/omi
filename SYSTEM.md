@@ -213,9 +213,10 @@ Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brai
   Null values still allow diarization/manual review, but no future voice matching.
   Only clean, nonoverlapping, precisely timed turns ≥2 seconds enroll; approximate
   VibeVoice turns remain playable/nameable but cannot become voice references.
-- Only human-confirmed references train profiles. Matching requires at least two
-  usable agreeing clips, cosine ≥0.50 and runner-up margin ≥0.05 by default
-  (calibrated on Omi audio 2026-09-29; `scripts/speaker_calibration.py` re-checks).
+- Only human-confirmed references train profiles. Matching compares the row's
+  average voiceprint with each person's average: cosine ≥0.40 and runner-up
+  margin ≥0.12 by default (calibrated on Omi audio 2026-09-29, 17/26 confirmed
+  rows named, none wrongly; `scripts/speaker_calibration.py` re-checks).
   Thresholds live in **service config**. Model fingerprints prevent incompatible
   embeddings mixing. Ambiguous voices remain unknown; matching is not certainty.
 - SQLite identities survive restarts. Configure the encoder before processing;

@@ -16,11 +16,12 @@ from second_brain.adaptive.pipeline import parse_vibe_segments
 
 
 class MatchingTests(unittest.TestCase):
-    def test_ambiguous_short_different_model_and_disagreeing_clips_stay_unknown(self):
+    def test_ambiguous_different_model_and_disagreeing_clips_stay_unknown(self):
         a, b = unit([1, 0]), unit([0, 1])
         refs = [("alice", "m", a), ("bob", "m", b)]
         self.assertEqual(match([a, a], "m", refs)[0], "alice")
-        for vectors, model in [([a], "m"), ([a, b], "m"), ([a, a], "new-model"), ([unit([1, 1])] * 2, "m")]:
+        self.assertEqual(match([a], "m", refs)[0], "alice", "one clear sample is enough")
+        for vectors, model in [([], "m"), ([a, b], "m"), ([a, a], "new-model"), ([unit([1, 1])] * 2, "m")]:
             self.assertIsNone(match(vectors, model, refs)[0])
         self.assertIsNone(match([a, a], "m", refs + [("other", "m", a)])[0])
         with self.assertRaises(ValueError):
@@ -38,18 +39,20 @@ class MatchingTests(unittest.TestCase):
         self.assertFalse(groups[1]["clips"][0]["eligible"])
         self.assertFalse(groups[2]["clips"][0]["eligible"])
 
-    def test_default_rule_accepts_calibrated_omi_level_similarity(self):
-        # scripts/speaker_calibration.py on confirmed Omi rows (2026-09-29): same-person samples
-        # scored median 0.46 / max 0.66, different people median 0.07 / max 0.52.
+    def test_default_rule_compares_average_fingerprints(self):
+        # scripts/speaker_calibration.py on 26 confirmed Omi rows, 3 people (2026-09-29): the
+        # row's average against each person's average named 17 correctly and none wrongly at
+        # 0.40 / 0.12; requiring every clip to match named 6. Two similar voices sat 0.10 apart.
         alice, bob = unit([1, 0, 0]), unit([0, 1, 0])
         refs = [("alice", "m", alice), ("bob", "m", bob)]
-        near = unit([0.55, 0.10, math.sqrt(1 - 0.55**2 - 0.10**2)])
-        self.assertEqual(match([near, near], "m", refs)[0], "alice")
-        self.assertIsNone(match([near], "m", refs)[0], "one sample is still not enough")
-        between = unit([0.56, 0.53, math.sqrt(1 - 0.56**2 - 0.53**2)])
-        self.assertIsNone(match([between, between], "m", refs)[0], "close to two people is still unknown")
+        rest = lambda x, y: unit([x, y, math.sqrt(1 - x * x - y * y)])
+        strong, weak = rest(0.70, 0.05), rest(0.20, 0.05)
+        self.assertIsNone(match([weak], "m", refs)[0])
+        self.assertEqual(match([strong, weak], "m", refs)[0], "alice", "one weak clip no longer vetoes")
+        self.assertIsNone(match([rest(0.60, 0.50)], "m", refs)[0], "close to two people is still unknown")
+        self.assertIsNone(match([rest(0.30, 0.05)], "m", refs)[0], "below the threshold is unknown")
         fields = Config.__dataclass_fields__
-        self.assertEqual((fields["speaker_match_threshold"].default, fields["speaker_match_margin"].default), (0.50, 0.05))
+        self.assertEqual((fields["speaker_match_threshold"].default, fields["speaker_match_margin"].default), (0.40, 0.12))
 
     def test_review_skips_short_and_wordless_clips_and_speakers_left_without_any(self):
         segments = [
