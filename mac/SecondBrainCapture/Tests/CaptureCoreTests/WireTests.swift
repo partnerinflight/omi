@@ -37,12 +37,23 @@ final class WireTests: XCTestCase {
         XCTAssertEqual(json?["app"] as? String, "x")
     }
 
-    func testHeaderAndIntegerHelpers() {
-        let (type, length) = Wire.parseHeader(Data([0x16, 0, 0, 1, 2]))
+    func testHeaderAndIntegerHelpers() throws {
+        let (type, length) = try Wire.parseHeader(Data([0x16, 0, 0, 1, 2]))
         XCTAssertEqual(type, 0x16)
         XCTAssertEqual(length, 258)
-        XCTAssertEqual(Wire.readU64(Wire.u64(0x0102_0304_0506_0708)), 0x0102_0304_0506_0708)
-        XCTAssertEqual(Wire.readU64(Data([9, 0, 0, 0, 0, 0, 0, 0, 5]).dropFirst()), 5)
+        XCTAssertEqual(try Wire.readU64(Wire.u64(0x0102_0304_0506_0708)), 0x0102_0304_0506_0708)
+        XCTAssertEqual(try Wire.readU64(Data([9, 0, 0, 0, 0, 0, 0, 0, 5]).dropFirst()), 5)
+    }
+
+    func testMalformedInputIsRejected() {
+        XCTAssertThrowsError(try Wire.parseHeader(Data([1, 0, 0, 0])))
+        XCTAssertThrowsError(try Wire.readU64(Data([1, 2, 3])))
+        XCTAssertThrowsError(try Wire.fileBegin(id: captureID, totalLength: 1, sha256: Data(count: 32), metadata: ["x": Double.nan])) {
+            XCTAssertTrue($0 is Wire.Malformed)
+        }
+        XCTAssertNil(Data(hex: "+1"))
+        XCTAssertNil(Data(hex: "-1"))
+        XCTAssertEqual(Data(hex: "ABcd")?.hex, "abcd")
     }
 
     func testHexRoundTripAndRejectsBadHex() {

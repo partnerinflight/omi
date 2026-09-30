@@ -14,6 +14,10 @@ public enum Wire {
         case auth = 1, protocolError = 2, busy = 3
     }
 
+    public struct Malformed: Error, Equatable, CustomStringConvertible {
+        public let description: String
+    }
+
     public static let version: UInt8 = 2
     public static let headerLength = 5
     public static let maxChunk = 64 * 1024
@@ -27,7 +31,8 @@ public enum Wire {
         return out
     }
 
-    public static func parseHeader(_ header: Data) -> (UInt8, Int) {
+    public static func parseHeader(_ header: Data) throws -> (UInt8, Int) {
+        guard header.count == headerLength else { throw Malformed(description: "short frame header") }
         let b = [UInt8](header)
         return (b[0], Int(b[1]) << 24 | Int(b[2]) << 16 | Int(b[3]) << 8 | Int(b[4]))
     }
@@ -45,7 +50,8 @@ public enum Wire {
     }
 
     public static func fileBegin(id: Data, totalLength: Int64, sha256: Data, metadata: [String: Any]) throws -> Data {
-        id + u64(UInt64(totalLength)) + sha256 + (try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]))
+        guard JSONSerialization.isValidJSONObject(metadata) else { throw Malformed(description: "metadata is not JSON") }
+        return id + u64(UInt64(totalLength)) + sha256 + (try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]))
     }
 
     public static func fileData(offset: Int64, bytes: Data) -> Data {
@@ -60,21 +66,30 @@ public enum Wire {
         Data((0..<8).reversed().map { UInt8(v >> (UInt64($0) * 8) & 0xFF) })
     }
 
-    public static func readU64(_ data: Data) -> UInt64 {
-        data.prefix(8).reduce(0) { $0 << 8 | UInt64($1) }
+    public static func readU64(_ data: Data) throws -> UInt64 {
+        guard data.count == 8 else { throw Malformed(description: "expected 8-byte integer") }
+        return data.reduce(0) { $0 << 8 | UInt64($1) }
     }
 }
 
 extension Data {
     public init?(hex: String) {
-        guard hex.count % 2 == 0 else { return nil }
+        let chars = Array(hex.utf8)
+        guard chars.count % 2 == 0 else { return nil }
+        func nibble(_ c: UInt8) -> UInt8? {
+            switch c {
+            case 0x30...0x39: return c - 0x30
+            case 0x61...0x66: return c - 0x61 + 10
+            case 0x41...0x46: return c - 0x41 + 10
+            default: return nil
+            }
+        }
         var bytes = [UInt8]()
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
+        var i = 0
+        while i < chars.count {
+            guard let hi = nibble(chars[i]), let lo = nibble(chars[i + 1]) else { return nil }
+            bytes.append(hi << 4 | lo)
+            i += 2
         }
         self.init(bytes)
     }
