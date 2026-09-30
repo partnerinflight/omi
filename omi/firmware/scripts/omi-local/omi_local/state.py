@@ -11,8 +11,25 @@ import json
 import os
 import tempfile
 import threading
+import time
 
 _STORE_LOCK = threading.Lock()
+# Windows errors from antivirus/filter drivers that clear within moments: access denied (5),
+# sharing/lock violation (32/33), insufficient system resources (1450, seen on the receiver).
+_TRANSIENT_WINERRORS = {5, 32, 33, 1450}
+_REPLACE_DELAYS = (0.05, 0.1, 0.2, 0.4)  # < 1 s in total, far below the device's 20 s ACK timeout
+
+
+def _replace(source, target):
+    for delay in _REPLACE_DELAYS:
+        try:
+            return os.replace(source, target)
+        except OSError as error:
+            if getattr(error, "winerror", None) not in _TRANSIENT_WINERRORS:
+                raise
+            time.sleep(delay)
+    os.replace(source, target)
+
 
 def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +39,7 @@ def atomic_json(path, value):
             json.dump(value, file, indent=2, sort_keys=True)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(name, path)
+        _replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
 
