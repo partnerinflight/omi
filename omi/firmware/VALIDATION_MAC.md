@@ -426,3 +426,44 @@ reset, SMP reports the expected app digest active/confirmed and GATT reports
 it. Clock synchronized, battery 93%, ring `[401814, 524472)` with zero dropped
 packets. No recordings or settings were erased. Quiet-room vibration and
 startup audio remain user tests on the device.
+
+## Speech-band VOX threshold — 2026-09-30
+
+Method: `python -m omi_local.vox_replay ~/omi-recordings --thresholds 80,100,125,150,175,200,250,300,400`
+(production `vox_filter.c`, 30 s hold, 3-of-5 sustain, first 500 ms skipped; recordings
+from firmware .13).
+
+The original rule (typing/rumble total halved) was unreachable because each wake stays
+awake for at least the 30 s hold. Measured as awake time above that floor instead:
+at T=200, typing/rumble (21 files named 20260929-15*, excluding the speech sessions)
+keeps 167.8 of 321.6 s (52%), and speech keeps 3182.1 of 3324.2 s (96%). The worst long
+speech session keeps 86%; the losses are pauses that hardware wake can reopen.
+T=100: 89% typing / 100% speech. T=300: 27% / 94% (worst 78%).
+
+A second high-pass section was tested and rejected: at T=200 typing kept 45% but the
+worst speech session dropped to 81%.
+
+Chosen: `CONFIG_OMI_VAD_ABS_THRESHOLD=200`. Hardware wake is raised to 80 dB (needs an
+on-device check).
+
+Speech reference files (awake seconds):
+
+| file | old | 80 | 100 | 125 | 150 | 175 | 200 | 250 | 300 | 400 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| omi_20260928-210447_seq000000406897 | 218.6 | 217.8 | 217.7 | 217.6 | 217.6 | 217.6 | 217.6 | 217.5 | 217.5 | 216.6 |
+| omi_20260928-213948_seq000000419257 | 759.0 | 752.4 | 752.4 | 752.3 | 752.3 | 752.3 | 752.3 | 752.3 | 752.3 | 751.2 |
+| omi_20260928-220051_seq000000431552 | 1360.1 | 1360.5 | 1360.3 | 1360.3 | 1360.3 | 1360.3 | 1358.4 | 1358.3 | 1353.6 | 1329.6 |
+| omi_20260929-153510_seq000000459951 | 532.9 | 540.3 | 540.0 | 512.7 | 503.6 | 503.3 | 484.5 | 484.5 | 484.4 | 474.4 |
+| omi_20260929-154435_seq000000466621 | 603.6 | 613.5 | 609.5 | 560.4 | 530.1 | 519.6 | 519.3 | 471.3 | 468.8 | 458.5 |
+
+Typing/rumble files that are not pinned at the 30.0 s floor for every threshold
+(all other typing/rumble files are 30.0 s at every threshold):
+
+| file | old | 80 | 100 | 125 | 150 | 175 | 200 | 250 | 300 | 400 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| omi_20260929-152107_seq000000451221 | 162.2 | 136.7 | 134.4 | 129.6 | 128.0 | 110.5 | 79.5 | 79.3 | 66.5 | 66.4 |
+| omi_20260929-152507_seq000000454161 | 60.0 | 60.2 | 60.2 | 60.0 | 60.0 | 60.0 | 60.0 | 59.9 | 30.0 | 30.0 |
+| omi_20260929-152741_seq000000455891 | 30.0 | 37.1 | 36.8 | 36.8 | 36.7 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
+| omi_20260929-153148_seq000000458151 | 39.8 | 40.5 | 40.2 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
+| omi_20260929-155605_seq000000474775 | 46.4 | 46.7 | 42.2 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
+| omi_20260929-155659_seq000000475353 | 30.0 | 30.5 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 | 30.0 |
