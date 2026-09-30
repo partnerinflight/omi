@@ -1452,14 +1452,14 @@ public final class UploadClient: UploadTransport {
         let (size, digest) = try Self.sizeAndDigest(file)
         let begin = try Wire.fileBegin(id: id, totalLength: size, sha256: digest, metadata: record.uploadMetadata)
         try session { c in
-            var offset = Int64(Wire.readU64(try c.expect(c.call(.fileBegin, begin), .fileStart)))
+            var offset = Int64(try Wire.readU64(c.expect(c.call(.fileBegin, begin), .fileStart)))
             let handle = try FileHandle(forReadingFrom: file)
             defer { try? handle.close() }
             while offset < size {
                 try handle.seek(toOffset: UInt64(offset))
                 let chunk = try handle.read(upToCount: Wire.maxChunk) ?? Data()
                 guard !chunk.isEmpty else { throw UploadError.protocolViolation("file shrank during upload") }
-                let acked = Int64(Wire.readU64(try c.expect(c.call(.fileData, Wire.fileData(offset: offset, bytes: chunk)), .fileAck)))
+                let acked = Int64(try Wire.readU64(c.expect(c.call(.fileData, Wire.fileData(offset: offset, bytes: chunk)), .fileAck)))
                 guard acked == offset + Int64(chunk.count) else { throw UploadError.protocolViolation("unexpected ACK \(acked)") }
                 offset = acked
             }
@@ -1518,7 +1518,7 @@ final class Connection {
 
     func call(_ type: Wire.Msg, _ payload: Data = Data()) throws -> (UInt8, Data) {
         try send(Wire.frame(type, payload))
-        let (kind, length) = Wire.parseHeader(try readExact(Wire.headerLength))
+        let (kind, length) = try Wire.parseHeader(readExact(Wire.headerLength))
         guard length <= Wire.maxChunk + 64 else { throw UploadError.protocolViolation("reply too large") }
         return (kind, try readExact(length))
     }
