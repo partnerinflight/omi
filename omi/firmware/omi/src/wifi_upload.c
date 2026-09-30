@@ -287,7 +287,16 @@ static enum wifi_upload_result handshake(int sock, const sd_ring_info_t *info, u
     return WIFI_UPLOAD_OK;
 }
 
-static enum wifi_upload_result upload_records(int sock, bool manual, sd_ring_info_t *info, uint64_t seq, int *err)
+/* Once started, an upload runs to completion. A full battery on the charger stops
+ * charging and drops the CHG signal, which used to abort automatic uploads mid-transfer
+ * ("aborted (charger removed / busy)"); starting still requires the charging signal.
+ * Only a Wi-Fi setup request, which needs the radio, interrupts a session. */
+static bool upload_should_abort(bool provision_requested)
+{
+    return provision_requested;
+}
+
+static enum wifi_upload_result upload_records(int sock, sd_ring_info_t *info, uint64_t seq, int *err)
 {
     size_t buf_len = 0;
     uint8_t *buf = storage_shared_bulk_buffer(&buf_len);
@@ -304,7 +313,7 @@ static enum wifi_upload_result upload_records(int sock, bool manual, sd_ring_inf
 
     for (int pass = 0; pass < UP_MAX_PASSES; pass++) {
         while (seq < end) {
-            if (atomic_get(&provision_req) || (!manual && !is_charging)) {
+            if (upload_should_abort(atomic_get(&provision_req))) {
                 *err = -ECANCELED;
                 return WIFI_UPLOAD_ERR_ABORTED;
             }
@@ -504,7 +513,7 @@ static enum wifi_upload_result run_session(bool manual, int *err)
     }
 
     set_state(WIFI_UPLOAD_UPLOADING);
-    result = upload_records(sock, manual, &info, start_seq, err);
+    result = upload_records(sock, &info, start_seq, err);
 
 out:
     set_state(WIFI_UPLOAD_TEARDOWN);
