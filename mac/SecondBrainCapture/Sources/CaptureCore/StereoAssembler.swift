@@ -1,6 +1,6 @@
 /// Joins two independently clocked 16 kHz mono streams into interleaved stereo Int16:
-/// left = owner mic, right = remote (tapped app). If one stream stalls for more than
-/// `maxSkewFrames`, it is padded with silence so memory stays bounded.
+/// left = owner mic, right = remote (tapped app). A stall longer than `maxSkewFrames`
+/// is filled with silence so the channels stay aligned.
 public final class StereoAssembler {
     private var left: [Float] = []
     private var right: [Float] = []
@@ -16,10 +16,10 @@ public final class StereoAssembler {
     /// Frames available on both channels.
     public func drain() -> [Int16] {
         if left.count > right.count + maxSkew {
-            right += [Float](repeating: 0, count: left.count - right.count - maxSkew)
+            right += [Float](repeating: 0, count: left.count - right.count)
         }
         if right.count > left.count + maxSkew {
-            left += [Float](repeating: 0, count: right.count - left.count - maxSkew)
+            left += [Float](repeating: 0, count: right.count - left.count)
         }
         return take(min(left.count, right.count))
     }
@@ -44,6 +44,7 @@ public final class StereoAssembler {
     }
 
     static func pcm(_ x: Float) -> Int16 {
-        Int16((max(-1, min(1, x)) * 32767).rounded())
+        guard !x.isNaN else { return 0 }
+        return Int16((max(-1, min(1, x)) * 32767).rounded())
     }
 }

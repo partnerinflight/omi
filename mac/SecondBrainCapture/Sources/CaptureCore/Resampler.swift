@@ -5,15 +5,54 @@ import AVFoundation
 public final class Resampler {
     public static let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000,
                                                    channels: 1, interleaved: false)!
-    private let converter: AVAudioConverter
+    private var converter: AVAudioConverter
+    private var inputFormat: AVAudioFormat
 
     public init?(from input: AVAudioFormat) {
-        guard let converter = AVAudioConverter(from: input, to: Self.outputFormat) else { return nil }
-        converter.downmix = true
+        guard let converter = Self.makeConverter(for: input) else { return nil }
         self.converter = converter
+        inputFormat = input
     }
 
-    public func convert(_ buffer: AVAudioPCMBuffer) -> [Float] {
+    /// AVAudioConverter's downmix only folds the first two channels of wider layouts, so inputs
+    /// with more than two channels are averaged to mono manually and the converter takes mono.
+    private static func makeConverter(for input: AVAudioFormat) -> AVAudioConverter? {
+        guard let source = input.channelCount > 2 ? monoFormat(rate: input.sampleRate) : input,
+              let converter = AVAudioConverter(from: source, to: outputFormat) else { return nil }
+        converter.downmix = true
+        return converter
+    }
+
+    private static func monoFormat(rate: Double) -> AVAudioFormat? {
+        AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)
+    }
+
+    private static func averageToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let format = monoFormat(rate: buffer.format.sampleRate),
+              let mono = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength),
+              let src = buffer.floatChannelData, let dst = mono.floatChannelData?[0] else { return nil }
+        let frames = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        mono.frameLength = buffer.frameLength
+        for i in 0..<frames {
+            var sum: Float = 0
+            for c in 0..<channels { sum += src[c][i] }
+            dst[i] = sum / Float(channels)
+        }
+        return mono
+    }
+
+    public func convert(_ original: AVAudioPCMBuffer) -> [Float] {
+        var buffer = original
+        if buffer.format != inputFormat {
+            guard let rebuilt = Self.makeConverter(for: buffer.format) else { return [] }
+            converter = rebuilt
+            inputFormat = buffer.format
+        }
+        if buffer.format.channelCount > 2 {
+            guard let mono = Self.averageToMono(buffer) else { return [] }
+            buffer = mono
+        }
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * 16000 / buffer.format.sampleRate) + 64
         guard let out = AVAudioPCMBuffer(pcmFormat: Self.outputFormat, frameCapacity: capacity) else { return [] }
         var supplied = false

@@ -24,8 +24,56 @@ final class AudioPathTests: XCTestCase {
         let a = StereoAssembler(maxSkewFrames: 5)
         a.appendLeft([Float](repeating: 0.5, count: 10))
         let out = a.drain()
-        XCTAssertEqual(out.count, 10)
-        XCTAssertEqual(out[1], 0)
+        XCTAssertEqual(out.count, 20)
+        for i in 0..<10 {
+            XCTAssertEqual(out[2 * i], 16384)
+            XCTAssertEqual(out[2 * i + 1], 0)
+        }
+        a.appendLeft([Float](repeating: 1, count: 3))
+        a.appendRight([Float](repeating: -1, count: 3))
+        XCTAssertEqual(a.drain(), [Int16]([32767, -32767, 32767, -32767, 32767, -32767]))
+    }
+
+    func testNaNBecomesSilence() {
+        let a = StereoAssembler()
+        a.appendLeft([.nan])
+        a.appendRight([.nan])
+        XCTAssertEqual(a.drain(), [0, 0])
+    }
+
+    func testResamplerFollowsFormatChange() throws {
+        let f1 = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let f2 = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1))
+        let resampler = try XCTUnwrap(Resampler(from: f1))
+        let b1 = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: f1, frameCapacity: 4800))
+        b1.frameLength = 4800
+        _ = resampler.convert(b1)
+        let b2 = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: f2, frameCapacity: 4410))
+        b2.frameLength = 4410
+        for i in 0..<4410 { b2.floatChannelData![0][i] = 0.5 * sin(Float(i) * 2 * .pi * 440 / 44100) }
+        let out = resampler.convert(b2)
+        // A fresh converter swallows ~120 frames of resampler priming, hence the wider tolerance.
+        XCTAssertEqual(Double(out.count), 1600, accuracy: 150)
+        XCTAssertGreaterThan(out.map(abs).max() ?? 0, 0.1)
+    }
+
+    func testResamplerDownmixesSixChannelsIncludingLast() throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 6)
+            ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, interleaved: false,
+                             channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 6)!)
+        let input = try XCTUnwrap(format)
+        let resampler = try XCTUnwrap(Resampler(from: input))
+        var peak: Float = 0
+        for chunk in 0..<5 {
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: input, frameCapacity: 4800))
+            buffer.frameLength = 4800
+            for c in 0..<6 { for i in 0..<4800 { buffer.floatChannelData![c][i] = 0 } }
+            for i in 0..<4800 {
+                buffer.floatChannelData![5][i] = 0.5 * sin(Float(chunk * 4800 + i) * 2 * .pi * 440 / 48000)
+            }
+            peak = max(peak, resampler.convert(buffer).map(abs).max() ?? 0)
+        }
+        XCTAssertGreaterThan(peak, 0.05)
     }
 
     func testFlushPadsShorterChannel() {
