@@ -82,6 +82,7 @@ static struct k_thread aad_thread_data;
 static bool aad_thread_started; /* aad_thread_data is a live thread */
 static K_SEM_DEFINE(aad_sem, 0, 1);
 #define AAD_PDM_SETTLE_MS 20
+#define MANUAL_RESUME_MOTOR_SETTLE_MS 150 /* the 3 s hold pulse ends before the mic rail powers */
 
 static atomic_t aad_wake_pending = ATOMIC_INIT(0); /* WAKE edge seen by ISR */
 static atomic_t aad_woke = ATOMIC_INIT(0);         /* tell mic ctx it just woke */
@@ -513,6 +514,7 @@ static void exit_manual_pause(void)
         }
         manual_end_pending = false;
     }
+    k_msleep(MANUAL_RESUME_MOTOR_SETTLE_MS);
     t5838_aad_power(true);
     k_msleep(AAD_PDM_SETTLE_MS);
     t5838_aad_release_clk();

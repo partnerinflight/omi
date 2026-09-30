@@ -31,6 +31,7 @@ class ManualRecordingTests(unittest.TestCase):
 #define CONFIG_OMI_ENABLE_HAPTIC 1
 #define K_FOREVER 0
 #define AAD_PDM_SETTLE_MS 20
+#define MANUAL_RESUME_MOTOR_SETTLE_MS 150
 #define CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS 300000
 #define MIC_START_DISCARD_BLOCKS 5
 #define ARG_UNUSED(x) ((void)(x))
@@ -41,7 +42,7 @@ static int manual_pause_requested,manual_paused,mic_discard_blocks;
 static uint32_t manual_pause_started_ms,aad_sleep_started_ms,now;
 static bool manual_end_pending,aad_thread_started=true,is_connected,upload;
 static bool running=true,rail=true,irq,sd=true,race_pause;
-static int flushes,flush_error,resume_error,pause_error,buzzes,disabled;
+static int settles,flushes,flush_error,resume_error,pause_error,buzzes,disabled;
 static jmp_buf stop;static int steps;
 int atomic_get(int *p){return *p;}
 void atomic_set(int *p,int v){*p=v;}
@@ -50,7 +51,7 @@ void atomic_xor(int *p,int v){*p^=v;}
 bool atomic_cas(int *p,int a,int b){if(*p!=a)return false;*p=b;return true;}
 void k_sem_give(int *s){(void)s;}
 void k_sem_take(int *s,int t){(void)s;(void)t;if(steps++)longjmp(stop,1);}
-void k_msleep(int ms){assert(ms==20);}
+void k_msleep(int ms){if(ms==150){assert(!rail);settles++;}else assert(ms==20);}
 uint32_t k_uptime_get_32(void){return now;}
 void aad_wake_irq(bool on){irq=on;}
 void pdm_hw_disable(void){assert(!running);disabled++;}
@@ -78,7 +79,7 @@ int main(void){
  manual_pause_started_ms=UINT32_MAX-100;now=99;assert(!mic_manual_pause_led_on());
  now=2899;assert(mic_manual_pause_led_on());
  assert(!mic_toggle_manual_pause());step();
- assert(!manual_paused && running && rail && sd && aad_woke && !buzzes);
+ assert(!manual_paused && running && rail && sd && aad_woke && !buzzes && settles==1);
  /* A short acoustic sleep resumes silently. */
  aad_sleep_started_ms=now;now+=299999;
  running=false;aad_in_sleep=1;aad_wake_pending=1;step();assert(running && !aad_in_sleep && !buzzes);
@@ -140,7 +141,7 @@ int main(void){int16_t samples[4]={0};
  process_audio_buffer(samples,sizeof(samples));assert(forwarded==2 && tracked==2 && freed==6);return 0;}
 ''')
 
-    def test_button_release_toggles_once_and_preserves_long_holds(self):
+    def test_hold_windows_vibrate_while_held_and_act_on_release(self):
         self.compile_run(r"""
 #include <stdint.h>
 #include <stdbool.h>
@@ -164,36 +165,33 @@ typedef uint8_t u_int8_t;
 typedef enum { BUTTON_EVENT_NONE, BUTTON_EVENT_SINGLE_TAP, BUTTON_EVENT_DOUBLE_TAP,
  BUTTON_EVENT_LONG_PRESS, BUTTON_EVENT_RELEASE } ButtonEvent;
 struct k_work {int unused;};
-static bool was_pressed,btn_is_pressed,hold_handled,is_off;
+static bool was_pressed,btn_is_pressed,is_off;
+static uint8_t hold_level_played;
 static uint32_t now,current_time,btn_press_start_time,btn_release_time,btn_last_tap_time;
 static u_int8_t btn_last_event;
-static int button_work,current_button_state,toggles,off,setup;
+static int button_work,current_button_state,toggles,off,setup,buzz,last;
 uint32_t k_uptime_get_32(void){return now;}
 int mic_toggle_manual_pause(void){toggles++;return 0;}
 void turnoff_all(void){off++;}
 void wifi_upload_request_provisioning(void){setup++;}
 void notify_long_tap(void){} void notify_tap(void){}
 void notify_double_tap(void){} void notify_unpress(void){}
-void play_haptic_milli(int ms){assert(ms==100);}
+void play_haptic_pulses(uint8_t n){buzz++;last=n;}
 void k_work_reschedule(int *w,int ms){(void)w;assert(ms==40);}
 """ + function(SRC/'lib/core/button.c','void check_button_level(struct k_work *work_item)\n{') + r"""
 void poll(uint32_t t,bool down){now=t;was_pressed=down;check_button_level(NULL);}
 int main(void){
- poll(1000,true);poll(1040,true);assert(!toggles);
- poll(1120,false);assert(toggles==1);poll(1160,false);assert(toggles==1);
- poll(1200,true);poll(1320,false);assert(toggles==2);
- poll(2000,false);assert(toggles==2);
- poll(3000,true);poll(3400,false);assert(toggles==3);
- poll(4000,true);poll(5000,false);assert(toggles==3);
- poll(6000,true);poll(9200,false);assert(off==1 && !setup && toggles==3);
- /* A five-second hold and an abandoned long hold must do nothing. */
- poll(10000,true);poll(15000,true);assert(!setup && off==1);
- poll(15040,false);assert(!setup && off==1 && toggles==3);
- poll(20000,true);poll(39999,true);assert(!setup && off==1);
- poll(40000,true);assert(setup==1);
- poll(41000,true);poll(41100,false);assert(setup==1 && off==1 && toggles==3);
- is_off=true;poll(42000,true);poll(42120,false);assert(toggles==3);
+ poll(1000,true);poll(1120,false);assert(!toggles && !buzz);            /* short clicks do nothing */
+ poll(2000,true);poll(4960,true);assert(!buzz);
+ poll(5000,true);assert(buzz==1 && last==1 && !toggles);                  /* 1 pulse at 3 s, still held */
+ poll(5040,true);assert(buzz==1);poll(6000,false);assert(toggles==1);    /* release at 4 s: pause toggle */
+ poll(7000,true);poll(10000,true);assert(buzz==2);poll(13000,false);assert(toggles==1 && !off); /* 6 s: dead band */
+ poll(14000,true);poll(17000,true);poll(24000,true);assert(buzz==4 && last==2);
+ poll(25000,false);assert(off==1 && toggles==1);                           /* 11 s: power off */
+ poll(26000,true);poll(43000,false);assert(off==1 && !setup);             /* 17 s: dead band */
+ poll(44000,true);poll(64000,true);assert(last==3 && !setup);             /* 3 pulses at 20 s, still held */
+ poll(64040,false);assert(setup==1 && off==1);                            /* setup on release */
+ is_off=true;poll(70000,true);poll(73500,false);assert(toggles==1);      /* no toggle while off */
  return 0;
 }
 """)
-

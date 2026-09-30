@@ -24,6 +24,11 @@ int haptic_init(void);
 void play_haptic_milli(uint32_t duration);
 
 /**
+ * @brief Play `count` (1-3) 80 ms pulses, 120 ms apart, without blocking.
+ */
+void play_haptic_pulses(uint8_t count);
+
+/**
  * @brief Register the Haptic BLE service.
  *
  * Registers the GATT service for controlling the haptic motor over Bluetooth.
