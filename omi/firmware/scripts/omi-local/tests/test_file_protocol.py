@@ -57,6 +57,41 @@ class FileProtocolCodecTests(unittest.TestCase):
         with self.assertRaises(U.UploadProtocolError):
             U.parse_file_data(bytes(7))
 
+    def test_file_begin_rejects_non_strict_metadata(self):
+        head = CID + bytes(8) + bytes(32)
+        for bad in (b'{"a": NaN}', b'{"a": Infinity}', b'{"a": "\\ud800"}', b"[" * 100000):
+            with self.assertRaises(U.UploadProtocolError, msg=bad[:20]):
+                U.parse_file_begin(head + bad)
+        with self.assertRaises(U.UploadProtocolError):
+            U.parse_file_begin(head[:-1])
+
+    def test_boundary_sizes_accepted(self):
+        m = U.parse_capture_open(U.encode_capture_open(CID, 0, "a" * U.MAX_APP_LEN))
+        self.assertEqual(len(m.app), U.MAX_APP_LEN)
+        self.assertEqual(U.parse_capture_open(CID + bytes(8)).app, "")
+        head = CID + bytes(8) + bytes(32)
+        pad = U.MAX_METADATA_LEN - len('{"a": ""}')
+        body = ('{"a": "' + "x" * pad + '"}').encode()
+        self.assertEqual(len(body), U.MAX_METADATA_LEN)
+        self.assertEqual(len(U.parse_file_begin(head + body).metadata["a"]), pad)
+        self.assertEqual(len(U.parse_file_data(bytes(8) + bytes(U.MAX_FILE_CHUNK)).data), U.MAX_FILE_CHUNK)
+        self.assertEqual(U.parse_file_data(bytes(8)).data, b"")
+
+    def test_encoders_validate_inputs(self):
+        sha = bytes(32)
+        cases = [
+            lambda: U.encode_capture_open(CID[:15], 0, "x"),
+            lambda: U.encode_capture_open(CID, 0, "a" * (U.MAX_APP_LEN + 1)),
+            lambda: U.encode_file_begin(CID[:15], 1, sha, {}),
+            lambda: U.encode_file_begin(CID, 1, sha[:31], {}),
+            lambda: U.encode_file_begin(CID, 1, sha, {"a": "x" * U.MAX_METADATA_LEN}),
+            lambda: U.encode_file_begin(CID, 1, sha, {"a": float("nan")}),
+            lambda: U.encode_file_data(0, bytes(U.MAX_FILE_CHUNK + 1)),
+        ]
+        for c in cases:
+            with self.assertRaises(ValueError):
+                c()
+
     def test_payload_bounds_cover_largest_messages(self):
         self.assertGreaterEqual(U.MAX_FILE_PAYLOAD, 8 + U.MAX_FILE_CHUNK)
         self.assertGreaterEqual(U.MAX_FILE_PAYLOAD, 16 + 8 + 32 + U.MAX_METADATA_LEN)

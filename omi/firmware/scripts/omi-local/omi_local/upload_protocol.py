@@ -202,7 +202,12 @@ class CaptureOpen:
 
 
 def encode_capture_open(capture_id: bytes, start_ms: int, app: str) -> bytes:
-    return capture_id + struct.pack(">Q", start_ms) + app.encode("utf-8")
+    if len(capture_id) != CAPTURE_ID_LEN:
+        raise ValueError("capture_id must be 16 bytes")
+    app_b = app.encode("utf-8")
+    if len(app_b) > MAX_APP_LEN:
+        raise ValueError("app too long")
+    return capture_id + struct.pack(">Q", start_ms) + app_b
 
 
 def parse_capture_open(payload: bytes) -> CaptureOpen:
@@ -232,7 +237,18 @@ class FileBegin:
 
 
 def encode_file_begin(capture_id: bytes, total_len: int, sha256: bytes, metadata: dict) -> bytes:
-    return capture_id + struct.pack(">Q", total_len) + sha256 + json.dumps(metadata, sort_keys=True).encode("utf-8")
+    if len(capture_id) != CAPTURE_ID_LEN:
+        raise ValueError("capture_id must be 16 bytes")
+    if len(sha256) != SHA256_LEN:
+        raise ValueError("sha256 must be 32 bytes")
+    meta = json.dumps(metadata, sort_keys=True, allow_nan=False).encode("utf-8")
+    if len(meta) > MAX_METADATA_LEN:
+        raise ValueError("metadata too large")
+    return capture_id + struct.pack(">Q", total_len) + sha256 + meta
+
+
+def _reject_constant(name: str):
+    raise ValueError(f"non-finite JSON constant {name}")
 
 
 def parse_file_begin(payload: bytes) -> FileBegin:
@@ -240,8 +256,9 @@ def parse_file_begin(payload: bytes) -> FileBegin:
     if len(payload) < head or len(payload) - head > MAX_METADATA_LEN:
         raise UploadProtocolError("bad FILE_BEGIN")
     try:
-        metadata = json.loads(bytes(payload[head:]).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as e:
+        metadata = json.loads(bytes(payload[head:]).decode("utf-8"), parse_constant=_reject_constant)
+        json.dumps(metadata, ensure_ascii=False).encode("utf-8")  # rejects lone surrogates
+    except (UnicodeError, ValueError, RecursionError) as e:
         raise UploadProtocolError("FILE_BEGIN metadata is not JSON") from e
     if not isinstance(metadata, dict):
         raise UploadProtocolError("FILE_BEGIN metadata must be an object")
@@ -257,6 +274,8 @@ class FileData:
 
 
 def encode_file_data(offset: int, data: bytes) -> bytes:
+    if len(data) > MAX_FILE_CHUNK:
+        raise ValueError("chunk too large")
     return struct.pack(">Q", offset) + data
 
 
