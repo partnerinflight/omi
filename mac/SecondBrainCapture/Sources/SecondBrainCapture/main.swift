@@ -24,11 +24,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
             if !UserDefaults.standard.bool(forKey: "loginItemRegistered") {
                 try? SMAppService.mainApp.register()  // start at login, once
-                UserDefaults.standard.set(true, forKey: "loginItemRegistered")
+                let status = SMAppService.mainApp.status
+                if status == .enabled || status == .requiresApproval {
+                    UserDefaults.standard.set(true, forKey: "loginItemRegistered")
+                }
             }
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 DispatchQueue.main.async {
                     controller.micAuthorized = granted
+                    if !granted { controller.notify("Microphone access is off — SecondBrainCapture can't record meetings") }
                     self.menu?.refresh()
                     controller.start()
                 }

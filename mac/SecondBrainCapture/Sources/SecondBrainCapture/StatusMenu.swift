@@ -20,6 +20,9 @@ final class StatusMenu: NSObject {
         if let app = controller.recordingApp {
             symbol = "record.circle.fill"
             title = "Recording \(app)"
+        } else if controller.captureError == nil, controller.micAuthorized, controller.uploadError != nil {
+            symbol = "exclamationmark.triangle"
+            title = "Idle — upload problem"
         } else if error != nil || !controller.micAuthorized {
             symbol = "exclamationmark.triangle"
             title = "Not recording"

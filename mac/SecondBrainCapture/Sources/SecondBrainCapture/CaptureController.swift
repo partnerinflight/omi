@@ -19,6 +19,8 @@ final class CaptureController {
     private var sleeping = false
     private var sessionStartedAt: TimeInterval = 0
     private var quickInterrupts = 0
+    private var warnedSilent = false
+    private static let silentWarnAfter: TimeInterval = 20
 
     private(set) var captureError: String?
     private(set) var uploadError: String?
@@ -129,14 +131,31 @@ final class CaptureController {
     }
 
     private func tick() {
+        if !micAuthorized {
+            micAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+            if micAuthorized { onChange?() }
+        }
+        checkRemoteAudio()
         guard !sleeping, micAuthorized, let event = detector.update(AudioProcesses.snapshot(), now: now) else { return }
         switch event {
         case let .start(app, processes, device):
             begin(app: app, processes: processes, device: device)
         case .stop:
             quickInterrupts = 0
-            end(discard: false)
+            end(discard: false, throughStop: true)
         }
+        onChange?()
+    }
+
+    /// Never a silent capture without telling the user: warn once if the app's audio stays silent.
+    private func checkRemoteAudio() {
+        guard let capture = session, !warnedSilent,
+              ProcessInfo.processInfo.systemUptime - sessionStartedAt >= Self.silentWarnAfter,
+              !capture.remoteAudioSeen() else { return }
+        warnedSilent = true
+        let app = capture.record.app
+        captureError = "No audio from \(app) yet — check System Settings → Privacy & Security → Screen & System Audio Recording"
+        notify(captureError!)
         onChange?()
     }
 
@@ -152,6 +171,7 @@ final class CaptureController {
             }
             session = capture
             sessionStartedAt = ProcessInfo.processInfo.systemUptime
+            warnedSilent = false
             captureError = nil
         } catch {
             spool.delete(record.captureID)
@@ -162,9 +182,12 @@ final class CaptureController {
         kickUploads()
     }
 
-    private func end(discard: Bool) {
+    /// `throughStop`: the detector's `.stop`, whose audio includes the release-grace tail.
+    private func end(discard: Bool, throughStop: Bool = false) {
         guard let capture = session else { return }
         session = nil
+        if warnedSilent, captureError?.hasPrefix("No audio from") == true { captureError = nil }  // belongs to this capture
+        warnedSilent = false
         let record = capture.record
         let frames: Int64
         do {
@@ -177,7 +200,8 @@ final class CaptureController {
         }
         // The audio's true span, not the wall clock at the moment we noticed the end.
         let endMs = record.startMs + frames * 1000 / 16000
-        if discard || Double(frames) / 16000 < config.minCaptureSeconds {
+        let seconds = Double(frames) / 16000 - (throughStop ? config.releaseGraceSeconds : 0)
+        if discard || seconds < config.minCaptureSeconds {
             cancel(record.captureID, endMs: endMs)
         } else {
             // Locked read-modify-write: the upload queue may be saving `opened` concurrently.
@@ -246,7 +270,7 @@ final class CaptureController {
         }
     }
 
-    private func notify(_ message: String) {
+    func notify(_ message: String) {
         let content = UNMutableNotificationContent()
         content.title = "SecondBrainCapture"
         content.body = message

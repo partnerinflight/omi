@@ -18,6 +18,9 @@ Recording Only**. On its first launch the app registers itself as a login item (
 Settings → General → Login Items); if you remove it there, it stays removed. To update,
 quit it from the menu, rebuild and repeat the `ditto`/`open`.
 
+The app is signed ad hoc, so macOS may ask for Microphone and System Audio permission again
+after each rebuild. After installing or updating, make one short test call to grant it.
+
 ## Configure
 
 `~/Library/Application Support/SecondBrainCapture/config.json` is created on first run:
@@ -30,8 +33,11 @@ are not included because a tap records every tab), `secretPath`
 `spoolWarnBytes` (5 GB). Restart the app after editing.
 
 Copy the receiver's pairing secret to this Mac: the same 64-hex-character file the Omi
-uses (`upload-secret.hex` from `%USERPROFILE%\.omi-local\` or the service's configured
-secret file), saved as `~/.omi-local/upload-secret.hex` with `chmod 600`.
+uses: the Windows service's secret is `C:\ProgramData\SecondBrain\config\upload-secret.hex`
+(or the `upload-secret.hex` in `%USERPROFILE%\.omi-local\` if you pair that way). Save it
+as `~/.omi-local/upload-secret.hex` with `chmod 600`.
+
+Until `host` is set (and the app restarted), captures are recorded but wait in the spool.
 
 The Windows service must run a build that includes receiver protocol v2
 (`windows/install.ps1` from a checkout containing it); older receivers reject the app.
@@ -49,6 +55,9 @@ The Windows service must run a build that includes receiver protocol v2
   as raw PCM with an fsync every 5 s, encoded to stereo Opus CAF (L mic, R app) when the
   meeting ends, and deleted only after the receiver confirms a verified commit. Captures
   interrupted by a crash or quit are finished on the next launch.
+- If the app's audio stays silent for 20 s, the app notifies you and shows the warning in
+  the menu ("No audio from ... yet"); check System Settings → Privacy & Security → Screen &
+  System Audio Recording. It keeps recording, since the other side may really be silent.
 - Uploads retry with backoff (30 s → 15 min) while the receiver is unreachable.
 - Menu: Skip this meeting (discard it and tell the receiver), Pause for 1 hour / Resume,
   Open spool folder, Quit.

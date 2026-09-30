@@ -14,6 +14,7 @@ final class CaptureSession {
     private var tapResampler: Resampler?
     private var micResampler: Resampler?
     private var writeError: Error?
+    private var remotePeak: Float = 0  // on `queue`
     /// Fired on the main queue when the mic engine reconfigures or the default output device changes.
     var onInterrupted: (() -> Void)?
     private var engineObserver: NSObjectProtocol?
@@ -29,7 +30,9 @@ final class CaptureSession {
         try tap.start(processes: processes, queue: queue) { [weak self] buffer in
             guard let self else { return }
             if self.tapResampler == nil { self.tapResampler = Resampler(from: buffer.format) }
-            self.assembler.appendRight(self.tapResampler?.convert(buffer) ?? [])
+            let samples = self.tapResampler?.convert(buffer) ?? []
+            for sample in samples { self.remotePeak = max(self.remotePeak, abs(sample)) }
+            self.assembler.appendRight(samples)
             self.drain()
         }
         do {
@@ -55,6 +58,9 @@ final class CaptureSession {
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &outputAddress,
                                             DispatchQueue.main, listener)
     }
+
+    /// Whether the app's audio (the tap) has carried any signal so far.
+    func remoteAudioSeen() -> Bool { queue.sync { remotePeak > 0 } }
 
     /// Stop both sources, write what remains and close the file. Returns frames written.
     func finish() throws -> Int64 {
