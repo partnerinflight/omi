@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import math
 import hashlib
 import shutil
@@ -109,7 +110,7 @@ class SpeakerStoreTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.store = Speakers(self.root / "data", self.root / "review")
 
-    def ingest(self, job_id, vectors=None, label="c:S1", model="model", text="hello", seconds=3):
+    def ingest(self, job_id, vectors=None, label="c:S1", model="model", text="hello", seconds=3, keep=None, importance=None):
         directory = self.root / "data/jobs" / job_id
         directory.mkdir(parents=True, exist_ok=True)
         clips = []
@@ -130,8 +131,11 @@ class SpeakerStoreTests(unittest.TestCase):
                 )
             )
         job = dict(id=job_id, metadata=json.dumps(dict(first_utc="2026-09-28T10:00:00Z")))
+        window = dict(final_segments=[dict(speaker=label, start=0, end=3, text="hello")])
+        if keep is not None:
+            window.update(memory_keep=keep, scores=dict(importance=importance))
         manifest = dict(
-            windows=[dict(final_segments=[dict(speaker=label, start=0, end=3, text="hello")])],
+            windows=[window],
             speaker_embedding_status="ready",
             speaker_observations=[dict(label=label, clips=clips, model=model)],
         )
@@ -177,6 +181,43 @@ class SpeakerStoreTests(unittest.TestCase):
         self.store.catalog()
         self.assertEqual(sorted(r["job"] for r in self.catalog()["speakers"]), ["a", "c"])
         self.assertEqual(self.catalog()["speakers"][[r["job"] for r in self.catalog()["speakers"]].index("a")]["clips"], [])
+
+    def test_review_asks_only_about_published_conversations_most_important_first(self):
+        self.ingest("low", keep=True, importance=30)
+        self.ingest("high", keep=True, importance=80)
+        self.ingest("unscored")  # no gate decision recorded: stays visible, after scored ones
+        dropped, _ = self.ingest("dropped", keep=False, importance=95)
+        self.assertIsNone(dropped, "no note was published for it, so nobody asks who spoke")
+        rows = self.catalog()["speakers"]
+        self.assertEqual([r["job"] for r in rows], ["high", "low", "unscored"])
+        self.assertEqual([r["importance"] for r in rows], [80, 30, None])
+        self.assertEqual(self.store.summary()["unidentified"], 3, "tray count matches the visible list")
+        # The hidden voice still matches once the person is named elsewhere.
+        self.assertTrue(self.command("assign", observation=rows[0]["id"], name="Alice")["ok"])
+        self.store.catalog()
+        self.assertNotIn("dropped", [r["job"] for r in self.catalog()["speakers"]])
+        _, manifest = self.ingest("dropped", keep=False, importance=95)
+        self.assertIn("Alice", self.store.render("dropped", manifest)["windows"][0]["final_transcript"])
+
+    def test_rows_from_before_the_gate_columns_are_backfilled_from_job_manifests(self):
+        kept, _ = self.ingest("kept")
+        dropped, _ = self.ingest("dropped", vectors=[[0, 1], [0, 1]])
+        db = sqlite3.connect(self.root / "data/speakers.sqlite3")  # the schema before this change
+        try:
+            db.execute("ALTER TABLE observations DROP COLUMN published")
+            db.execute("ALTER TABLE observations DROP COLUMN importance")
+            db.commit()
+        finally:
+            db.close()
+        for job, keep, importance in [("kept", True, 40), ("dropped", False, 70)]:
+            attempt = self.root / "data/jobs" / job / "attempt-2"
+            attempt.mkdir(parents=True)
+            write_json(attempt / "manifest.json", dict(windows=[dict(
+                final_segments=[dict(speaker="c:S1", start=0, end=3, text="hello")],
+                memory_keep=keep, scores=dict(importance=importance))]))
+        self.store = Speakers(self.root / "data", self.root / "review")
+        self.store.catalog()
+        self.assertEqual([(r["job"], r["importance"]) for r in self.catalog()["speakers"]], [("kept", 40)])
 
     def catalog(self):
         return json.loads((self.root / "review/catalog.json").read_text())

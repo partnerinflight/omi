@@ -65,7 +65,8 @@ public partial class SpeakersPage : UserControl
         bool unidentifiedOnly = UnidentifiedOnly.IsChecked == true;
 
         var rows = catalog.Recordings(unidentifiedOnly, SearchBox.Text)
-            .SelectMany(r => r.Speakers.Select(s => new SpeakerRow(s, $"{r.Recorded} · {Formats.Plural(r.SpeakerCount, "speaker")} · {r.UnidentifiedCount} unidentified")))
+            .SelectMany(r => r.Speakers.Select(s => new SpeakerRow(s, $"{r.Recorded} · {Formats.Plural(r.SpeakerCount, "speaker")} · {r.UnidentifiedCount} unidentified"
+                + (r.Importance is int importance ? $" · importance {importance}" : ""))))
             .ToList();
         var view = new ListCollectionView(rows);
         view.GroupDescriptions.Add(new PropertyGroupDescription("Speaker.Job"));

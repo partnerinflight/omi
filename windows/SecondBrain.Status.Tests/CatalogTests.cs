@@ -14,6 +14,8 @@ static class CatalogTests
         Check.Equal("2026-09-28 14:05", all[0].Recorded, "recording date");
         Check.Equal(3, all[0].SpeakerCount, "speaker count");
         Check.Equal(1, all[0].UnidentifiedCount, "unidentified count");
+        Check.Equal((int?)72, all[0].Importance, "recording importance from the service");
+        Check.Equal((int?)null, all[1].Importance, "rows without a gate score have none");
 
         var unknown = catalog.Recordings(unidentifiedOnly: true);
         Check.Equal("o2", Ids(unknown[0].Speakers), "unidentified filter, newest recording");

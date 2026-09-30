@@ -69,6 +69,12 @@ excluded from voice enrollment. Those clips remain playable and manually
 nameable. Clips shorter than two seconds, or whose text has no words (empty or
 only "..."), are left out of review altogether, and a speaker with no remaining
 clip is not listed; rows that already have a person assigned stay visible.
+Speakers are only offered for naming when a conversation they spoke in passed the
+memory gate and became a note; speakers heard only in dropped conversations are
+hidden unless you confirmed them, but their voices are still matched and named
+in transcripts. Recordings are listed by the gate's importance score (highest
+first, then newest). Rows from before this was recorded are filled in from the
+job manifests when the service starts.
 Transcripts and notes are unaffected. If there is no usable reference, the catalog says so instead of implying
 recognition is active. Set up the encoder before naming recordings that should
 become reusable voice references; already completed jobs are not automatically

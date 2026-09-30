@@ -11,13 +11,15 @@ public sealed record Clip(double Start, double End, string Text, string Quality,
 }
 
 public sealed record Speaker(string Id, string Job, string Display, string Recorded, string? Person, string? Name,
-    string State, string EmbeddingStatus, double? Score, Clip[] Clips)
+    string State, string EmbeddingStatus, double? Score, Clip[] Clips, int? Importance = null)
 {
     public string Title => Name ?? Display;
     public bool Unidentified => State == "unidentified";
 }
 
-public sealed record Recording(string Job, string Recorded, IReadOnlyList<Speaker> Speakers, int SpeakerCount, int UnidentifiedCount);
+// Importance is the memory gate's score for the recording's published conversation (0–100).
+public sealed record Recording(string Job, string Recorded, IReadOnlyList<Speaker> Speakers, int SpeakerCount, int UnidentifiedCount,
+    int? Importance);
 
 public sealed record PersonSummary(Person Person, int Confirmed, int Matched, int Recordings, IReadOnlyList<Speaker> Speakers);
 
@@ -39,7 +41,7 @@ public sealed record SpeakerCatalog(double Heartbeat, Person[] People, Speaker[]
 
     public Speaker? Find(string id) => Speakers.FirstOrDefault(s => s.Id == id);
 
-    // Recordings in catalog order (the service writes newest first); counts cover the whole recording.
+    // Recordings in catalog order (the service writes most important first, then newest); counts cover the whole recording.
     public IReadOnlyList<Recording> Recordings(bool unidentifiedOnly = false, string search = "")
     {
         var result = new List<Recording>();
@@ -47,7 +49,8 @@ public sealed record SpeakerCatalog(double Heartbeat, Person[] People, Speaker[]
         {
             var rows = group.Where(s => (!unidentifiedOnly || s.Unidentified) && Matches(s, search)).ToList();
             if (rows.Count > 0)
-                result.Add(new Recording(group.Key, group.First().Recorded, rows, group.Count(), group.Count(s => s.Unidentified)));
+                result.Add(new Recording(group.Key, group.First().Recorded, rows, group.Count(), group.Count(s => s.Unidentified),
+                    group.Max(s => s.Importance)));
         }
         return result;
     }

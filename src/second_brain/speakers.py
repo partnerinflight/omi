@@ -19,6 +19,27 @@ def review_clips(row):
     return [c for c in json.loads(row["clips"]) if useful_clip(c)]
 
 
+def conversation_value(manifest, label):
+    """(published, importance) for one speaker label: published is 1 if any window it speaks in
+    passed the memory gate, 0 if all were dropped, None if no gate decision was recorded.
+    Importance is the recording's highest kept-window importance, shared by all its speakers."""
+    windows = manifest.get("windows", [])
+    mine = [w for w in windows
+            if any(str(s.get("speaker")) == label for s in w.get("final_segments") or w.get("moss_segments") or [])]
+    decided = [w for w in mine if "memory_keep" in w]
+    if not decided:
+        return None, None
+    kept = [w.get("scores", {}).get("importance") for w in windows if w.get("memory_keep") is True]
+    kept = [int(x) for x in kept if isinstance(x, (int, float))]
+    return int(any(w["memory_keep"] is True for w in decided)), max(kept, default=None)
+
+
+def latest_manifest(job_dir: Path):
+    attempts = sorted((int(d.name.split("-")[1]), d) for d in job_dir.glob("attempt-*")
+                      if d.name.split("-")[1].isdigit() and (d / "manifest.json").is_file())
+    return json.loads((attempts[-1][1] / "manifest.json").read_text(encoding="utf-8")) if attempts else None
+
+
 def unit(value):
     if not isinstance(value, list) or not 2 <= len(value) <= 4096:
         raise ValueError("Invalid voice embedding")
@@ -89,6 +110,23 @@ class Speakers:
                     score REAL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY, response TEXT NOT NULL);
             """)
+            if "published" not in {r["name"] for r in db.execute("PRAGMA table_info(observations)")}:
+                db.execute("ALTER TABLE observations ADD COLUMN published INTEGER")
+                db.execute("ALTER TABLE observations ADD COLUMN importance INTEGER")
+                self._backfill_conversation_value(db)
+
+    def _backfill_conversation_value(self, db):
+        """Rows from before the memory gate was recorded: read it from each job's manifest."""
+        manifests = {}
+        for row in db.execute("SELECT id,job,label FROM observations").fetchall():
+            if row["job"] not in manifests:
+                try:
+                    manifests[row["job"]] = latest_manifest(self.path.parent / "jobs" / row["job"])
+                except (OSError, ValueError):
+                    manifests[row["job"]] = None
+            if manifests[row["job"]]:
+                published, importance = conversation_value(manifests[row["job"]], row["label"])
+                db.execute("UPDATE observations SET published=?,importance=? WHERE id=?", (published, importance, row["id"]))
 
     def ingest(self, job, manifest):
         observations = manifest.get("speaker_observations", [])
@@ -112,7 +150,7 @@ class Speakers:
                     vectors.append(unit(clip["embedding"]))
             with self.connect() as db:
                 db.execute(
-                    "INSERT OR IGNORE INTO observations(id,job,label,display,recorded,clips,vectors,model,embedding_status,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO observations(id,job,label,display,recorded,clips,vectors,model,embedding_status,created,published,importance) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         key,
                         job["id"],
@@ -132,6 +170,7 @@ class Speakers:
                             )
                         ),
                         time.time(),
+                        *conversation_value(manifest, obs["label"]),
                     ),
                 )
         with self.connect() as db:
@@ -253,12 +292,16 @@ class Speakers:
             rows = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT o.id,job,label,display,recorded,clips,embedding_status,person,manual,score,p.name FROM observations o LEFT JOIN people p ON p.id=o.person ORDER BY created DESC"
+                    "SELECT o.id,job,label,display,recorded,clips,embedding_status,person,manual,score,published,importance,"
+                    "p.name FROM observations o LEFT JOIN people p ON p.id=o.person "
+                    "ORDER BY importance IS NULL, importance DESC, created DESC"
                 )
             ]
             for row in rows:
                 row["clips"] = review_clips(row)
-            rows = [row for row in rows if row["clips"] or row["person"]]
+            # Only conversations that became notes are worth naming; confirmed names always show.
+            rows = [row for row in rows if (row["clips"] or row["person"])
+                    and (row.pop("published") != 0 or (row["manual"] and row["person"]))]
             for row in rows:
                 row["state"] = (
                     "confirmed" if row["manual"] and row["person"] else "matched" if row["person"] else "unidentified"
@@ -272,7 +315,9 @@ class Speakers:
         with self.connect() as db:
             return {
                 "unidentified": sum(
-                    1 for row in db.execute("SELECT clips FROM observations WHERE person IS NULL") if review_clips(row)
+                    1
+                    for row in db.execute("SELECT clips FROM observations WHERE person IS NULL AND published IS NOT 0")
+                    if review_clips(row)
                 ),
                 "people": db.execute("SELECT count(*) FROM people").fetchone()[0],
             }
