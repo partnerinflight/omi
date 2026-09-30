@@ -29,7 +29,7 @@ public final class Spool {
         let files = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         return files.filter { $0.pathExtension == "json" }
             .compactMap { try? JSONDecoder().decode(CaptureRecord.self, from: Data(contentsOf: $0)) }
-            .sorted { $0.startMs < $1.startMs }
+            .sorted { ($0.startMs, $0.captureID) < ($1.startMs, $1.captureID) }
     }
 
     public func deleteAudio(_ id: String) {

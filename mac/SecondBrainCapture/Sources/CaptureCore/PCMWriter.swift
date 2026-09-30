@@ -9,7 +9,9 @@ public final class PCMWriter {
     private var lastSync: Double = 0
 
     public init(url: URL, syncInterval: Double = 5) throws {
-        if !FileManager.default.fileExists(atPath: url.path) {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try Self.truncateToWholeFrames(url)
+        } else {
             FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
         }
         handle = try FileHandle(forWritingTo: url)
@@ -18,6 +20,7 @@ public final class PCMWriter {
     }
 
     public func write(_ samples: [Int16], now: Double) throws {
+        precondition(samples.count % 2 == 0, "interleaved stereo needs whole frames")
         guard !samples.isEmpty else { return }
         try samples.withUnsafeBufferPointer { try handle.write(contentsOf: Data(buffer: $0)) }
         framesWritten += Int64(samples.count / 2)

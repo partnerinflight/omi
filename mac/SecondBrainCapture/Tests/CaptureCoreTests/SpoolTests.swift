@@ -78,4 +78,22 @@ final class SpoolTests: XCTestCase {
         XCTAssertEqual(try PCMWriter.truncateToWholeFrames(url), 3)
         XCTAssertEqual(try Data(contentsOf: url).count, 12)
     }
+
+    func testReopenRealignsTornFrameBeforeAppending() throws {
+        let url = spool.pcmURL("c")
+        try Data(repeating: 7, count: 4 * 3 + 3).write(to: url)
+        let writer = try PCMWriter(url: url)
+        XCTAssertEqual(writer.framesWritten, 3)
+        try writer.write([1, 2], now: 0)
+        try writer.close()
+        XCTAssertEqual(try Data(contentsOf: url).count, 16)
+    }
+
+    func testEqualStartTimesOrderByCaptureID() throws {
+        let b = CaptureRecord(captureID: String(repeating: "b", count: 32), app: "x", startMs: 5)
+        let a = CaptureRecord(captureID: String(repeating: "a", count: 32), app: "x", startMs: 5)
+        try spool.save(b)
+        try spool.save(a)
+        XCTAssertEqual(spool.records(), [a, b])
+    }
 }
