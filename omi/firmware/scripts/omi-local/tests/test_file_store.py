@@ -60,6 +60,8 @@ class FileStoreTests(unittest.TestCase):
         other = hashlib.sha256(b"other").hexdigest()
         self.assertEqual(self.store.begin("AA-BB", CID, 5, other, META), 0)
         self.assertEqual((self.root / f"{CID}.partial").stat().st_size, 0)
+        declared = json.loads((self.root / f"{CID}.partial.json").read_text())
+        self.assertEqual((declared["total_len"], declared["sha256"]), (5, other))
 
     def test_append_rejects_wrong_offset_and_overrun(self):
         self.store.begin("AA-BB", CID, len(DATA), SHA, META)
@@ -106,6 +108,46 @@ class FileStoreTests(unittest.TestCase):
         self.store.open_capture("AA-BB", CID, 1000, "us.zoom.xos")  # cancelled is final
         self.assertEqual(self.store.capture_state(CID)["state"], "cancelled")
         self.assertIsNone(self.store.capture_state("ff" * 16))
+
+    def test_cancel_removes_partial_and_blocks_begin(self):
+        self.upload(upto=4096)
+        self.store.cancel_capture("AA-BB", CID)
+        self.assertFalse((self.root / f"{CID}.partial").exists())
+        self.assertFalse((self.root / f"{CID}.partial.json").exists())
+        with self.assertRaises(FileMismatch):
+            self.store.begin("AA-BB", CID, len(DATA), SHA, META)
+
+    def test_short_commit_keeps_partial_and_can_resume(self):
+        self.upload(upto=4096)
+        with self.assertRaises(FileMismatch):
+            self.store.commit("AA-BB", CID)
+        self.assertEqual((self.root / f"{CID}.partial").stat().st_size, 4096)
+        offset = self.store.begin("AA-BB", CID, len(DATA), SHA, META)
+        self.assertEqual(offset, 4096)
+        self.store.append(CID, offset, DATA[offset:])
+        self.assertEqual(self.store.commit("AA-BB", CID).read_bytes(), DATA)
+
+    def test_metadata_cannot_override_reserved_sidecar_keys(self):
+        meta = {**META, "sha256": "x", "file": "y", "complete": False, "capture_id": "z"}
+        offset = self.store.begin("AA-BB", CID, len(DATA), SHA, meta)
+        self.store.append(CID, offset, DATA)
+        self.store.commit("AA-BB", CID)
+        side = json.loads((self.root / f"{CID}.json").read_text())
+        self.assertEqual((side["sha256"], side["complete"], side["capture_id"]), (SHA, True, CID))
+        self.assertEqual(side["file"], str(self.root / f"{CID}.caf"))
+
+    def test_recover_continues_past_malformed_sidecar(self):
+        cid2 = "ff" * 16
+        self.upload()
+        self.store.commit("AA-BB", CID)
+        (self.root / f"{cid2}.caf").write_bytes(b"x")
+        (self.root / f"{cid2}.json").write_text("not json")
+        (self.root / ".captures" / f"{CID}.json").write_text(json.dumps({"capture_id": CID, "state": "open"}))
+        fresh = RecordingStore(self.root)
+        with self.assertLogs("omi_local.file_store", level="ERROR"):
+            fresh.recover()
+        self.assertEqual(fresh.capture_state(CID)["state"], "closed")
+        self.assertEqual(fresh.hooks, [(f"{CID}.caf", CID)])
 
     def test_cancel_after_close_keeps_closed(self):
         self.store.open_capture("AA-BB", CID, 1000, "us.zoom.xos")
