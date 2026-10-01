@@ -94,6 +94,11 @@ try {
     Run icacls.exe @($InstallDir, '/grant:r', "${principal}:(OI)(CI)RX", '/Q')
     Run icacls.exe @($Vault, '/grant', "${principal}:(OI)(CI)RX", '/Q')
     Run icacls.exe @("$Vault\Omi\Conversations", '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
+    # The knowledge router appends under "## Router Inbox" in these folders (router_enabled).
+    foreach ($folder in @('People', 'Projects', 'Topics', 'Decisions', 'Ideas', 'Daily', 'System\Router')) {
+        New-Item -ItemType Directory -Force "$Vault\$folder" | Out-Null
+        Run icacls.exe @("$Vault\$folder", '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
+    }
     $pipeline = Get-Content $pipelineTarget -Raw | ConvertFrom-Json
     $pythonBase = (& $Python -c 'import sys; print(sys.base_prefix)').Trim()
     $enginePaths = @($pipeline.moss_cpp_engine_dir, $pipeline.moss_model, $FfmpegDir, $pythonBase)

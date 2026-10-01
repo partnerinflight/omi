@@ -214,11 +214,21 @@ Implementation: `hermes_score()` in [pipeline.py](src/second_brain/adaptive/pipe
   mode `all` and a veto over the window in mode `borderline`.
   Final gating reuses first-pass Hermes scores; no second Hermes call follows
   VibeVoice refinement. Treat transcript/model text as untrusted input.
-- **No downstream Hermes agent/Knowledge Router consumer is implemented here.**
-  `router_queue` is a local output artifact, not a dispatched message. The
-  current service directly writes approved windows to Obsidian. Semantic
-  merging into people/projects/tasks and richer Hermes orchestration remain
-  future work; the original ZIP's diagram is product intent, not a deployed API.
+- **Knowledge router** ([router.py](src/second_brain/router.py)), ported on
+  2026-09-30 from the standalone `C:\second-brain-router` (v4.1, previously run
+  by hand on two test files only). With `router_enabled` (default false), every
+  published window is queued in `data/router.sqlite3` and a separate service
+  loop sends its named transcript to Hermes: extract facts/decisions/tasks/
+  ideas/daily events, collapse duplicates within the batch, then reconcile
+  against all router-written items (new/duplicate/refinement/conflict). Items
+  are appended under `## Router Inbox` in People/Projects/Topics/Decisions/
+  Ideas/Daily (curated prose is never rewritten), with a ledger and audit JSON
+  in `System/Router`. Up to 3 Hermes calls per window (`router_timeout_seconds`,
+  default 180). Failures back off (1 min ×4 per attempt, ≤6 h) and stop after 6
+  attempts; `second-brain retry` requeues them. A routed source is skipped by
+  its ledger, so replays cost no calls. Transcription never waits for routing.
+  `no_hermes` disables it. Notes published before enabling are not backfilled.
+  `router_queue/` remains a local audit artifact.
 
 ## Speaker identity and Obsidian
 

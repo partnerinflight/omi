@@ -28,6 +28,9 @@ def main():
         return
     if args.command == "retry":
         print(f"Requeued {Queue(cfg.data_dir / 'queue.sqlite3').retry_failed()} failed jobs")
+        from .router import RouterQueue
+
+        print(f"Requeued {RouterQueue(cfg.data_dir / 'router.sqlite3').retry_failed()} failed routing items")
         return
     if args.command == "check":
         from .preflight import check

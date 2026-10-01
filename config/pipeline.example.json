@@ -24,6 +24,8 @@
   "vibe7_uncertainty_threshold": 72,
   "vibe7_importance_threshold": 86,
   "vibe7_important_uncertainty_threshold": 42,
+  "router_enabled": false,
+  "router_timeout_seconds": 180,
   "router_importance_threshold": 58,
   "router_novelty_threshold": 78,
   "router_min_words": 12,

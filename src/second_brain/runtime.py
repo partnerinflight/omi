@@ -13,6 +13,7 @@ from .config import Config, read_json
 from .io import InstanceLock, write_json
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
+from .router import RouterQueue, route
 from .vault import publish
 from .speakers import Speakers
 
@@ -53,6 +54,18 @@ class Runtime:
         self.last_scan_error = None
         self.started = time.time()
         self.speakers = Speakers(cfg.data_dir, cfg.review_dir, cfg.speaker_match_threshold, cfg.speaker_match_margin)
+        self.router = RouterQueue(cfg.data_dir / "router.sqlite3")
+
+    def routing(self):
+        """The pipeline config when the knowledge router should run, else None."""
+        try:
+            pipeline = self.cfg.pipeline()
+        except (OSError, ValueError):
+            log.exception("Pipeline config unreadable; routing paused")
+            return None
+        if not pipeline.get("router_enabled") or self.cfg.no_hermes or not pipeline.get("hermes_url"):
+            return None
+        return pipeline
 
     def discover(self):
         self.last_scan_error = None
@@ -186,6 +199,11 @@ class Runtime:
         notes = await asyncio.to_thread(
             publish, cfg.vault_path, cfg.vault_folder, job, manifest, not cfg.delete_audio_after_processing
         )
+        if self.routing():
+            # Idempotent, so a crash-replay of this job enqueues nothing twice.
+            kept = [w for w in manifest["windows"]
+                    if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
+            self.router.enqueue(job["id"], kept, json.loads(job["metadata"]).get("first_utc") or "unknown")
         return {
             "notes": len(notes),
             "warnings": len(manifest.get("fallbacks", [])),
@@ -218,6 +236,30 @@ class Runtime:
                 except asyncio.TimeoutError:
                     pass
 
+    async def route_published(self):
+        """Send published conversations to the knowledge router, one at a time, separately from
+        transcription so a Hermes outage only delays routing."""
+        while not self.stop.is_set():
+            item = None
+            try:
+                pipeline = await asyncio.to_thread(self.routing)
+                item = self.router.claim() if pipeline else None
+                if item:
+                    result = await asyncio.to_thread(
+                        route, pipeline, self.cfg.vault_path, item["id"], item["text"], item["observed_at"])
+                    self.router.done(item["id"], result)
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.exception("Routing failed for %s", item["id"] if item else "the router")
+                if item:
+                    self.router.fail(item, f"{type(e).__name__}; see private service log")
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=max(self.cfg.poll_seconds, 1))
+            except asyncio.TimeoutError:
+                pass
+
     def status(self, state="running"):
         result = self.queue.snapshot()
         result.update(
@@ -235,6 +277,7 @@ class Runtime:
             },
             discovery_error=self.last_scan_error,
             speakers=self.speakers.summary(),
+            router=dict(self.router.snapshot(), enabled=self.routing() is not None),
         )
         write_json(self.cfg.status_file, result)
 
@@ -276,6 +319,7 @@ class Runtime:
                 asyncio.create_task(self.worker()),
                 asyncio.create_task(self.heartbeat()),
                 asyncio.create_task(self.speaker_review()),
+                asyncio.create_task(self.route_published()),
             ]
             waiter = asyncio.create_task(self.stop.wait())
             try:

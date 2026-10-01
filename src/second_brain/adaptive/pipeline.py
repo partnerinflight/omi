@@ -731,6 +731,13 @@ def vault_novelty(text, vault_index):
     return novelty, context
 
 
+def hermes_api_key(cfg):
+    # A service has no user environment: prefer a private key file next to the config.
+    if cfg.get("hermes_api_key_file"):
+        return Path(cfg["hermes_api_key_file"]).read_text(encoding="utf-8").strip()
+    return os.environ.get(cfg.get("hermes_api_key_env", "HERMES_API_KEY"), "")
+
+
 def hermes_should_consult(cfg, heuristic_gate, importance, word_count):
     """Mode "all" (v3) asks Hermes about every window. Mode "borderline" asks only about windows
     the heuristic would keep with importance below hermes_borderline_max_importance."""
@@ -754,11 +761,7 @@ def hermes_score(cfg, transcript, heuristic, vault_context):
     url = cfg.get("hermes_url")
     if not url or "YOUR-PI-IP" in url:
         return None
-    # A service has no user environment: prefer a private key file next to the config.
-    if cfg.get("hermes_api_key_file"):
-        key = Path(cfg["hermes_api_key_file"]).read_text(encoding="utf-8").strip()
-    else:
-        key = os.environ.get(cfg.get("hermes_api_key_env", "HERMES_API_KEY"), "")
+    key = hermes_api_key(cfg)
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
