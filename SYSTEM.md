@@ -210,7 +210,8 @@ Implementation: `hermes_score()` in [pipeline.py](src/second_brain/adaptive/pipe
   and record a fallback; an unset/placeholder URL silently disables the call.
 - Blend heuristic/Hermes: importance and uncertainty 35/65, novelty 25/75,
   durability/actionability/retrieval 40/60. Durable flags are ORed. The
-  deterministic gate decides publication; Hermes's `memory_keep` is advisory.
+  deterministic gate decides publication; Hermes's `memory_keep` is advisory in
+  mode `all` and a veto over the window in mode `borderline`.
   Final gating reuses first-pass Hermes scores; no second Hermes call follows
   VibeVoice refinement. Treat transcript/model text as untrusted input.
 - **No downstream Hermes agent/Knowledge Router consumer is implemented here.**
