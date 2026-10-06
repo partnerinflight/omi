@@ -36,14 +36,22 @@ Do not interpret "no chip erase" as preservation of an incompatible SD layout.
    and upload counters. The portal disappears when saved; it cannot report
    the subsequent STA result over the disconnected AP.
 
-Setup blinks blue and expires after five minutes. Hold the button for **20
-seconds** to reopen it; release after the haptic acknowledgement. Existing
-settings remain until a successful save. A short press never resets settings.
-To power off the Wi-Fi build, **release between three and five seconds**.
-The BLE-only build retains its three-second power-off hold. An active upload
+Setup blinks blue and expires after five minutes. To reopen it, hold the button
+until it vibrates three times (20 seconds), then release. Existing settings
+remain until a successful save. A short press never resets settings.
+
+| Hold, then release | Vibration while holding | Action |
+|---|---|---|
+| 3–5 s | 1 pulse at 3 s | pause / resume recording |
+| 10–15 s | 2 pulses at 10 s | power off |
+| 20 s or more | 3 pulses at 20 s | open Wi-Fi setup (Wi-Fi build) |
+
+Short clicks and releases between windows do nothing. From `3.0.22-localwifi.15`.
+The BLE-only build uses the same pause and power-off windows; it has no setup
+gesture. An active upload
 stops at a safe record boundary before setup; an outstanding network operation
 may delay entry until its timeout. `omi-local wifi-forget` explicitly clears
-the selected configuration; reboot or hold 20 seconds to start setup again.
+the selected configuration; reboot or hold 20 seconds and release to start setup again.
 
 Configured boot does not expose an AP, including when Wi-Fi or the receiver is
 down. Normal uploads require charging, at least roughly one minute of queued
@@ -171,10 +179,15 @@ Existing stored audio retains the previous timestamp-gap splitting behavior;
 this change does not retrospectively detect silence inside old recordings.
 
 `CONFIG_OMI_VAD_HOLD_MS=30000` sets the silence interval and
-`CONFIG_OMI_VAD_ABS_THRESHOLD=300` sets the PCM threshold in `.13` (previously
-250). The hardware wake
-threshold is separately defined in `t5838_aad.c`; room noise and distance affect
-what counts as sound. Hardware acoustic wake has startup latency and no pre-roll.
+`CONFIG_OMI_VAD_ABS_THRESHOLD=200` sets the level threshold. From `.15` the level
+is measured after a 250 Hz high-pass and 3.4 kHz low-pass (`vox_filter.c`), and the
+silence timer resets only when at least 3 of the last 5 100 ms blocks reach the
+threshold, so keyboard clicks and brief bumps do not keep the mic awake. Tuning
+evidence is in `VALIDATION_MAC.md` ("Speech-band VOX threshold"); re-tune with
+`python -m omi_local.vox_replay <recordings>`. The hardware wake threshold is
+separately defined in `t5838_aad.c` (raised from 75 dB to 80 dB in `.15`, T5838
+register 0x08, assuming 2.5 dB steps; confirm on device); room noise and distance
+affect what counts as sound. Hardware acoustic wake has startup latency and no pre-roll.
 BLE bulk downloads defer microphone sleep until the download ends; Wi-Fi
 uploads can continue while the microphone sleeps.
 
@@ -188,20 +201,21 @@ been asleep for at least 5 minutes, so short wake/sleep cycles in a quiet room
 resume silently. The first 500 ms after the microphone restarts is not recorded,
 so recordings no longer begin with the startup pop or the vibration.
 
-**Click and release the button** (less than one second) to pause recording;
-click again to resume. Pausing closes the current recording and turns the
+**Hold the button for 3–5 seconds and release** (one vibration pulse at 3 s) to
+pause recording; repeat to resume. Before `.15` a short click did this. Pausing closes the current recording and turns the
 microphone power rail off, including acoustic detection: sound cannot restart
 recording while manually paused. Resume starts a new recording and returns to
-the normal 30-second VOX behavior. Manual pause lasts until the next click or
+the normal 30-second VOX behavior. Manual pause lasts until the next 3–5 second release or
 restart; it is not saved across power cycles. A failed resume leaves the mic off
-and paused so another click can retry.
+and paused so another 3–5 second release can retry. On resume the mic waits 150 ms for the
+motor before powering, and the 500 ms startup discard still applies.
 
 While manually paused, the red LED flashes for **200 ms every 3 seconds**, with
 green and blue off. This indication takes priority over setup, upload and warning
 LEDs while the device is awake. Existing uploads may continue during pause.
 Ordinary acoustic silence still shows solid red, and normal recording is dark.
-The 3–5 second power-off release is unchanged. From `.12`, reopening setup
-requires a continuous 20-second hold (previously 5 seconds). Releasing between
-5 and 20 seconds does nothing. This opens setup rather than rebooting; long
-holds do not toggle recording. The receiver from `.9` already understands
+From `.15`, power-off is a 10–15 second release and setup is a release after 20
+seconds or more (see the table above); the action is decided by the hold length
+at the last poll the button was seen pressed, so it matches the pulse you felt.
+Setup opens rather than rebooting; other holds do not toggle recording. The receiver from `.9` already understands
 these recording boundaries and needs no additional update for `.11`.

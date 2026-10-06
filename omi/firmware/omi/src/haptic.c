@@ -15,6 +15,27 @@ static const struct gpio_dt_spec haptic_pin = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(m
 // Haptic Off Work Item
 static struct k_work_delayable haptic_off_work;
 
+#define HAPTIC_PULSE_ON_MS 80
+#define HAPTIC_PULSE_GAP_MS 120
+static struct k_work_delayable pulse_work;
+static uint8_t pulses_left;
+static bool pulse_on;
+
+static void pulse_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (pulse_on) {
+        gpio_pin_set_dt(&haptic_pin, 0);
+        pulse_on = false;
+        if (--pulses_left > 0)
+            k_work_schedule(&pulse_work, K_MSEC(HAPTIC_PULSE_GAP_MS));
+        return;
+    }
+    gpio_pin_set_dt(&haptic_pin, 1);
+    pulse_on = true;
+    k_work_schedule(&pulse_work, K_MSEC(HAPTIC_PULSE_ON_MS));
+}
+
 // Work handler to turn off haptic motor
 static void haptic_off_work_handler(struct k_work *work)
 {
@@ -97,6 +118,7 @@ int haptic_init(void)
 
     // Initialize the delayable work item
     k_work_init_delayable(&haptic_off_work, haptic_off_work_handler);
+    k_work_init_delayable(&pulse_work, pulse_work_handler);
 
     LOG_INF("Haptic system initialized");
     return 0;
@@ -109,8 +131,11 @@ void play_haptic_milli(uint32_t duration)
         return;
     }
 
-    // Cancel any pending off work before proceeding
+    // Cancel any pending off work and in-flight pulse sequence before proceeding
     k_work_cancel_delayable(&haptic_off_work);
+    k_work_cancel_delayable(&pulse_work);
+    pulse_on = false;
+    pulses_left = 0;
 
     if (duration == 0) {
         // If duration is 0, ensure the pin is off and we are done.
@@ -137,6 +162,21 @@ void play_haptic_milli(uint32_t duration)
     k_work_schedule(&haptic_off_work, K_MSEC(duration));
 }
 
+void play_haptic_pulses(uint8_t count)
+{
+    if (count == 0 || !gpio_is_ready_dt(&haptic_pin))
+        return;
+    k_work_cancel_delayable(&haptic_off_work);
+    k_work_cancel_delayable(&pulse_work);
+    if (gpio_pin_configure_dt(&haptic_pin, GPIO_OUTPUT)) {
+        LOG_ERR("Failed to configure haptic pin for pulses");
+        return;
+    }
+    pulses_left = count > 3 ? 3 : count;
+    pulse_on = false;
+    k_work_schedule(&pulse_work, K_NO_WAIT);
+}
+
 void register_haptic_service(void)
 {
     int err = bt_gatt_service_register(&haptic_service);
@@ -149,5 +189,8 @@ void register_haptic_service(void)
 
 void haptic_off()
 {
+    k_work_cancel_delayable(&pulse_work);
+    pulse_on = false;
+    pulses_left = 0;
     gpio_pin_set_dt(&haptic_pin, 0);
 }

@@ -14,36 +14,57 @@ class VoxTests(unittest.TestCase):
     def compile_run(self, source):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); (root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(SRC),str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(SRC),str(root/'test.c'),
+                            str(SRC/'lib/core/vox_filter.c'),'-o',str(root/'test'),'-lm'],check=True)
             return subprocess.check_output([str(root/'test')])
-    def test_thirty_continuous_seconds_and_wake_reset(self):
+    def test_speech_band_sustain_hold_and_wake_reset(self):
         self.compile_run(r'''
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <math.h>
 #include <assert.h>
-#define CONFIG_OMI_VAD_ABS_THRESHOLD 400
+#include "lib/core/vox_filter.h"
+#define CONFIG_OMI_VAD_ABS_THRESHOLD 150
+#define CONFIG_OMI_VAD_SUSTAIN_BLOCKS 3
+#define CONFIG_OMI_VAD_WINDOW_BLOCKS 5
 #define CONFIG_OMI_VAD_HOLD_MS 30000
+#define PI 3.14159265358979
 static int aad_woke,aad_in_sleep,aad_req_sleep,aad_sem;
 static int64_t aad_last_voice_ms,now;
 static bool syncing;
+static struct vox_filter vox;
 int64_t k_uptime_get(void){return now;}
 int atomic_get(int *p){return *p;}
 void atomic_set(int *p,int v){*p=v;}
 bool atomic_cas(int *p,int a,int b){if(*p!=a)return false;*p=b;return true;}
 void k_sem_give(int *p){(*p)++;}
 bool storage_transfer_active(void){return syncing;}
-''' + function(SRC/'mic.c','static uint32_t avg_abs_amplitude(') + function(SRC/'mic.c','static void aad_track_silence(const int16_t *buf, size_t n)\n{') + r'''
+''' + function(SRC/'mic.c','static void aad_track_silence(const int16_t *buf, size_t n)\n{') + r'''
+static int16_t quiet[1600], speech[1600], hum[1600];
+static void block(const int16_t *b, int64_t t){now=t;aad_track_silence(b,1600);}
 int main(void){
- int16_t quiet[]={-399,399},sound[]={-400,400};
- now=29999;aad_track_silence(quiet,2);assert(!aad_req_sleep);
- aad_track_silence(sound,2);assert(aad_last_voice_ms==29999);
- now=59998;aad_track_silence(quiet,2);assert(!aad_req_sleep);
- now=59999;aad_track_silence(quiet,2);assert(aad_req_sleep && aad_sem==1);
- aad_req_sleep=0;aad_woke=1;now=70000;
- aad_track_silence(quiet,2);assert(!aad_req_sleep && aad_last_voice_ms==70000);
- syncing=true;now=100000;aad_track_silence(quiet,2);assert(!aad_req_sleep);
- syncing=false;aad_track_silence(quiet,2);assert(aad_req_sleep);return 0;
+ for(int i=0;i<1600;i++){
+  speech[i]=(int16_t)(600*sin(2*PI*1000*i/16000.0));   /* ~380 after the filter */
+  hum[i]=(int16_t)(1000*sin(2*PI*100*i/16000.0));      /* ~100 after the filter */
+ }
+ for(int k=0;k<10;k++) block(hum,100+k*100);          /* loud low-frequency sound never counts */
+ assert(aad_last_voice_ms==0);
+ block(speech,2000); block(speech,2100); assert(aad_last_voice_ms==0);   /* 2 of 5 */
+ block(speech,2200); assert(aad_last_voice_ms==2200);                    /* 3 of 5 */
+ block(quiet,2300); block(quiet,2400); assert(aad_last_voice_ms==2400);  /* still 3 of 5 */
+ block(quiet,2500); assert(aad_last_voice_ms==2400);                     /* 2 of 5 */
+ now=2400+29999; aad_track_silence(quiet,1600); assert(!aad_req_sleep);
+ now=2400+30000; aad_track_silence(quiet,1600); assert(aad_req_sleep && aad_sem==1);
+ aad_req_sleep=0;
+ block(speech,100000); block(speech,100100);          /* 2 loud blocks in history */
+ aad_woke=1; block(speech,100200);                    /* wake: reset -> history 1 of 5, timer refreshed by the wake itself */
+ assert(aad_last_voice_ms==100200);
+ block(speech,100300); assert(aad_last_voice_ms==100200); /* only 2 of 5 since the reset; without the reset it would be 4 */
+ aad_req_sleep=0; /* the first loud block after the long silence asked for sleep */
+ syncing=true; block(quiet,200000); assert(!aad_req_sleep);
+ syncing=false; block(quiet,200100); assert(aad_req_sleep);
+ return 0;
 }
 ''')
     def test_codec_order_partial_padding_and_error(self):

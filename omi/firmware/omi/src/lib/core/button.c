@@ -163,10 +163,11 @@ typedef enum {
 
 static uint32_t current_time = 0;
 static uint32_t btn_press_start_time;
-static bool hold_handled;
+static uint8_t hold_level_played;
 static uint32_t btn_release_time;
 static uint32_t btn_last_tap_time;
 static bool btn_is_pressed;
+static uint32_t btn_last_pressed_time; /* last poll that saw the button down: what the user felt */
 
 static u_int8_t btn_last_event = BUTTON_EVENT_NONE;
 
@@ -178,23 +179,42 @@ void check_button_level(struct k_work *work_item)
 
     ButtonEvent event = BUTTON_EVENT_NONE;
 
+    if (btn_state == BUTTON_PRESSED)
+        btn_last_pressed_time = current_time;
+
     // Debouncing pressed state
     if (btn_state == BUTTON_PRESSED && !btn_is_pressed) {
         btn_is_pressed = true;
         btn_press_start_time = current_time;
-        hold_handled = false;
+        hold_level_played = 0;
     } else if (btn_state == BUTTON_RELEASED && btn_is_pressed) {
         btn_is_pressed = false;
         btn_release_time = current_time;
 
         // Check for double tap
         uint32_t press_duration = (btn_release_time - btn_press_start_time);
-        /* Toggle on each short release, independent of delayed single/double
-         * tap notifications. Long holds never become recording clicks. */
-        if (!is_off && button_recording_click(press_duration, hold_handled)) {
-            int ret = mic_toggle_manual_pause();
-            if (ret)
-                LOG_WRN("Recording toggle unavailable (%d)", ret);
+        /* Every gesture is hold-then-release; the vibration while held said which. */
+        /* Act on the last hold the pulses could have signalled, not the release poll. */
+        uint32_t felt_duration = btn_last_pressed_time - btn_press_start_time;
+        switch (button_hold_action(felt_duration, IS_ENABLED(CONFIG_OMI_WIFI_UPLOAD))) {
+        case HOLD_PAUSE_TOGGLE:
+            if (!is_off) {
+                int ret = mic_toggle_manual_pause();
+                if (ret)
+                    LOG_WRN("Recording toggle unavailable (%d)", ret);
+            }
+            break;
+        case HOLD_POWER_OFF:
+            turnoff_all();
+            break;
+        case HOLD_SETUP:
+#ifdef CONFIG_OMI_WIFI_UPLOAD
+            wifi_upload_request_provisioning();
+            notify_long_tap();
+#endif
+            break;
+        case HOLD_NONE:
+            break;
         }
         if (press_duration < TAP_THRESHOLD) {
             if (btn_last_tap_time > 0 && (current_time - btn_last_tap_time) < DOUBLE_TAP_WINDOW) {
@@ -218,24 +238,15 @@ void check_button_level(struct k_work *work_item)
         }
     }
 
-    if (!hold_handled && (btn_is_pressed || btn_release_time == current_time)) {
-        enum button_hold_action action = button_hold_action(
-            current_time - btn_press_start_time, !btn_is_pressed, IS_ENABLED(CONFIG_OMI_WIFI_UPLOAD));
-        if (action == HOLD_POWER_OFF) {
-            hold_handled = true;
-            turnoff_all();
-        }
-#ifdef CONFIG_OMI_WIFI_UPLOAD
-        else if (action == HOLD_SETUP) {
-            hold_handled = true;
-            wifi_upload_request_provisioning();
-            notify_long_tap();
 #ifdef CONFIG_OMI_ENABLE_HAPTIC
-            play_haptic_milli(100);
-#endif
+    if (btn_is_pressed) {
+        uint8_t level = button_hold_level(current_time - btn_press_start_time, IS_ENABLED(CONFIG_OMI_WIFI_UPLOAD));
+        if (level > hold_level_played) {
+            hold_level_played = level;
+            play_haptic_pulses(level);
         }
-#endif
     }
+#endif
 
     // Single tap
     if (event == BUTTON_EVENT_SINGLE_TAP) {

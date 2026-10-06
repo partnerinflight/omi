@@ -22,11 +22,12 @@ LOG_MODULE_REGISTER(t5838, CONFIG_LOG_DEFAULT_LEVEL);
 #define T5838_AAD_SELECT_NONE 0x00
 #define T5838_AAD_SELECT_A 0x08
 
-/* Mode-A tuning: 2.0 kHz LPF, 75 dB threshold. 60dB (0x00) is the most
- * sensitive and triggers on ambient noise; 75dB wakes on nearby speech while
- * ignoring a quiet room. Raise/lower here if it never wakes / always wakes. */
+/* Mode-A tuning: 2.0 kHz LPF, 80 dB threshold (0x00 = 60 dB, 2.5 dB
+ * steps). 60dB is the most sensitive and triggers on ambient noise; 80dB wakes
+ * on nearby speech while ignoring a quiet room and wakes less often on typing.
+ * Raise/lower here if it never wakes / always wakes. */
 #define T5838_AAD_A_LPF_2_0kHz 0x02
-#define T5838_AAD_A_THR_75dB 0x06
+#define T5838_AAD_A_THR_80dB 0x08
 
 /* ---- FAKE2C bit-bang protocol constants (from datasheet) ---- */
 #define FAKE2C_START_PILOT_CLKS 10
@@ -169,7 +170,7 @@ int t5838_aad_enter(void)
     /* Mode A: disable, set LPF + threshold, then select mode A. */
     reg_write(T5838_REG_AAD_MODE, T5838_AAD_SELECT_NONE);
     reg_write(T5838_REG_AAD_A_LPF, T5838_AAD_A_LPF_2_0kHz);
-    reg_write(T5838_REG_AAD_A_THR, T5838_AAD_A_THR_75dB);
+    reg_write(T5838_REG_AAD_A_THR, T5838_AAD_A_THR_80dB);
     reg_write(T5838_REG_AAD_MODE, T5838_AAD_SELECT_A);
 
     /* Clock >2 ms so the mic latches config and enters AAD sleep. */
@@ -181,6 +182,6 @@ int t5838_aad_enter(void)
      * stays latched in AAD mode. */
     clk_set(1);
     gpio_pin_set_dt(&thsel, 1);
-    LOG_INF("t5838 AAD: entered sleep (mode A, 75dB, CLK/THSEL parked high)");
+    LOG_INF("t5838 AAD: entered sleep (mode A, 80dB, CLK/THSEL parked high)");
     return 0;
 }

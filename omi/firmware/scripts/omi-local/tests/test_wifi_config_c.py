@@ -27,7 +27,10 @@ int main(int argc, char **argv) {
   puts("ok"); return 0;
  }
  if (!strcmp(argv[1], "hold")) {
-  printf("%d", button_hold_action(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]))); return 0;
+  printf("%d", button_hold_action(atoi(argv[2]), atoi(argv[3]))); return 0;
+ }
+ if (!strcmp(argv[1], "level")) {
+  printf("%d", button_hold_level(atoi(argv[2]), atoi(argv[3]))); return 0;
  }
  struct wifi_upload_config c = {0}, old;
  unsigned char buf[1024]; size_t len = strlen(argv[2])/2;
@@ -70,12 +73,17 @@ class WifiConfigTests(unittest.TestCase):
         for host in [b'-bad.local',b'a..local',b'a'*64+b'.local',b'a\x00.local']:
             self.assertEqual(self.run_c('config',(bytes([7,len(host)])+host).hex()),'-22 0 1')
         self.assertTrue(self.run_c('config',U.encode_wifi_config(host='valid.local').hex()).startswith('0 0 '))
-    def test_deliberate_setup_and_power_off(self):
-        for ms, released, wifi, action in [(100,1,1,0),(2999,0,1,0),(3000,0,1,0),
-                (3000,1,1,1),(4999,1,1,1),(5000,0,1,0),(5000,1,1,0),(9000,0,1,0),
-                (19999,0,1,0),(19999,1,1,0),(20000,0,1,2),(20000,1,1,0),(21000,0,1,2),
-                (3000,0,0,1)]:
-            self.assertEqual(self.run_c('hold',str(ms),str(released),str(wifi)),str(action))
+    def test_hold_release_windows(self):
+        # (held ms, wifi build, action): 0 none, 1 pause toggle, 2 power off, 3 setup
+        for ms, wifi, action in [(100,1,0),(2999,1,0),(3000,1,1),(4999,1,1),(5000,1,0),(9999,1,0),
+                                 (10000,1,2),(14999,1,2),(15000,1,0),(19999,1,0),(20000,1,3),(60000,1,3),
+                                 (3000,0,1),(10000,0,2),(20000,0,0)]:
+            self.assertEqual(self.run_c('hold',str(ms),str(wifi)),str(action), (ms, wifi))
+
+    def test_vibration_levels_while_holding(self):
+        for ms, wifi, level in [(2999,1,0),(3000,1,1),(9999,1,1),(10000,1,2),(19999,1,2),(20000,1,3),
+                                (20000,0,2)]:
+            self.assertEqual(self.run_c('level',str(ms),str(wifi)),str(level), (ms, wifi))
 
     def test_bulk_ownership_survives_rejected_claim(self):
         self.assertEqual(self.run_c('owner'), 'ok')

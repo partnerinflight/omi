@@ -15,6 +15,7 @@
 #include "lib/core/codec.h"
 #include "lib/core/haptic.h"
 #include "lib/core/settings.h"
+#include "lib/core/vox_filter.h"
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
 #include <zephyr/devicetree.h>
@@ -81,6 +82,7 @@ static struct k_thread aad_thread_data;
 static bool aad_thread_started; /* aad_thread_data is a live thread */
 static K_SEM_DEFINE(aad_sem, 0, 1);
 #define AAD_PDM_SETTLE_MS 20
+#define MANUAL_RESUME_MOTOR_SETTLE_MS 150 /* the 3 s hold pulse ends before the mic rail powers */
 
 static atomic_t aad_wake_pending = ATOMIC_INIT(0); /* WAKE edge seen by ISR */
 static atomic_t aad_woke = ATOMIC_INIT(0);         /* tell mic ctx it just woke */
@@ -90,6 +92,8 @@ static atomic_t aad_req_sleep = ATOMIC_INIT(0);    /* silence timer asked to sle
 static atomic_t mic_discard_blocks = ATOMIC_INIT(0);
 #define MIC_START_DISCARD_BLOCKS ((CONFIG_OMI_MIC_START_DISCARD_MS + 99) / 100)
 static int64_t aad_last_voice_ms;
+BUILD_ASSERT(CONFIG_OMI_VAD_SUSTAIN_BLOCKS <= CONFIG_OMI_VAD_WINDOW_BLOCKS,
+             "OMI_VAD_SUSTAIN_BLOCKS must not exceed OMI_VAD_WINDOW_BLOCKS");
 static uint32_t aad_sleep_started_ms; /* owner-only: when the current AAD sleep began */
 static atomic_t manual_pause_requested;
 static atomic_t manual_paused;
@@ -387,19 +391,6 @@ static void pdm_hw_disable(void)
 #endif
 }
 
-static uint32_t avg_abs_amplitude(const int16_t *buf, size_t n)
-{
-    if (n == 0) {
-        return 0;
-    }
-    uint64_t sum = 0;
-    for (size_t i = 0; i < n; i++) {
-        int32_t s = buf[i];
-        sum += (uint32_t) (s < 0 ? -s : s);
-    }
-    return (uint32_t) (sum / n);
-}
-
 static void aad_wake_irq(bool enable)
 {
     gpio_pin_interrupt_configure_dt(&aad_wake, enable ? GPIO_INT_EDGE_RISING : GPIO_INT_DISABLE);
@@ -523,6 +514,7 @@ static void exit_manual_pause(void)
         }
         manual_end_pending = false;
     }
+    k_msleep(MANUAL_RESUME_MOTOR_SETTLE_MS);
     t5838_aad_power(true);
     k_msleep(AAD_PDM_SETTLE_MS);
     t5838_aad_release_clk();
@@ -577,6 +569,8 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
     }
 }
 
+static struct vox_filter vox; /* mic thread only */
+
 /* Called per mic frame: track silence and request AAD sleep after a hold. */
 static void aad_track_silence(const int16_t *buf, size_t n)
 {
@@ -584,8 +578,13 @@ static void aad_track_silence(const int16_t *buf, size_t n)
 
     if (atomic_cas(&aad_woke, 1, 0)) {
         aad_last_voice_ms = now;
+        vox_filter_reset(&vox); /* every mic start: no stale filter state or history */
     }
-    if (avg_abs_amplitude(buf, n) >= CONFIG_OMI_VAD_ABS_THRESHOLD) {
+    if (vox_voice_detected(&vox,
+                           vox_block_level(&vox, buf, n),
+                           CONFIG_OMI_VAD_ABS_THRESHOLD,
+                           CONFIG_OMI_VAD_SUSTAIN_BLOCKS,
+                           CONFIG_OMI_VAD_WINDOW_BLOCKS)) {
         aad_last_voice_ms = now;
     }
     /* Sleep after a long silence whether online or offline. When connected, the

@@ -22,6 +22,8 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Records your side of allowlisted meetings for your Second Brain.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Uploads recorded meetings to your Second Brain receiver on this network.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Records the other participants in allowlisted meeting apps for your Second Brain.</string>
 </dict>
