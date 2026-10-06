@@ -53,6 +53,13 @@ Short taps still send the BLE tap/double-tap notifications. `test_wifi_config_c.
 `test_disconnect_power_c.py` covers SD ownership during BLE disconnect, including manual
 pause. Keep the portal help in sync.
 
+Recorded PCM passes a 100 Hz 4th-order Butterworth high-pass (`mic_highpass.c`,
+`CONFIG_OMI_MIC_HIGHPASS`) before VOX and the codec; discarded startup blocks still run
+through it so no stale state reaches a recording. It removes car road/wind boom, not
+in-band noise. `test_mic_highpass_c.py` executes the filter and `process_audio_buffer`.
+Opus stays CELT-only (`RESTRICTED_LOWDELAY`): the bootloader cannot revert, so do not
+switch to SILK/VOIP without measuring codec-thread stack and CPU on hardware first.
+
 The silence timer measures a 250 Hz–3.4 kHz band-passed level (`vox_filter.c`) and needs
 3 of the last 5 100 ms blocks at `CONFIG_OMI_VAD_ABS_THRESHOLD` (200), so keystrokes do
 not keep the mic awake. Hardware acoustic wake is 80 dB (T5838 register 0x08; 2.5 dB

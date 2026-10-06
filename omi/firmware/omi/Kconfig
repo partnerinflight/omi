@@ -143,6 +143,14 @@ config OMI_MIC_START_DISCARD_MS
          to 100 ms blocks) before recording and VOX tracking. Covers the PDM
          startup transient and the wake vibration."
 
+config OMI_MIC_HIGHPASS
+    bool "High-pass recorded audio at 100 Hz"
+    default y
+    help
+        "Apply a 4th-order Butterworth high-pass at 100 Hz to the PCM before VOX
+         and the codec. Removes car road/wind rumble below 60 Hz, which can
+         dominate the recording level; speech above 150 Hz is unchanged."
+
 config OMI_WIFI_UPLOAD
     bool "Upload recordings over Wi-Fi to one local receiver while charging"
     depends on OMI_ENABLE_OFFLINE_STORAGE && WIFI_NRF70 && NET_SOCKETS && NET_TCP && NET_DHCPV4

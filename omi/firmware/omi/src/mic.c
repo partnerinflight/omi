@@ -14,6 +14,7 @@
 
 #include "lib/core/codec.h"
 #include "lib/core/haptic.h"
+#include "lib/core/mic_highpass.h"
 #include "lib/core/settings.h"
 #include "lib/core/vox_filter.h"
 
@@ -104,6 +105,10 @@ static void aad_track_silence(const int16_t *buf, size_t n);
 static int aad_hw_start(void);
 #endif
 
+#ifdef CONFIG_OMI_MIC_HIGHPASS
+static struct mic_highpass rumble_filter; /* mic thread only */
+#endif
+
 static inline void
 interleaved_stereo_to_mono(const int16_t *restrict interleaved, size_t frames, int16_t *restrict mono_out)
 {
@@ -142,6 +147,12 @@ static void process_audio_buffer(void *buffer, uint32_t size)
         k_mem_slab_free(&mem_slab, buffer);
         return;
     }
+#endif
+#ifdef CONFIG_OMI_MIC_HIGHPASS
+    /* Ahead of the discard: the dropped startup blocks flush state from before a restart. */
+    mic_highpass_apply(&rumble_filter, mono_buffer, frames);
+#endif
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Neither record nor VOX-track the settling audio after a restart. */
     if (atomic_get(&mic_discard_blocks) > 0) {
         atomic_dec(&mic_discard_blocks);

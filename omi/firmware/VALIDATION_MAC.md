@@ -592,3 +592,35 @@ active/confirmed/bootable and GATT reports `3.0.22-localwifi.17`. Clock synchron
 battery 95%, ring `[1612195, 1650990)`, zero dropped packets, Wi-Fi upload still
 configured. Gestures, VOX behavior and an automatic upload under `.17` remain
 on-device checks.
+
+## Firmware 3.0.22-localwifi.18: rumble high-pass — 2026-10-06
+
+Diagnosis from the owner's Oct 6 drive (pulled read-only over BLE, decoded with ffmpeg):
+the worst file (14:22Z, 489 s) had a median level of -18 dBFS with 87% of its energy below
+100 Hz (83% below 60 Hz) and 2% at 400 Hz–3.4 kHz. It also had 89 broadband clip bursts in
+29 seconds. A second drive file (14:51Z) was at -38 dBFS with 55% below 100 Hz.
+
+`.18` adds `mic_highpass.c`, a 100 Hz 4th-order Butterworth high-pass in place on recorded
+PCM, ahead of VOX and the codec (`CONFIG_OMI_MIC_HIGHPASS=y`). Running the production filter
+over the decoded 14:22Z file: median level -27 dBFS, 5% of energy below 100 Hz, clipped
+samples under 0.001% (was 0.028%). Most remaining energy is 100–400 Hz road noise, which the filter
+does not address. These numbers come from already-Opus-decoded audio, not raw PDM.
+VOX sees the filtered PCM; its 250 Hz band changes by under 0.05 dB.
+
+Opus voice mode (SILK) was considered and deferred: it is compiled in, but codec-thread
+stack (19000 B) and CPU have not been measured, and the overwrite-only bootloader
+cannot revert a crashing image. Mic gain is unchanged.
+
+Tests: 72 + 137 Python tests OK, including the new `test_mic_highpass_c.py`
+(frequency response, block-split invariance, saturation, production `process_audio_buffer`
+ordering). Swift tests were not run (sandboxed shell). NCS 2.9.0 Wi-Fi sysbuild:
+app 873376 flash / 428904 RAM bytes (+256 / +16 versus `.17`). Both OTA images pass
+MCUboot signature verification.
+Archive: `~/omi-firmware/Omi_CV1_OTA_3.0.22-localwifi.18.zip`.
+ZIP SHA-256: `a77fa0b6210cba91044902856e26f9cbf8c492cb13f35ccd970668554e60a695`.
+App digest: `2cd165b5368e8710fa849a3eb00680598ea2a9e88cc5a287fd27f247c80e59d9`.
+Uploaded at the user's request on Oct 6 with `scripts/windows/flash_omi.py`, application
+image only (installed network core kept). Before reset, SMP reported the staged digest above
+pending/bootable in slot 1 over `.17` (`07a20348…`), and a reset was requested.
+**Post-reset verification (active digest, GATT revision, ring, Wi-Fi state) was not
+performed** and is outstanding.
