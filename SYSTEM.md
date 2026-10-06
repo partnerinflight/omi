@@ -234,8 +234,27 @@ Implementation: `hermes_score()` in [pipeline.py](src/second_brain/adaptive/pipe
   its ledger, so replays cost no calls. Transcription never waits for routing.
   `no_hermes` disables it. Notes published before enabling are not backfilled.
   `router_queue/` remains a local audit artifact.
+- Router bullets show readable content only; source IDs and confidence remain in
+  `System/Router/Ledger`, and hidden event markers preserve replay deduplication.
+  Decision extraction excludes fictional/media dialogue, routine transactions,
+  incidental logistics, and suggestions that were never adopted. This narrows
+  router extraction; the adaptive v3 conversation gate is unchanged.
+  `scripts/clean-router-notes.py --vault <path> --remove <review.json>` cleans
+  existing managed bullets and removes reviewed decision event IDs (a JSON map
+  of IDs to reasons). It backs up changed notes and review reasons under
+  `System/Router/Cleanup`, preserving curated prose and unmarked bullets.
 
 ## Speaker identity and Obsidian
+
+Missing-context review: see [clarifications](docs/clarifications.md). The router
+records questions for useful incomplete entries in private
+`data/clarifications.sqlite3`; the tray's Needs clarification page uses the
+existing review mailbox and `review/clarifications.json`. Only the pending count
+appears in public status. Human corrections update the exact unchanged router
+entry with a backup and survive crash replay; they never train a voice profile.
+The extraction prompt requests full participant/context details when available,
+and asks rather than inventing missing identities. Existing entries need explicit
+registration; the Wednesday meeting example is registered during this update.
 
 Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brain/speaker_audio.py),
 [identity store](src/second_brain/speakers.py), [vault writer](src/second_brain/vault.py).
@@ -252,6 +271,10 @@ Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brai
   rows named, none wrongly; `scripts/speaker_calibration.py` re-checks).
   Thresholds live in **service config**. Model fingerprints prevent incompatible
   embeddings mixing. Ambiguous voices remain unknown; matching is not certainty.
+- Confirmed observation averages also provide individual voice examples. A failed
+  average match may be rescued at similarity ≥0.55, with the same best person and
+  the configured margin over competing examples and averages. Only human-confirmed
+  rows contribute; clearing/correcting them recomputes automatic assignments.
 - SQLite identities survive restarts. Configure the encoder before processing;
   completed jobs are not automatically re-encoded when it becomes available.
 - Vault output: `Omi/Conversations/<job-id>-<window-id>.md`, with source hash,
@@ -261,6 +284,38 @@ Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brai
   Later speaker corrections update review/future notes, not already published notes.
 
 ## Deployment and operations
+
+### Upload recovery investigation (2026-10-04)
+
+Obsidian date-note presentation: the repository router omits the redundant H1
+for date-named notes, and the cleanup script removes an exact matching leading
+date heading from Daily/Decisions notes with backups. Applied to 10 existing
+notes on Oct 4; the running service still needs this renderer change at its next
+service update (left running during backlog transfer).
+
+Receiver logs show real Omi transfer timeouts on Oct 2, 3, and 4. The device
+reported an explicit abort (-ECANCELED); before the `.16` deployment its active SMP digest was
+`4b641c58cb02f8ab86c8221c5c8c64ae75ed86d9451575c457e7378ef3e92462`,
+which differs from the verified `.15` image (`9f0f7d1a...`) despite GATT reporting
+`.15`. That binary's abort cause has not been established.
+Do not infer a charging abort from the legacy CLI's generic result label.
+
+Source `.16` fixes a separate confirmed recovery gap: a started transfer gets up
+to six retries for transient failures, five minutes apart from session end, even
+if CHG becomes inactive when a docked battery fills. Retry tails below one minute
+are eligible. Success, authentication/protocol rejection, or deliberate setup
+abort ends those retries. Initial automatic uploads still require CHG and 600
+queued records. No ACK/checkpoint or recording-close semantics change.
+The extended BLE status reports failure stage and retries remaining. Receiver
+diagnostic source changes include frame header/payload wait, phase, persisted
+sequence, target, and packet count; that receiver wheel is not installed (the
+administrator prompt was canceled). Native policy and socket timeout/resume
+tests cover the change. On Oct 4, the user authorized `.16` deployment: SMP
+verified application digest `cc174aa8...` active/confirmed, GATT reported `.16`,
+and the existing network core was retained. Recordings and configuration survived,
+with zero reported dropped packets. A manually initiated transfer resumed at the
+receiver's durable checkpoint and advanced it. A real failure followed by an
+automatic retry has not yet been observed. See the firmware validation log.
 
 [README](README.md) contains commands; [Windows scripts](windows) implement them.
 Defaults: [service config](config/service.example.json) and

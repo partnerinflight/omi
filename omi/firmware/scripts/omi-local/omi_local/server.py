@@ -88,11 +88,17 @@ class UploadServer:
 
     # --- protocol -------------------------------------------------------------
     async def _read_frame(self, reader: asyncio.StreamReader, max_payload: int, timeout: float) -> tuple[int, bytes]:
-        hdr = await asyncio.wait_for(reader.readexactly(U.HEADER_LEN), timeout)
+        try:
+            hdr = await asyncio.wait_for(reader.readexactly(U.HEADER_LEN), timeout)
+        except asyncio.TimeoutError as error:
+            raise TimeoutError("waiting for frame header") from error
         msg_type, length = U.parse_header(hdr)
         if length > max_payload:
             raise U.UploadProtocolError(f"frame too large ({length} bytes)")
-        payload = await asyncio.wait_for(reader.readexactly(length), timeout) if length else b""
+        try:
+            payload = await asyncio.wait_for(reader.readexactly(length), timeout) if length else b""
+        except asyncio.TimeoutError as error:
+            raise TimeoutError(f"waiting for frame payload ({length} bytes)") from error
         return msg_type, payload
 
     @staticmethod
@@ -125,6 +131,8 @@ class UploadServer:
         session_writer = None
         ok = False
         owns_device = False
+        phase, expected_seq, target_seq, total = "hello", None, None, 0
+        t0 = time.monotonic()
         task = asyncio.current_task()
         self._handlers.add(task)
         self._connections.add(writer)
@@ -137,6 +145,7 @@ class UploadServer:
             if hello.version == U.VERSION_FILE:
                 ok = await self._serve_file_client(reader, writer, hello)
                 return
+            phase = "authentication"
             auth = await self._authenticate(reader, writer, hello, U.parse_auth)
             if auth is None:
                 return
@@ -146,6 +155,7 @@ class UploadServer:
             self._busy.add(device)
             owns_device = True
             info = auth.info
+            target_seq = info.write_seq
             log.info("device %s connected from %s: ring [%d, %d), %d unread packets", device, peer,
                      info.read_seq, info.write_seq, info.unread_packets)
 
@@ -163,6 +173,7 @@ class UploadServer:
             t0 = time.monotonic()
             total = 0
             while True:
+                phase = "receiving data"
                 msg_type, payload = await self._read_frame(reader, U.MAX_DATA_PAYLOAD, DATA_TIMEOUT_S)
                 if msg_type == U.MSG_DATA:
                     chunk = U.parse_data(payload)
@@ -171,9 +182,11 @@ class UploadServer:
                     # Validate before persisting: a corrupt record is never ACKed.
                     for _ in P.iter_records(chunk.seq, chunk.records):
                         pass
+                    phase = "persisting data"
                     await asyncio.to_thread(self._persist, session_writer, chunk)
                     expected_seq += chunk.count
                     total += chunk.count
+                    phase = "sending durable ACK"
                     await self._send(writer, U.MSG_ACK, U.encode_u64(expected_seq))
                 elif msg_type == U.MSG_DONE:
                     done_seq = U.parse_u64(payload)
@@ -189,8 +202,9 @@ class UploadServer:
             log.info("device %s: %d packets (%.1f KiB/s), files: %s", device, total, rate,
                      ", ".join(Path(f).name for f in session_writer.files_written) or "-")
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError) as e:
-            log.warning("device %s: connection ended early (%s); nothing un-ACKed was deleted on the device",
-                        device, type(e).__name__)
+            log.warning("device %s: connection ended early (%s: %s); phase=%s next_seq=%s target_seq=%s "
+                        "persisted_packets=%d elapsed=%.1fs; nothing un-ACKed was deleted on the device",
+                        device, type(e).__name__, e, phase, expected_seq, target_seq, total, time.monotonic() - t0)
         except U.UploadProtocolError as e:
             log.error("device %s: protocol error: %s", device, e)
             try:

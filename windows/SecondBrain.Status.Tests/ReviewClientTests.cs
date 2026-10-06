@@ -12,6 +12,17 @@ static class ReviewClientTests
             foreach (var dir in new[] { "requests", "responses", "clips" }) Directory.CreateDirectory(Path.Combine(root, dir));
             File.WriteAllText(Path.Combine(root, "catalog.json"), Fixtures.CatalogJson);
             var client = new ReviewClient(root);
+            File.WriteAllText(Path.Combine(root, "clarifications.json"), """
+                {"heartbeat":1790635757,"items":[{"id":"1234567890abcdef","path":"Decisions/2026-10-01.md","text":"Meet Wednesday.","questions":["Who with?"],"context":"Wednesday at eleven."}]}
+                """);
+            var clarification = client.LoadClarifications().Items.Single();
+            Check.Equal("Who with?", clarification.Questions.Single(), "missing-context question loads");
+            string correction = client.Send("clarify", clarification.Id, null, "Meet the design team Wednesday.");
+            using (var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "requests", correction + ".json"))))
+            {
+                Check.Equal("clarify", doc.RootElement.GetProperty("action").GetString(), "correction mailbox action");
+                Check.Equal(clarification.Id, doc.RootElement.GetProperty("observation").GetString(), "correction targets exact entry");
+            }
 
             Check.Equal(5, client.LoadCatalog().Speakers.Length, "catalog loads from the review directory");
 

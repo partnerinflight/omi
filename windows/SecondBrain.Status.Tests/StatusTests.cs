@@ -46,6 +46,10 @@ static class StatusTests
     public static void Run()
     {
         var live = Parse(Live());
+        var withClarifications = Live();
+        withClarifications["clarifications"] = 3;
+        Check.Equal(3, Parse(withClarifications).Clarifications, "clarification count in public status");
+        Check.Equal(0, live.Clarifications, "older services have no clarification count");
         Check.Equal(Health.Running, live.Health, "live health");
         Check.Equal("Receiving and processing normally", live.Reason, "live reason");
         Check.Equal("Receiving · transcribing", live.Title, "live title");

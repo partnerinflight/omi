@@ -56,11 +56,12 @@ def mean_unit(vectors):
     return [x / norm for x in total] if norm > 1e-8 else None
 
 
-def match(vectors, model, references, threshold=0.40, margin=0.12):
+def match(vectors, model, references, threshold=0.40, margin=0.12, exemplars=()):
     """Compare the row's average voiceprint with each confirmed person's average voiceprint.
 
-    Averaging lets clear clips outweigh a quiet or clipped one instead of one weak clip vetoing
-    the match; only manually confirmed references may enter."""
+    Confirmed observation averages can rescue a recording condition diluted by the overall
+    average. They must agree with its best person and clear a stricter similarity floor.
+    Only manually confirmed references and exemplars may enter."""
     if not vectors or not model:
         return None, None
     query = mean_unit(vectors)
@@ -74,7 +75,20 @@ def match(vectors, model, references, threshold=0.40, margin=0.12):
         return None, None
     score, person = ranking[0]
     runner_up = ranking[1][0] if len(ranking) > 1 else -1
-    return (person, score) if score >= threshold and score - runner_up >= margin else (None, score)
+    if score >= threshold and score - runner_up >= margin:
+        return person, score
+    local = {}
+    for exemplar_person, exemplar_model, exemplar in exemplars:
+        if exemplar_model == model and len(exemplar) == len(query) and exemplar_person in by_person:
+            similarity = sum(a * b for a, b in zip(query, exemplar))
+            local[exemplar_person] = max(local.get(exemplar_person, -1), similarity)
+    ranked = sorted(((s, p) for p, s in local.items()), reverse=True)
+    if ranked and ranked[0][1] == person:
+        local_score = ranked[0][0]
+        competitor = max(runner_up, ranked[1][0] if len(ranked) > 1 else -1)
+        if local_score >= max(threshold, 0.55) and local_score - competitor >= margin:
+            return person, local_score
+    return None, score
 
 
 class Speakers:
@@ -177,13 +191,17 @@ class Speakers:
             self._rematch(db, job["id"])
 
     def _rematch(self, db, job=None):
-        references = []
+        references, exemplars = [], []
         for row in db.execute("SELECT person,model,vectors FROM observations WHERE manual=1 AND person IS NOT NULL"):
-            references.extend((row["person"], row["model"], v) for v in json.loads(row["vectors"]))
+            vectors = json.loads(row["vectors"])
+            references.extend((row["person"], row["model"], v) for v in vectors)
+            if vectors and (centroid := mean_unit(vectors)):
+                exemplars.append((row["person"], row["model"], centroid))
         query = "SELECT id,model,vectors FROM observations WHERE manual=0"
         rows = db.execute(query + " AND job=?", (job,)).fetchall() if job else db.execute(query).fetchall()
         for row in rows:
-            person, score = match(json.loads(row["vectors"]), row["model"], references, self.threshold, self.margin)
+            person, score = match(json.loads(row["vectors"]), row["model"], references,
+                                  self.threshold, self.margin, exemplars)
             db.execute("UPDATE observations SET person=?,score=? WHERE id=?", (person, score, row["id"]))
 
     def rematch(self):
@@ -270,7 +288,7 @@ class Speakers:
                     (self.review / "clips" / name).unlink(missing_ok=True)
         return response
 
-    def tick(self):
+    def tick(self, clarification_handler=None):
         for path in sorted((self.review / "requests").glob("*.json"))[:50]:
             try:
                 key = str(uuid.UUID(path.stem))
@@ -279,7 +297,9 @@ class Speakers:
                 request = json.loads(path.read_text(encoding="utf-8-sig"))
                 if request["id"] != key:
                     raise ValueError("Request ID mismatch")
-                response = self.command(request)
+                response = (clarification_handler(request)
+                            if clarification_handler and request.get('action') in ('clarify', 'clarify_dismiss')
+                            else self.command(request))
             except (ValueError, KeyError, TypeError):
                 response = {"id": path.stem, "ok": False, "error": "Invalid speaker request"}
             write_json(self.review / "responses" / path.name, response)

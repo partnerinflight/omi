@@ -16,6 +16,7 @@ from .receiver import MeetingStore, ReceiverFactory
 from .router import RouterQueue, route
 from .vault import publish
 from .speakers import Speakers
+from .clarifications import Clarifications
 
 log = logging.getLogger("second_brain")
 STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
@@ -54,7 +55,9 @@ class Runtime:
         self.last_scan_error = None
         self.started = time.time()
         self.speakers = Speakers(cfg.data_dir, cfg.review_dir, cfg.speaker_match_threshold, cfg.speaker_match_margin)
+        self.speakers.rematch()
         self.router = RouterQueue(cfg.data_dir / "router.sqlite3")
+        self.clarifications = Clarifications(cfg.data_dir, cfg.review_dir, cfg.vault_path)
 
     def routing(self):
         """The pipeline config when the knowledge router should run, else None."""
@@ -246,7 +249,7 @@ class Runtime:
                 item = self.router.claim() if pipeline else None
                 if item:
                     result = await asyncio.to_thread(
-                        route, pipeline, self.cfg.vault_path, item["id"], item["text"], item["observed_at"])
+                        route, pipeline, self.cfg.vault_path, item["id"], item["text"], item["observed_at"], self.clarifications)
                     self.router.done(item["id"], result)
                     continue
             except asyncio.CancelledError:
@@ -277,6 +280,7 @@ class Runtime:
             },
             discovery_error=self.last_scan_error,
             speakers=self.speakers.summary(),
+            clarifications=self.clarifications.count(),
             router=dict(self.router.snapshot(), enabled=self.routing() is not None),
         )
         write_json(self.cfg.status_file, result)
@@ -292,7 +296,8 @@ class Runtime:
     async def speaker_review(self):
         while not self.stop.is_set():
             try:
-                await asyncio.to_thread(self.speakers.tick)
+                await asyncio.to_thread(self.speakers.tick, self.clarifications.command)
+                await asyncio.to_thread(self.clarifications.catalog)
             except OSError:
                 log.exception("Speaker review mailbox unavailable")
             try:

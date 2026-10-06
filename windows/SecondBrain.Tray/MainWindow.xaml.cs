@@ -20,6 +20,7 @@ public partial class MainWindow : Window
         speakers = new SpeakersPage(session);
         people = new PeoplePage(session);
         pages = new() { ["Overview"] = overview, ["Speakers"] = speakers, ["People"] = people, ["Activity"] = activity };
+        pages["Clarifications"] = new ClarificationsPage(session.Client);
         people.OpenSpeakerRequested += id =>
         {
             Navigate("Speakers");
@@ -59,6 +60,7 @@ public partial class MainWindow : Window
         };
         SpeakersBadge.Visibility = status.UnidentifiedSpeakers > 0 ? Visibility.Visible : Visibility.Collapsed;
         SpeakersBadgeText.Text = status.UnidentifiedSpeakers.ToString();
+        ClarificationsLabel.Text = status.Clarifications > 0 ? $"Needs clarification ({status.Clarifications})" : "Needs clarification";
         overview.Update(status);
         activity.Update(status);
     }

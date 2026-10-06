@@ -19,6 +19,8 @@ sealed class TrayIcon : IDisposable
 
     public event Action? OpenRequested;
     public event Action? SpeakersRequested;
+    public event Action? ClarificationsRequested;
+    int lastClarifications;
     public event Action? QuitRequested;
     public event Action? Hovered;
 
@@ -27,6 +29,8 @@ sealed class TrayIcon : IDisposable
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open Second Brain", null, (_, _) => OpenRequested?.Invoke());
         menu.Items.Add("Review speakers", null, (_, _) => SpeakersRequested?.Invoke());
+        menu.Items.Add("Review missing context", null, (_, _) => ClarificationsRequested?.Invoke());
+        icon.BalloonTipClicked += (_, _) => ClarificationsRequested?.Invoke();
         menu.Items.Add("Windows Services", null, (_, _) =>
         {
             // WinForms menu events bypass WPF's exception handler; mmc can be blocked by policy.
@@ -43,6 +47,12 @@ sealed class TrayIcon : IDisposable
     public void Update(ServiceStatus status)
     {
         icon.Text = status.Tooltip;
+        if (status.Health is Health.Running or Health.Attention)
+        {
+            if (status.Clarifications > lastClarifications)
+                icon.ShowBalloonTip(5000, "Notes need clarification", $"{status.Clarifications} notes need a name or more context. Click to review.", Forms.ToolTipIcon.Info);
+            lastClarifications = status.Clarifications;
+        }
         var wanted = status.Health switch { Health.Running => Running, Health.Attention => Attention, _ => Stopped };
         if (!ReferenceEquals(icon.Icon, wanted)) icon.Icon = wanted;
     }

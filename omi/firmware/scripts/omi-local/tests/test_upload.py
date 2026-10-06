@@ -12,6 +12,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from omi_local import protocol as P
 from omi_local import upload_protocol as U
@@ -25,7 +26,8 @@ class FakeUploader:
     """The device side of the protocol, as wifi_upload.c implements it."""
 
     def __init__(self, ring: FakeRing, secret: bytes, device_id: bytes = b"\x11\x22\x33\x44\x55\x66",
-                 chunk: int = 36, drop_after_chunks: int | None = None, advance_every: int = 4 * 36):
+                 chunk: int = 36, drop_after_chunks: int | None = None, advance_every: int = 4 * 36,
+                 stall_after_chunks: int | None = None):
         self.ring = ring
         self.secret = secret
         self.device_id = device_id
@@ -34,6 +36,7 @@ class FakeUploader:
         self.advance_every = advance_every
         self.result = None
         self.uploaded = 0
+        self.stall_after_chunks = stall_after_chunks
 
     async def _recv(self, reader):
         hdr = await reader.readexactly(U.HEADER_LEN)
@@ -67,6 +70,8 @@ class FakeUploader:
             last_adv = seq
             chunks = 0
             while seq < end:
+                if chunks == self.stall_after_chunks:
+                    await asyncio.sleep(.15)
                 n = min(self.chunk, end - seq)
                 recs = b"".join(self.ring.records[s] for s in range(seq, seq + n))
                 if self.drop_after_chunks is not None and chunks == self.drop_after_chunks:
@@ -108,6 +113,23 @@ def run(coro):
 
 
 class ProtocolCodecTests(unittest.TestCase):
+    def test_status_extension_keeps_old_firmware_compatible(self):
+        old = struct.pack('<BBBbiIIIII', 1, 0, 10, 0, -140, 1, 40, 80, 100, 200)
+        self.assertIsNone(U.parse_upload_status(old).last_stage)
+        status = U.parse_upload_status(old + bytes([6, 1, 0, 0, 192, 168, 1, 40, 7, 5]))
+        self.assertEqual((status.last_stage, status.retries_remaining), (7, 5))
+        self.assertEqual(status.result_name, 'aborted')
+
+    def test_frame_timeout_identifies_header_or_payload(self):
+        async def check():
+            server = UploadServer(b'x' * 32, Path('.'))
+            reader = asyncio.StreamReader()
+            with self.assertRaisesRegex(TimeoutError, 'frame header'):
+                await server._read_frame(reader, 64, .01)
+            reader.feed_data(U.frame(U.MSG_DATA, b'123')[:U.HEADER_LEN])
+            with self.assertRaisesRegex(TimeoutError, 'frame payload'):
+                await server._read_frame(reader, 64, .01)
+        run(check())
     def test_frames_and_payloads_roundtrip(self):
         cn = bytes(range(16))
         h = U.parse_hello(U.encode_hello(b"\x01\x02\x03\x04\x05\x06", cn))
@@ -151,6 +173,29 @@ class ProtocolCodecTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_timeout_keeps_checkpoint_and_next_session_resumes(self):
+        up = FakeUploader(self.ring, self.secret, stall_after_chunks=3)
+        async def stall(server):
+            try:
+                await up.run('127.0.0.1', server.bound_port)
+            except (ConnectionError, asyncio.IncompleteReadError):
+                pass
+            return server
+        with patch('omi_local.server.DATA_TIMEOUT_S', .05), self.assertLogs('omi_local.serve', level='WARNING') as logs:
+            server = run(self._with_server(stall))
+        self.assertEqual(server.sessions_failed, 1)
+        self.assertIn('waiting for frame header', logs.output[0])
+        self.assertIn('next_seq=108', logs.output[0])
+        self.assertIn('target_seq=300', logs.output[0])
+        self.assertEqual(StateStore(self.dest).get('11-22-33-44-55-66').downloaded_through, 108)
+        resumed = FakeUploader(self.ring, self.secret)
+        async def resume(server):
+            await resumed.run('127.0.0.1', server.bound_port)
+        run(self._with_server(resume))
+        self.assertEqual(resumed.uploaded, 192)
+        self.assertEqual(resumed.result, 'ok')
+        self.assertEqual(self.ring.read_seq, 300)
+
     def setUp(self):
         self.secret = secrets.token_bytes(32)
         self.ring = FakeRing(capacity=5000)

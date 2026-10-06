@@ -42,6 +42,7 @@ public partial class App : Application
         tray = new TrayIcon();
         tray.OpenRequested += () => ShowWindow(null);
         tray.SpeakersRequested += () => ShowWindow("Speakers");
+        tray.ClarificationsRequested += () => ShowWindow("Clarifications");
         tray.Hovered += () => { lastHover = DateTime.UtcNow; card?.ShowNearCursor(); };
         tray.QuitRequested += Quit;
         timer.Tick += (_, _) => Tick();

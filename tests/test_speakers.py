@@ -17,6 +17,23 @@ from second_brain.adaptive.pipeline import parse_vibe_segments
 
 
 class MatchingTests(unittest.TestCase):
+    def test_confirmed_example_rescues_a_diluted_recording_condition(self):
+        query = unit([1, 0, 0])
+        variant = unit([0.70, 0, 0.714])
+        typical = unit([0.01, 1, 0])
+        other = unit([0, 0, 1])
+        refs = [("alice", "m", variant)] + [("alice", "m", typical)] * 10 + [("bob", "m", other)]
+        examples = [("alice", "m", variant), ("alice", "m", typical), ("bob", "m", other)]
+        self.assertIsNone(match([query], "m", refs)[0])
+        self.assertEqual(match([query], "m", refs, exemplars=examples)[0], "alice")
+        self.assertIsNone(match([query], "m", refs, exemplars=[("alice", "other-model", query)])[0])
+        self.assertIsNone(match([query], "m", refs, threshold=.8, exemplars=examples)[0])
+        self.assertIsNone(match([query], "m", refs,
+                                exemplars=examples + [("bob", "m", unit([.68, .73, 0]))])[0])
+        # A high local similarity must not override the overall profile's best person.
+        self.assertIsNone(match([query], "m", [("alice", "m", typical), ("bob", "m", unit([.2,0,.98]))],
+                                exemplars=examples)[0])
+
     def test_ambiguous_different_model_and_disagreeing_clips_stay_unknown(self):
         a, b = unit([1, 0]), unit([0, 1])
         refs = [("alice", "m", a), ("bob", "m", b)]
@@ -242,6 +259,19 @@ class SpeakerStoreTests(unittest.TestCase):
         self.store.catalog()
         # The automatic match was never enrolled as a new reference.
         self.assertTrue(all(r["person"] is None for r in self.catalog()["speakers"]))
+
+    def test_new_confirmation_expands_examples_and_clear_revokes_its_rescue(self):
+        typical, _ = self.ingest("typical", vectors=[[.01, 1, 0]] * 10)
+        self.command("assign", observation=typical["id"], name="Alice")
+        variant, _ = self.ingest("variant", vectors=[[.7, 0, .714]])
+        target, _ = self.ingest("target", vectors=[[1, 0, 0]])
+        self.assertIsNone(target["person"])
+        self.command("assign", observation=variant["id"], name="Alice")
+        self.store.catalog()
+        self.assertEqual(next(r for r in self.catalog()["speakers"] if r["job"] == "target")["name"], "Alice")
+        self.command("clear", observation=variant["id"])
+        self.store.catalog()
+        self.assertIsNone(next(r for r in self.catalog()["speakers"] if r["job"] == "target")["person"])
 
     def test_identity_not_tied_to_number_model_and_people_remain_separate(self):
         first, _ = self.ingest("a")

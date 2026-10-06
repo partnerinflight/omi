@@ -42,6 +42,9 @@
                         <TextBlock Text="People" VerticalAlignment="Center" />
                     </StackPanel>
                 </ListBoxItem>
+                <ListBoxItem Tag="Clarifications">
+                    <TextBlock x:Name="ClarificationsLabel" Text="Needs clarification" TextWrapping="Wrap" />
+                </ListBoxItem>
                 <ListBoxItem Tag="Activity">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource Glyph}" Text="&#xE81C;" Margin="0,0,12,0" />

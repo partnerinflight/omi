@@ -54,6 +54,8 @@ struct wifi_upload_status {
     uint8_t dhcp_attempts;
     uint16_t diagnostic_reserved;
     uint8_t ipv4[4];
+    uint8_t last_stage; /* stage before teardown, including on failure */
+    uint8_t retries_remaining;
 } __packed;
 
 enum wifi_upload_state {

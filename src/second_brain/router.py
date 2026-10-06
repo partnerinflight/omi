@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from .io import atomic_write, write_json
+from .clarifications import NOTE_LOCK
 
 MANAGED_HEADER = "## Router Inbox"
 ENTITY_FOLDERS = {"person": "People", "project": "Projects", "topic": "Topics"}
@@ -51,10 +52,34 @@ Use exactly this schema:
   "ideas": [
     {"text": "idea worth retaining", "confidence": 0.0-1.0}
   ],
-  "daily_summary": ["important chronological event"]
+  "daily_summary": ["important chronological event"],
+  "clarifications": [{"text": "exact text of an extracted item", "question": "specific missing-context question"}]
 }
 
 Rules:
+- Decisions must be explicit real-world choices with lasting consequences for the owner,
+  their projects, relationships, or meaningful commitments. A choice is not useful merely
+  because someone accepted, chose, agreed, or decided something.
+- Exclude routine shopping/bargaining (for example accepting 35 for two shoes), incidental
+  one-off logistics, fictional characters' choices, read-aloud stories, games, and media.
+  Never treat dialogue from these sources as the owner's personal knowledge.
+- Suggestions ("the team should"), preferences, willingness, and general advice are not
+  decisions unless the transcript establishes an actual adopted choice. Omit decisions
+  without enough context to explain what changed and why it matters later, unless
+  it is meaningful and a specific question can recover the missing context.
+- Make each item understandable on its own: include the people/team, meeting or
+  project involved when supported anywhere in the source. A named beneficiary
+  is not necessarily the other participant ("so Eugene can attend" does not
+  identify whom he meets). Never invent a name or infer who a pronoun refers to.
+- For useful but incomplete items, add a clarification with the EXACT extracted
+  text and a concise question. Example: a recurring Wednesday 11:00 meeting with
+  no named counterpart needs "Who is this recurring meeting with, and what is it for?"
+  Flag unresolved people, anonymous Speaker labels, or missing meeting/project
+  context needed to understand or act on the item. No question is needed when
+  the source identifies a sufficient team or role. Do not ask about immaterial
+  details or manufacture useful items just to ask questions. Empty lists are valid.
+- Keep meaningful project/release/pricing choices, adopted team policies, recurring schedule
+  changes, and consequential personal commitments. Empty decisions arrays are valid.
 - A fact must be atomic.
 - A statement MAY legitimately produce both a durable entity fact and a decision when both are useful.
   Example: "We decided Whisper runs on the Threadripper" can produce:
@@ -181,7 +206,7 @@ def _items(obj: dict, key: str) -> list[dict]:
 
 def parse_extraction(obj: dict) -> dict:
     """Keep only well-formed items; one malformed item does not discard the rest."""
-    result = {"facts": [], "decisions": [], "tasks": [], "ideas": [], "daily_summary": []}
+    result = {"facts": [], "decisions": [], "tasks": [], "ideas": [], "daily_summary": [], "clarifications": []}
     for x in _items(obj, "facts"):
         name, fact, conf = _text(x.get("entity_name")), _text(x.get("fact")), _confidence(x.get("confidence"))
         if x.get("entity_type") in ENTITY_FOLDERS and name and fact and conf is not None:
@@ -201,6 +226,10 @@ def parse_extraction(obj: dict) -> dict:
             result["ideas"].append(dict(text=text, confidence=conf))
     daily = obj.get("daily_summary", [])
     result["daily_summary"] = [t for t in (_text(x) for x in daily) if t] if isinstance(daily, list) else []
+    for x in _items(obj, "clarifications")[:100]:
+        text, question = _text(x.get('text')), _text(x.get('question'))
+        if text and question and len(question) <= 500:
+            result['clarifications'].append(dict(text=text, question=question))
     return result
 
 
@@ -290,11 +319,17 @@ def existing_knowledge(vault: Path, decision_files: int = 90) -> list[dict]:
 
 
 def append_item(path: Path, bullet: str, eid: str) -> bool:
+    with NOTE_LOCK:
+        return _append_item(path, bullet, eid)
+
+
+def _append_item(path: Path, bullet: str, eid: str) -> bool:
+    bullet = re.sub(r"\s+", " ", bullet.replace("&#x20;", " ").replace("\\\n", " ")).strip()
     marker = f"<!-- router:{eid} -->"
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if marker in existing:
         return False
-    if not existing:
+    if not existing and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.stem):
         existing = f"# {path.stem}\n\n"
     if MANAGED_HEADER not in existing:
         existing += ("" if existing.endswith("\n") else "\n") + f"\n{MANAGED_HEADER}\n"
@@ -313,7 +348,7 @@ def _annotation(action: str, matched: dict | None) -> str:
 
 # --- One source -------------------------------------------------------------------------------
 
-def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str) -> dict:
+def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, clarifications=None) -> dict:
     """Route one source. Idempotent: a source with a ledger record is skipped."""
     shash = source_hash(source_id, text)
     if ledger_path(vault, shash).exists():
@@ -323,6 +358,15 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str) -
 
     user = f"SOURCE_ID: {source_id}\nDEFAULT_OBSERVED_AT: {observed_at or 'unknown'}\n\nSOURCE:\n{text}\n"
     extraction = parse_extraction(chat(cfg, EXTRACT_PROMPT, user))
+    def publish(path, bullet, eid, content):
+        questions = list(dict.fromkeys(x['question'] for x in extraction['clarifications'] if x['text'] == content))
+        if re.search(r'\b(?:Speaker\s+\d+|unknown speaker|unidentified person)\b', content, re.I) and not questions:
+            questions = ['Who is the unidentified person mentioned here?']
+        # Persist the review first so crash replay cannot leave an untracked item.
+        if questions and clarifications is not None:
+            clean = re.sub(r'\s+', ' ', bullet.replace('&#x20;', ' ').replace('\\\n', ' ')).strip()
+            clarifications.add(eid, path, clean, questions, text)
+        return append_item(path, bullet, eid)
     payloads = [("fact", f) for f in extraction["facts"]] + [("decision", d) for d in extraction["decisions"]]
     candidates = [
         dict(index=i, kind=kind,
@@ -356,7 +400,6 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str) -
                      "batch_duplicate": sum(1 for c in collapse if c["action"] == "duplicate"
                                             and candidates[c["index"]]["kind"] == kind[:-1])}
               for kind in ("facts", "decisions")}
-    src = f"`{source_id}` · `{shash[:12]}`"
     for verdict in verdicts:
         kind, item = payloads[survivors[verdict["index"]]]
         bucket = counts[kind + "s"]
@@ -374,8 +417,8 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str) -
             path = vault / "Decisions" / f"{safe_name(when[:10])}.md"
             eid = event_id(shash, "decision", when[:10], item["text"])
             body = item["text"]
-        bullet = f"{when} — {prefix}{body}  \n  Source: {src} · confidence {item['confidence']:.2f}"
-        bucket["written"] += int(append_item(path, bullet, eid))
+        bullet = f"{when} — {prefix}{body}"
+        bucket["written"] += int(publish(path, bullet, eid, body))
 
     day = safe_name(observed_at[:10])
     counts["tasks"] = 0
@@ -386,14 +429,14 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str) -
         if t["due"]:
             meta.append(f"due: {t['due']}")
         suffix = f" ({'; '.join(meta)})" if meta else ""
-        bullet = f"{t['text']}{suffix}  \n  Source: {src} · confidence {t['confidence']:.2f}"
-        counts["tasks"] += append_item(vault / "Projects" / "_Tasks.md", bullet,
-                                       event_id(shash, "task", t["owner"] or "", t["text"]))
-    counts["ideas"] = sum(append_item(vault / "Ideas" / f"{day}.md",
-                                      f"{i['text']}  \n  Source: {src} · confidence {i['confidence']:.2f}",
-                                      event_id(shash, "idea", day, i["text"])) for i in extraction["ideas"])
-    counts["daily"] = sum(append_item(vault / "Daily" / f"{day}.md", f"{t}  \n  Source: {src}",
-                                      event_id(shash, "daily", day, t)) for t in extraction["daily_summary"])
+        bullet = f"{t['text']}{suffix}"
+        counts["tasks"] += publish(vault / "Projects" / "_Tasks.md", bullet,
+                                   event_id(shash, "task", t["owner"] or "", t["text"]), t['text'])
+    counts["ideas"] = sum(publish(vault / "Ideas" / f"{day}.md",
+                                      i['text'],
+                                      event_id(shash, "idea", day, i["text"]), i['text']) for i in extraction["ideas"])
+    counts["daily"] = sum(publish(vault / "Daily" / f"{day}.md", t,
+                                      event_id(shash, "daily", day, t), t) for t in extraction["daily_summary"])
 
     reconciliation = {"batch_collapse": {"candidates": candidates, "results": collapse},
                       "global": {"existing_items": existing, "surviving_candidates": surviving, "results": verdicts}}

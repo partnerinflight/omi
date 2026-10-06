@@ -114,6 +114,14 @@ class RouteTests(unittest.TestCase):
         self.assertEqual((counts["facts"]["written"], counts["decisions"]["written"], counts["tasks"]), (1, 1, 1))
         ledger = json.loads(next((self.vault / "System/Router/Ledger").glob("*.json")).read_text(encoding="utf-8"))
         self.assertEqual(ledger["source_id"], "job-w0000")
+        self.assertEqual(ledger["extraction"]["decisions"][0]["confidence"], 1.0)
+        for folder in ("People", "Decisions", "Projects", "Ideas", "Daily"):
+            for path in (self.vault / folder).glob("*.md"):
+                note = path.read_text(encoding="utf-8")
+                self.assertNotIn("Source:", note)
+                self.assertNotIn("confidence", note)
+                self.assertNotIn("  \n", note)
+                self.assertIn("<!-- router:", note)
         self.assertEqual(hermes.calls, ["extract", "collapse"], "no existing knowledge: no reconciliation call")
 
     def test_batch_duplicates_collapse_to_one_item(self):

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "rev": 2,
+  "savedAt": "2026-10-06T15:25:25.677Z",
+  "id": "project-1cyhibf",
+  "name": "SecondBrain",
+  "color": "#32d74b",
+  "viewport": {
+    "x": -274,
+    "y": 145,
+    "zoom": 1
+  },
+  "nodes": [
+    {
+      "id": "term-muwtyolj-30ed29b1",
+      "kind": "terminal",
+      "position": {
+        "x": 354,
+        "y": -65
+      },
+      "size": {
+        "width": 640,
+        "height": 440
+      },
+      "title": "Terminal 1",
+      "color": "#0a84ff",
+      "group": null,
+      "tags": [],
+      "cwd": "."
+    }
+  ],
+  "bridges": [],
+  "ropes": []
+}

@@ -24,6 +24,7 @@ public sealed record ServiceStatus(
     static readonly ReceiverInfo NoReceiver = new(false, 0, 0, 0, 0, null);
 
     public string Activity => Stage ?? (Pending > 0 ? "Waiting / retrying" : "Idle");
+    public int Clarifications { get; init; }
 
     public string Title => Health switch
     {
@@ -100,11 +101,11 @@ public sealed record ServiceStatus(
         if (!receiver.Listening) problems.Add(string.IsNullOrEmpty(receiver.Error) ? "Receiver is not listening" : $"Receiver is not listening: {receiver.Error}");
         if (discovery is not null) problems.Add("Recording discovery needs attention; check the service log");
 
-        return new(
+        return new ServiceStatus(
             problems.Count == 0 ? Health.Running : Health.Attention,
             problems.Count == 0 ? "Receiving and processing normally" : string.Join(" · ", problems),
             stage, inStage, Count("pending"), Count("processing"), Count("complete"), failed,
-            receiver, discovery, unidentified, people, events, jobs);
+            receiver, discovery, unidentified, people, events, jobs) { Clarifications = Int(root, "clarifications") };
     }
 
     static ServiceStatus Empty(Health health, string reason) =>

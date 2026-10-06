@@ -356,7 +356,7 @@ def encode_wifi_config(*, ssid: str | None = None, password: str | None = None, 
 UPLOAD_STATES = ["idle", "wait-sd", "wifi-up", "connecting", "dhcp", "tcp", "auth", "uploading", "teardown", "setup"]
 UPLOAD_RESULTS = ["ok", "not configured", "sd not ready", "wifi connect failed", "dhcp timeout",
                   "tcp connect failed", "receiver auth failed", "protocol error", "ring read error",
-                  "link lost", "aborted (charger removed / busy)", "busy", "nothing to upload"]
+                  "link lost", "aborted", "busy", "nothing to upload"]
 
 
 @dataclass(frozen=True)
@@ -374,6 +374,8 @@ class UploadStatus:
     dhcp_state: int | None = None
     dhcp_attempts: int | None = None
     ipv4: str | None = None
+    last_stage: int | None = None
+    retries_remaining: int | None = None
 
     @property
     def state_name(self) -> str:
@@ -393,5 +395,6 @@ def parse_upload_status(value: bytes) -> UploadStatus:
     if len(value) >= 36:
         dhcp_state, dhcp_attempts = struct.unpack_from("<BB", value, 28)
         ipv4 = ".".join(str(b) for b in value[32:36])
+    last_stage, retries = struct.unpack_from("<BB", value, 36) if len(value) >= 38 else (None, None)
     return UploadStatus(bool(configured), state, result, cfg_err, errno_, ok, pkts, last, heap_free, heap_max,
-                        dhcp_state, dhcp_attempts, ipv4)
+                        dhcp_state, dhcp_attempts, ipv4, last_stage, retries)

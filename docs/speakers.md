@@ -88,6 +88,24 @@ enough, and one quiet or muffled clip no longer vetoes an otherwise clear match.
 Unknown and ambiguous voices (near two people) stay unidentified. Voice
 recognition is an estimate and can be corrected in the UI.
 
+Confirmed rows also retain separate averaged voice examples, preserving recording
+conditions that the overall average can dilute. If the ordinary match fails, a
+confirmed example can rescue it at cosine similarity at least 0.55 (or the
+configured threshold if higher). It must favor the same person as the overall
+average and exceed both other people's examples and their overall averages by
+the configured margin. Automatic matches never become examples. Clearing,
+discarding, or correcting a confirmation immediately removes or moves its
+contribution and recalculates automatic assignments. Service startup also rechecks
+existing automatic assignments with the current matching rule. Rows without clean embeddings
+still cannot contribute; naming them does not re-encode their audio.
+
+`scripts/speaker-example-calibration.py` compares the two rules read-only while
+withholding every reference from the tested recording. On 2026-10-04, the owner's
+48 usable confirmed rows gave 23 correct / 1 wrong / 24 unmatched with the
+average, versus 25 / 1 / 22 with the fallback. The owner's largest profile improved
+from 12 of 17 to 14 of 17. This small retrospective check does not establish
+accuracy on unseen audio; the same wrong prediction occurred with both rules.
+
 The defaults come from calibration on real Omi recordings (2026-09-29, 26
 confirmed rows across 3 people). Replaying each confirmed row as unknown, the
 averaged rule at 0.40 / 0.12 named 17 correctly and none wrongly; the previous

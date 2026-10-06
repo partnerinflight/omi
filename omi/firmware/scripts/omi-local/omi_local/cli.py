@@ -471,6 +471,9 @@ def _print_upload_status(st: U.UploadStatus) -> None:
     print(f"wifi upload    : {'configured' if st.configured else 'NOT configured'}")
     print(f"state          : {st.state_name}")
     print(f"last result    : {st.result_name} (errno {st.last_errno})")
+    if st.last_stage is not None:
+        stage = U.UPLOAD_STATES[st.last_stage] if st.last_stage < len(U.UPLOAD_STATES) else str(st.last_stage)
+        print(f"last stage     : {stage}; automatic retries remaining: {st.retries_remaining}")
     if st.last_config_err:
         print(f"last config    : rejected (err {st.last_config_err})")
     print(f"sessions ok    : {st.sessions_ok}, packets uploaded: {st.packets_uploaded}")

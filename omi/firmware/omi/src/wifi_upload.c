@@ -79,6 +79,7 @@ extern bool is_connected; /* main.c */
 #define UP_WIFI_CONNECT_TIMEOUT_MS 30000
 #define UP_DHCP_TIMEOUT_MS 25000
 #define UP_SOCKET_TIMEOUT_S 20
+#define UP_RETRY_ATTEMPTS 6U
 
 K_THREAD_STACK_DEFINE(wifi_upload_stack, 6144);
 static struct k_thread wifi_upload_thread;
@@ -294,6 +295,28 @@ static enum wifi_upload_result handshake(int sock, const sd_ring_info_t *info, u
 static bool upload_should_abort(bool provision_requested)
 {
     return provision_requested;
+}
+
+/* A transfer already requested by the charger/user retains a bounded retry budget.
+ * CHG goes low when a docked battery fills; it must not suppress recovery. */
+static bool upload_retryable(enum wifi_upload_result result)
+{
+    return result == WIFI_UPLOAD_ERR_SD_NOT_READY || result == WIFI_UPLOAD_ERR_WIFI_CONNECT ||
+           result == WIFI_UPLOAD_ERR_DHCP || result == WIFI_UPLOAD_ERR_TCP_CONNECT ||
+           result == WIFI_UPLOAD_ERR_RING_READ || result == WIFI_UPLOAD_ERR_LINK_LOST || result == WIFI_UPLOAD_ERR_BUSY;
+}
+
+static bool upload_ready(bool charging, unsigned int retries, uint64_t unread)
+{
+    return retries ? unread > 0 : charging && unread >= UP_MIN_UNREAD_PACKETS;
+}
+
+static unsigned int upload_retry_budget(enum wifi_upload_result result, bool manual, unsigned int previous)
+{
+    if (!upload_retryable(result)) {
+        return 0;
+    }
+    return manual || !previous ? UP_RETRY_ATTEMPTS : previous - 1;
 }
 
 static enum wifi_upload_result upload_records(int sock, sd_ring_info_t *info, uint64_t seq, int *err)
@@ -516,6 +539,7 @@ static enum wifi_upload_result run_session(bool manual, int *err)
     result = upload_records(sock, &info, start_seq, err);
 
 out:
+    status.last_stage = status.state;
     set_state(WIFI_UPLOAD_TEARDOWN);
     if (sock >= 0) {
         (void) zsock_close(sock);
@@ -542,10 +566,12 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
+    unsigned int retries = 0;
 
     while (1) {
         k_sem_take(&trigger_sem, K_SECONDS(UP_POLL_INTERVAL_S));
         if (atomic_cas(&provision_req, 1, 0)) {
+            retries = 0;
             k_mutex_lock(&config_lock, K_FOREVER);
             atomic_set(&provisioning, 1);
             set_state(WIFI_UPLOAD_PROVISIONING);
@@ -566,14 +592,11 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
             continue;
         }
         if (!manual) {
-            if (!is_charging) {
-                continue;
-            }
             int64_t now = k_uptime_get();
             if (last_attempt_ms != 0 && (now - last_attempt_ms) < UP_RETRY_INTERVAL_MS) {
                 continue;
             }
-            if (sd_ring_peek_unread() < UP_MIN_UNREAD_PACKETS) {
+            if (!upload_ready(is_charging, retries, sd_ring_peek_unread())) {
                 continue;
             }
         }
@@ -586,6 +609,10 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
         k_mutex_unlock(&config_lock);
         status.last_result = (uint8_t) r;
         status.last_errno = err;
+        retries = upload_retry_budget(r, manual, retries);
+        status.retries_remaining = retries;
+        /* Back off from the end of a failed session, including a long one. */
+        last_attempt_ms = k_uptime_get();
         if (r == WIFI_UPLOAD_OK) {
             status.sessions_ok++;
             LOG_INF("upload session ok (total %u packets)", status.packets_uploaded);

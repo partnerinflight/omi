@@ -11,6 +11,7 @@ public sealed class ReviewClient(string directory)
     public string Directory { get; } = directory;
 
     public SpeakerCatalog LoadCatalog() => SpeakerCatalog.Parse(SharedFile.ReadAllText(Path.Combine(Directory, "catalog.json")));
+    public ClarificationCatalog LoadClarifications() => ClarificationCatalog.Parse(SharedFile.ReadAllText(Path.Combine(Directory, "clarifications.json")));
 
     public string Send(string action, string? observation, string? person, string name)
     {

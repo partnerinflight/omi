@@ -523,3 +523,52 @@ The first status probe timed out while the images were being copied; afterwards 
 the expected app digest active/confirmed and GATT reports `.15`. Clock synchronized, battery
 100%, ring `[922539, 922762)` with zero dropped packets. Gestures, typing rejection and the
 80 dB hardware wake remain on-device user checks.
+
+## 2026-10-04: Windows .16 upload recovery deployment
+
+Repeated receiver timeouts were confirmed on Oct 2–4. On Oct 4 the device reported
+GATT `.15` but SMP active/confirmed application digest
+`4b641c58cb02f8ab86c8221c5c8c64ae75ed86d9451575c457e7378ef3e92462`,
+different from the archived verified `.15` image below. The device returned
+aborted/-140; the original abort cause remains unresolved.
+
+`.16` retains six transient-failure retries after an initiated transfer even when
+CHG is inactive, includes short pending tails, and backs off five minutes from
+session end. Intentional setup abort and permanent protocol/auth failures cancel
+retries. The BLE status appends last stage and retries remaining; old payloads
+remain readable. The generic abort label no longer asserts charger removal.
+
+Built with NCS 2.9.0 in `C:\ncs\build\wifi16`: app 872696 flash / 428808 RAM.
+Both OTA images passed signature verification. ZIP SHA-256:
+`b54edcf825fbc0632c817c7715df636f798011d63e74af4d27c57046281dff96`.
+App digest: `cc174aa86be23edeca232eb3e6d671530c079ca3370a4521c758b3f859ea4c0d`.
+Network package digest: `5d6a7913c2b12c2c3aa795dca10b3c817a11283a449f2cc6b7f399cf85a767d8`.
+Network sources are unchanged; retain the installed network core when deploying.
+
+Receiver suite: 123 tests passed, 25 platform skips. The three upload-policy tests
+ran with native Windows Clang, including the production retry-budget functions.
+A real loopback socket test stalls after three ACKed chunks, checks the timeout
+diagnostic and durable sequence 108, then reconnects and uploads only the remaining
+192 records.
+
+Deployed at the user's explicit request on Oct 4 using the Windows BLE SMP
+flasher, application only. After reset, SMP reported the exact application digest
+above active/confirmed/bootable, and GATT reported `3.0.22-localwifi.16`. The
+existing network core was retained. Clock synchronized at 19:06:09Z. Ring state
+was `[1163318, 1526450)`, with zero dropped packets and battery at 100%.
+
+A manual upload connected at 12:06:31 Pacific. The receiver resumed its durable
+checkpoint at sequence 1163390, ahead of the device's older acknowledged ring
+pointer. By 12:08:11 Pacific its durable checkpoint reached 1166810 (3420 new
+records), the last closed recording advanced to Oct 3 15:41:55Z, and completed
+processing jobs increased from 981 to 982. The service reported one active upload
+and zero failed sessions since its restart. This verifies deployment and live resume;
+a real transient failure followed by an automatic retry, completion of the entire
+backlog, and automatic behavior across charge completion remain unverified.
+
+## Branch reconciliation — 2026-10-06
+
+The merged Sep 30 Mac deployment record identifies digest `4b641c58...` as its
+verified `.15` build, explaining the Oct 4 mismatch with the Windows `.15` archive.
+The combined source now includes the upstream speech-band VOX/button changes and
+local `.16` recovery work. It has not been rebuilt or flashed as a combined image.
