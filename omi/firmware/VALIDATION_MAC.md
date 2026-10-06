@@ -572,3 +572,23 @@ The merged Sep 30 Mac deployment record identifies digest `4b641c58...` as its
 verified `.15` build, explaining the Oct 4 mismatch with the Windows `.15` archive.
 The combined source now includes the upstream speech-band VOX/button changes and
 local `.16` recovery work. It has not been rebuilt or flashed as a combined image.
+
+## Firmware 3.0.22-localwifi.17 — 2026-10-06
+
+First build of the reconciled source: Sep 30 speech-band VOX and hold-then-release
+buttons plus the `.16` upload-recovery retries. No source changes beyond the version.
+`scripts/test.py` Python suites: 72 + 132 tests OK (Swift tests not run: sandboxed shell).
+NCS 2.9.0 Wi-Fi sysbuild on macOS: app 873120 flash / 428888 RAM bytes.
+Both OTA images pass MCUboot signature verification.
+Archive: `~/omi-firmware/Omi_CV1_OTA_3.0.22-localwifi.17.zip`.
+ZIP SHA-256: `9ce1f3664090a8fd7d9270d532078f55fd9a336131dcc8f71900eefe61e3e214`.
+App digest: `07a203480226fd594f168ff39064489ba5a6851314dce90d38795d74c0da2cad`.
+Network package digest: `55536d515f073674aa75cfe65e72cf3c6970f4358be17e6b7bd6e066344a9ecd`.
+
+Deployed at the user's request with `scripts/windows/flash_omi.py` on macOS,
+application image only (network sources unchanged; installed network core kept).
+Replaced `.16` (`cc174aa8…`). After reset SMP reports the new digest
+active/confirmed/bootable and GATT reports `3.0.22-localwifi.17`. Clock synchronized,
+battery 95%, ring `[1612195, 1650990)`, zero dropped packets, Wi-Fi upload still
+configured. Gestures, VOX behavior and an automatic upload under `.17` remain
+on-device checks.
