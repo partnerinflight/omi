@@ -622,5 +622,8 @@ App digest: `2cd165b5368e8710fa849a3eb00680598ea2a9e88cc5a287fd27f247c80e59d9`.
 Uploaded at the user's request on Oct 6 with `scripts/windows/flash_omi.py`, application
 image only (installed network core kept). Before reset, SMP reported the staged digest above
 pending/bootable in slot 1 over `.17` (`07a20348…`), and a reset was requested.
-**Post-reset verification (active digest, GATT revision, ring, Wi-Fi state) was not
-performed** and is outstanding.
+After reset, SMP reports `2cd165b5…` active/confirmed/bootable and GATT reports
+`3.0.22-localwifi.18` (checks run by the owner). Clock synchronized, battery 94%, ring
+`[1612195, 1659890)` with zero dropped packets; the write sequence advanced past the
+pre-flash `1652470`, so recording continues. Wi-Fi upload state was not re-read. Whether
+car audio sounds better is an on-device user check.
