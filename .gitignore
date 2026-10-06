@@ -27,3 +27,7 @@ config/pipeline.json
 /omi/firmware/v2.7.0/
 /omi/firmware/v2.9.0/
 /omi/firmware/build/
+
+# Local agent tooling
+.serena/
+.nodeterm/
