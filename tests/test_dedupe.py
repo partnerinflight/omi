@@ -590,5 +590,45 @@ class UnreadableCaptureTests(unittest.TestCase):
         self.assertEqual(manifest["dedupe"]["skipped"], "ZeroDivisionError")
         self.assertEqual(manifest["fallbacks"][-1]["reason"], "ZeroDivisionError")
 
+class DeferTests(unittest.TestCase):
+    def setUp(self):
+        from second_brain.queue import Queue
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.queue = Queue(root / "q.sqlite3")
+        audio = root / "a.opus"
+        audio.write_bytes(b"audio")
+        self.key = self.queue.enqueue(audio, {"device": "d", "start_seq": 1})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_deferred_job_comes_back_without_spending_an_attempt(self):
+        job = self.queue.claim()
+        self.assertEqual(job["attempts"], 1)
+        self.queue.defer(job, 0.0, "waiting-for-meeting")
+        with self.queue.connect() as db:
+            row = dict(db.execute("SELECT * FROM jobs WHERE id=?", (self.key,)).fetchone())
+        self.assertEqual((row["state"], row["stage"], row["attempts"]), ("pending", "waiting-for-meeting", 0))
+        self.assertIsNotNone(self.queue.claim())
+
+    def test_a_deferred_job_is_not_claimable_until_its_delay_passes(self):
+        self.queue.defer(self.queue.claim(), 30.0, "waiting-for-meeting")
+        self.assertIsNone(self.queue.claim())
+
+    def test_deferring_never_drives_attempts_below_zero(self):
+        for _ in range(3):
+            self.queue.defer(self.queue.claim(), 0.0, "waiting-for-meeting")
+        with self.queue.connect() as db:
+            self.assertEqual(db.execute("SELECT attempts FROM jobs WHERE id=?", (self.key,)).fetchone()[0], 0)
+
+    def test_a_deferred_job_keeps_no_error_and_stays_in_the_snapshot(self):
+        self.queue.defer(self.queue.claim(), 0.0, "waiting-for-meeting")
+        snapshot = self.queue.snapshot()
+        self.assertEqual(snapshot["counts"], {"pending": 1})
+        self.assertEqual(snapshot["recent"][0]["stage"], "waiting-for-meeting")
+        self.assertIsNone(snapshot["recent"][0]["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

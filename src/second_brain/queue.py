@@ -86,6 +86,15 @@ class Queue:
         with self.connect() as db:
             db.execute("UPDATE jobs SET stage=?,updated=? WHERE id=?", (stage, time.time(), key))
 
+    def defer(self, job, seconds, stage):
+        """Put a claimed job back without spending an attempt: it was never tried, only postponed."""
+        with self.connect() as db:
+            db.execute(
+                "UPDATE jobs SET state='pending',stage=?,error=NULL,next_attempt=?,"
+                "attempts=max(0,attempts-1),updated=? WHERE id=?",
+                (stage, time.time() + seconds, time.time(), job["id"]),
+            )
+
     def complete(self, key, result):
         with self.connect() as db:
             db.execute(
