@@ -1,6 +1,7 @@
 """Durable local publication and single-instance ownership."""
 
 from __future__ import annotations
+import datetime as dt
 import json
 import os
 import tempfile
@@ -69,3 +70,7 @@ class InstanceLock:
         if self.file:
             self.file.close()
             self.file = None
+
+
+def utc_from_ms(ms: int) -> str:
+    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
