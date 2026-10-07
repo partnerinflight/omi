@@ -14,7 +14,7 @@ from .io import InstanceLock, utc_from_ms, write_json
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
 from .router import RouterQueue, route
-from .vault import publish
+from .vault import publish, publish_meeting
 from .speakers import Speakers
 from .clarifications import Clarifications
 
@@ -89,7 +89,7 @@ class Runtime:
                     metadata = {**metadata, "first_utc": utc_from_ms(metadata["start_ms"])}
                 if not self.queue.known(audio):
                     self.queue.enqueue(audio, metadata)
-            except (OSError, ValueError, KeyError) as e:
+            except (OSError, ValueError, KeyError, TypeError, OverflowError) as e:
                 self.last_scan_error = f"Recording discovery failed ({type(e).__name__}); check private service log"
                 log.exception("Could not discover recording receipt %s", receipt.name)
 
@@ -133,6 +133,8 @@ class Runtime:
         root = cfg.data_dir / "jobs" / job["id"]
         root.mkdir(parents=True, exist_ok=True)
         manifest_path = root / "manifest.json"
+        metadata = json.loads(job["metadata"])
+        meeting = metadata.get("source") == "meeting"
         if not manifest_path.exists():
             with Path(job["audio"]).open("rb") as f:
                 digest = hashlib.file_digest(f, "sha256").hexdigest()
@@ -161,6 +163,8 @@ class Runtime:
                 cmd.append("--skip-vibe7")
             if cfg.no_hermes:
                 cmd.append("--no-hermes")
+            if meeting:
+                cmd.append("--meeting")
             env = os.environ.copy()
             env["PYTHONUTF8"] = "1"
             if cfg.ffmpeg_dir:
@@ -205,17 +209,20 @@ class Runtime:
         # turn a crash-replay into an edited-note conflict.
         publication = root / "publication-manifest.json"
         if not publication.exists():
-            write_json(publication, self.speakers.render(job["id"], manifest))
+            write_json(publication, self.speakers.render(job["id"], manifest, cfg.owner_name if meeting else None))
         manifest = read_json(publication)
         self.queue.progress(job["id"], "publishing")
-        notes = await asyncio.to_thread(
-            publish, cfg.vault_path, cfg.vault_folder, job, manifest, not cfg.delete_audio_after_processing
-        )
+        if meeting:
+            notes = await asyncio.to_thread(publish_meeting, cfg.vault_path, cfg.meetings_vault_folder, job, manifest)
+        else:
+            notes = await asyncio.to_thread(
+                publish, cfg.vault_path, cfg.vault_folder, job, manifest, not cfg.delete_audio_after_processing
+            )
         if self.routing():
             # Idempotent, so a crash-replay of this job enqueues nothing twice.
             kept = [w for w in manifest["windows"]
                     if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
-            self.router.enqueue(job["id"], kept, json.loads(job["metadata"]).get("first_utc") or "unknown")
+            self.router.enqueue(job["id"], kept, metadata.get("first_utc") or "unknown")
         return {
             "notes": len(notes),
             "warnings": len(manifest.get("fallbacks", [])),

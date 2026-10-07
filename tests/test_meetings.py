@@ -398,6 +398,78 @@ class MeetingDiscoveryTests(unittest.TestCase):
         self.assertIsNone(self.runtime.queue.claim())
         self.assertIn("discovery failed", self.runtime.last_scan_error)
 
+    def test_a_malformed_meeting_start_time_is_refused(self):
+        receipt = next((self.cfg.incoming_dir / "meetings" / ".ready").glob("*.json"))
+        value = json.loads(receipt.read_text())
+        value["metadata"]["start_ms"] = None
+        receipt.write_text(json.dumps(value))
+        self.runtime.discover()
+        self.assertIsNone(self.runtime.queue.claim())
+        self.assertIn("discovery failed", self.runtime.last_scan_error)
+
+
+class MeetingEndToEndTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from second_brain.runtime import Runtime
+        from tests.helpers import configuration
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        base = configuration(self.root)
+        pipe = json.loads(base.pipeline_config.read_text())
+        pipe["moss_command"] = [sys.executable, str(ROOT / "tests/fixtures/fake_moss_tones.py")]
+        base.pipeline_config.write_text(json.dumps(pipe))
+        self.cfg = dataclasses.replace(base, meetings_enabled=True, owner_name="Eugene")
+        self.runtime = Runtime(self.cfg)
+        self.task = asyncio.create_task(self.runtime.run())
+        for _ in range(100):
+            if self.runtime.server and self.runtime.server._server:
+                break
+            if self.task.done():
+                await self.task
+            await asyncio.sleep(0.01)
+
+    async def asyncTearDown(self):
+        self.runtime.stop.set()
+        await asyncio.wait_for(self.task, 10)
+        self.tmp.cleanup()
+
+    async def wait_complete(self):
+        for _ in range(600):
+            counts = self.runtime.queue.snapshot()["counts"]
+            if counts.get("complete") or counts.get("failed"):
+                break
+            await asyncio.sleep(0.05)
+        logs = "\n".join(p.read_text()[-3000:] for p in (self.root / "data/jobs").rglob("pipeline.log"))
+        self.assertEqual(counts.get("complete"), 1, str(self.runtime.queue.snapshot()) + logs)
+
+    async def test_uploaded_meeting_becomes_one_attributed_note(self):
+        from tests.helpers import upload_file
+        from omi_local import upload_protocol as U
+        capture = make_capture(self.root / "upload.ogg").read_bytes()
+        cid = bytes.fromhex("cd" * 16)
+        meta = {"app": "us.zoom.xos", "start_ms": 1759761000000, "end_ms": 1759761010000,
+                "channels": {"L": "mic", "R": "remote"}}
+        self.assertEqual(await upload_file(self.runtime.server.bound_port, cid, capture, meta), U.MSG_FILE_BYE)
+        await self.wait_complete()
+        notes = list((self.cfg.vault_path / "Omi" / "Meetings").glob("*.md"))
+        self.assertEqual(len(notes), 1)
+        text = notes[0].read_text()
+        self.assertIn(f"Eugene (mic): {OWNER_TEXT}", text)
+        self.assertEqual(text.count(REMOTE_TEXT), 1)  # the mic's bleed copy is not attributed to Eugene
+        self.assertIn("r0000:S1", text)
+        self.assertIn("decision", text.split("## Transcript")[0])
+        self.assertEqual(list((self.cfg.vault_path / "Omi" / "Conversations").glob("*.md")), [])
+        # Meeting audio is retained for Omi dedupe; job scratch audio is not.
+        self.assertTrue((self.cfg.incoming_dir / "meetings" / ("cd" * 16 + ".caf")).exists())
+        self.assertEqual(list((self.root / "data/jobs").rglob("*.wav")), [])
+        # Crash replay republishes from the saved manifest without another ASR run.
+        with self.runtime.queue.connect() as db:
+            db.execute("UPDATE jobs SET state='processing'")
+        self.runtime.queue.recover()
+        await self.wait_complete()
+        self.assertEqual(notes[0].read_text(), text)
+        self.assertEqual(len(list((self.root / "data/jobs").rglob("pipeline.log"))), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
