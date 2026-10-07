@@ -86,7 +86,7 @@ def _pearson(x, y):
 
 def match_envelope(envelope, frames, at, max_shift):
     """Best correlation of `envelope` against equally long slices of `frames` (mean squares),
-    centred on `at` seconds and shifted by up to +-max_shift seconds. Returns (peak, offset
+    starting at `at` seconds and shifted by up to +-max_shift seconds. Returns (peak, offset
     seconds) or (None, 0.0) when no comparable window exists.
 
     Only full-length windows are compared. A partial overlap of two frames correlates at exactly
