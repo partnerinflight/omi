@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from omi_local.server import UploadServer, load_or_create_secret
 from .config import Config, read_json
-from .io import InstanceLock, write_json
+from .io import InstanceLock, utc_from_ms, write_json
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
 from .router import RouterQueue, route
@@ -70,16 +70,25 @@ class Runtime:
             return None
         return pipeline
 
+    def receipts(self):
+        yield from (self.cfg.incoming_dir / ".ready").glob("*.json")
+        if self.cfg.meetings_enabled:
+            yield from (self.cfg.incoming_dir / "meetings" / ".ready").glob("*.json")
+
     def discover(self):
         self.last_scan_error = None
-        for receipt in (self.cfg.incoming_dir / ".ready").glob("*.json"):
+        for receipt in self.receipts():
             try:
                 value = read_json(receipt)
                 audio = Path(value["audio"]).resolve()
                 if not audio.is_relative_to(self.cfg.incoming_dir.resolve()):
                     raise ValueError("Receipt path escapes incoming directory")
+                metadata = value["metadata"]
+                if metadata.get("source") == "meeting":
+                    # Speaker review, routing and notes read the start time from first_utc.
+                    metadata = {**metadata, "first_utc": utc_from_ms(metadata["start_ms"])}
                 if not self.queue.known(audio):
-                    self.queue.enqueue(audio, value["metadata"])
+                    self.queue.enqueue(audio, metadata)
             except (OSError, ValueError, KeyError) as e:
                 self.last_scan_error = f"Recording discovery failed ({type(e).__name__}); check private service log"
                 log.exception("Could not discover recording receipt %s", receipt.name)

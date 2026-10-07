@@ -44,7 +44,10 @@ class Queue:
     def enqueue(self, path: Path, metadata: dict):
         with path.open("rb") as audio:
             digest = hashlib.file_digest(audio, "sha256").hexdigest()
-        identity = f"{metadata['device']}:{metadata['start_seq']}:{digest}"
+        if metadata.get("source") == "meeting":
+            identity = f"meeting:{metadata['capture_id']}:{digest}"
+        else:
+            identity = f"{metadata['device']}:{metadata['start_seq']}:{digest}"
         key = hashlib.sha256(identity.encode()).hexdigest()
         now = time.time()
         with self.connect() as db:

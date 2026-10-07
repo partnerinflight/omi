@@ -63,7 +63,7 @@ class MeetingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.task, 10)
         self.tmp.cleanup()
 
-    async def test_service_accepts_meeting_upload_but_does_not_enqueue_it(self):
+    async def test_meeting_upload_is_stored_but_not_queued_while_meetings_are_disabled(self):
         kind = await upload_file(self.runtime.server.bound_port, bytes.fromhex(CID), DATA, META)
         self.assertEqual(kind, U.MSG_FILE_BYE)
         meetings = self.cfg.incoming_dir / "meetings"
@@ -71,7 +71,7 @@ class MeetingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((meetings / ".ready" / f"{CID}.json").exists())
         self.runtime.discover()
         self.assertFalse(self.runtime.queue.known(meetings / f"{CID}.caf"))
-        self.assertIsNone(self.runtime.queue.claim())  # Plan 2 adds meeting processing
+        self.assertIsNone(self.runtime.queue.claim())  # meetings_enabled defaults to False
 
 
 if __name__ == "__main__":

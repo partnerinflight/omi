@@ -357,5 +357,47 @@ class MeetingNoteTests(unittest.TestCase):
         self.assertIn("No speech was transcribed.", text)
 
 
+class MeetingDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        from second_brain.runtime import Runtime
+        from tests.helpers import configuration
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = dataclasses.replace(configuration(Path(self.tmp.name)), meetings_enabled=True)
+        self.runtime = Runtime(self.cfg)
+        meetings = self.cfg.incoming_dir / "meetings"
+        (meetings / ".ready").mkdir(parents=True)
+        self.audio = meetings / ("ab" * 16 + ".caf")
+        self.audio.write_bytes(b"capture")
+        (meetings / ".ready" / ("ab" * 16 + ".json")).write_text(json.dumps({"audio": str(self.audio), "metadata": {
+            "source": "meeting", "capture_id": "ab" * 16, "app": "us.zoom.xos",
+            "start_ms": 1759761000000, "end_ms": 1759764600000}}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_enabled_meetings_are_queued_once_with_a_start_time(self):
+        self.runtime.discover()
+        self.runtime.discover()
+        job = self.runtime.queue.claim()
+        self.assertEqual(Path(job["audio"]), self.audio.resolve())
+        metadata = json.loads(job["metadata"])
+        self.assertEqual(metadata["first_utc"], "2025-10-06T14:30:00Z")
+        self.assertIsNone(self.runtime.queue.claim())
+
+    def test_disabled_meetings_are_not_queued(self):
+        self.runtime.cfg = dataclasses.replace(self.cfg, meetings_enabled=False)
+        self.runtime.discover()
+        self.assertIsNone(self.runtime.queue.claim())
+
+    def test_a_receipt_pointing_outside_incoming_is_refused(self):
+        receipt = next((self.cfg.incoming_dir / "meetings" / ".ready").glob("*.json"))
+        value = json.loads(receipt.read_text())
+        value["audio"] = str(Path(self.tmp.name) / "elsewhere.caf")
+        receipt.write_text(json.dumps(value))
+        self.runtime.discover()
+        self.assertIsNone(self.runtime.queue.claim())
+        self.assertIn("discovery failed", self.runtime.last_scan_error)
+
+
 if __name__ == "__main__":
     unittest.main()
