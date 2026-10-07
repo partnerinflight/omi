@@ -739,6 +739,27 @@ class RuntimeDedupeTests(unittest.TestCase):
         self.assertEqual(row["state"], "processing")
         self.assertNotEqual(row["stage"], "waiting-for-meeting")
 
+    def test_a_failing_defer_processes_the_job_now(self):
+        from unittest import mock
+        self.marker("cd" * 16, "open")
+        job = self.runtime.queue.claim()
+        with mock.patch.object(self.runtime.queue, "defer", side_effect=OSError("disk")), \
+                self.assertLogs("second_brain", "ERROR"):
+            self.assertFalse(self.runtime.defer_for_meeting(job))
+
+    def test_a_failed_alignment_is_logged_privately(self):
+        with self.assertLogs("second_brain", "WARNING") as logs:
+            self.runtime.log_dedupe_result("job-1", {"deduped": 0, "alignment_failed": True})
+        self.assertEqual(logs.output, ["WARNING:second_brain:Job job-1: meeting dedupe could not align "
+                                       "(Omi clock may be off); nothing deduped"])
+
+    def test_an_aligned_or_absent_dedupe_logs_no_warning(self):
+        from unittest import mock
+        with mock.patch("second_brain.runtime.log") as log:
+            self.runtime.log_dedupe_result("job-1", {"deduped": 3, "alignment_failed": False})
+            self.runtime.log_dedupe_result("job-1", {"notes": 1})
+        log.warning.assert_not_called()
+
     def test_a_failing_index_falls_back_to_no_dedupe(self):
         from unittest import mock
         self.marker("ab" * 16, "closed", end_ms=1_500_000)

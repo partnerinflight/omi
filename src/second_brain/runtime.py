@@ -102,8 +102,8 @@ class Runtime:
             return
         incoming = self.cfg.incoming_dir.resolve()
         source = Path(audio).resolve()
-        # Omi recordings only. Meeting captures stay: planned Omi dedupe correlates later jobs against
-        # meeting audio (docs/superpowers/specs/2026-09-29-meeting-capture-design.md).
+        # Omi recordings only. Meeting captures stay: Omi dedupe correlates later jobs against
+        # meeting audio (adaptive/dedupe.py).
         if source.is_relative_to(incoming) and not source.is_relative_to(incoming / "meetings"):
             # Receipt and sidecar first: the receiver republishes receipts from sidecars on startup.
             for receipt in (incoming / ".ready").glob("*.json"):
@@ -152,8 +152,17 @@ class Runtime:
         if not found or not found.open:
             return False
         log.info("Job %s waits for %d uploading meeting capture(s)", job["id"], len(found.open))
-        self.queue.defer(job, MEETING_WAIT_SECONDS, "waiting-for-meeting")
+        try:
+            self.queue.defer(job, MEETING_WAIT_SECONDS, "waiting-for-meeting")
+        except Exception:
+            log.exception("Could not defer job %s for its meeting; processing it now", job["id"])
+            return False
         return True
+
+    def log_dedupe_result(self, job_id, result):
+        """Private log only: a failed alignment means the Omi note may duplicate the meeting note."""
+        if result.get("alignment_failed"):
+            log.warning("Job %s: meeting dedupe could not align (Omi clock may be off); nothing deduped", job_id)
 
     def meeting_index(self, job, root: Path):
         """Write the dedupe index for the pipeline, or None when there is nothing to compare."""
@@ -294,6 +303,7 @@ class Runtime:
                 try:
                     result = await self.process(job)
                     self.queue.complete(job["id"], result)
+                    self.log_dedupe_result(job["id"], result)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:

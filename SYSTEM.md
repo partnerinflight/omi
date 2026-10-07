@@ -145,8 +145,12 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    Per segment: only segments >= 2 s, scored within +-0.1 s of the nearest aligned block's
    offset; >= 0.6 drops it. `dedupe.dropped` in the manifest records deduped_by,
    deduped_channel, score, offset_seconds; `dedupe.alignments` records per-meeting status and
-   blocks. No audio is deleted; moss_all_segments.json keeps every segment. Conversation windows
-   never span dropped speech, so 7B refinement cannot restore it. Dedupe never fails a job:
+   blocks. A mic (L) match drops a segment only where the meeting job would publish that mic span
+   as the owner (the same >= 6 dB rule); otherwise only an R match can drop it, so speech the
+   meeting note files as bleed stays in the Omi note. No audio is deleted;
+   moss_all_segments.json keeps every segment. Conversation windows never span dropped speech, so
+   7B refinement can only restore dropped words inside a turn that straddles a window edge. Dedupe
+   never fails a job:
    unreadable captures are skipped (status "unreadable" + a fallbacks entry); any other error
    keeps every segment. While an overlapping capture is `open` the job waits (stage
    `waiting-for-meeting`, rechecked every 5 min) without spending a retry; an open marker older
@@ -441,7 +445,18 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   for detection (80-87%); real Mac-mic vs Omi pairs are unverified. Meeting audio is never
   deleted, so incoming/meetings/ grows without bound; capture markers are re-read per job. The
   end-to-end dedupe tests turn the memory gate off (their fixture text is too short to pass it);
-  dedupe with the gate on is covered only at the pipeline level.
+  dedupe with the gate on is covered only at the pipeline level. Room speech the Mac's mic also
+  picked up matches the meeting's L channel and is dropped from the Omi note when the mic span is
+  owner-dominant; it is then in the meeting note attributed to `owner_name` (the mic channel is the
+  owner), not in the Omi note under its room speaker. Clock dependency: the Omi clock must be
+  within +-10 s of the Mac's. When it is off by more, captures are either not selected as
+  overlapping or fail alignment, and nothing is deduped (two notes; the private log warns
+  "meeting dedupe could not align"). The Omi RTC is set only by the Bluetooth time-sync write
+  (`omi-local time-sync`, and every `omi-local` connect unless `--no-time-sync`). On boot the
+  firmware restores the epoch persisted at the last sync; only after a button power-off is the
+  elapsed off-time added back (IMU timestamp), so other reboots leave the clock behind by the
+  time since that sync. Between syncs the clock free-runs on device uptime and drifts. Keep the
+  Omi clock synced.
 - Mac encoder stereo separation, measured 2026-10-07 on this Mac with the production
   `CaptureEncoder` settings (16 kHz stereo Opus, 32 kbit/s): with one channel active the
   other sits about 43 dB down, so owner attribution is correct. Two simultaneous pure

@@ -182,8 +182,8 @@ class AudioRetentionTests(unittest.TestCase):
         self.assertEqual(list((self.cfg.incoming_dir / ".ready").glob("*.json")), [])
 
     def test_meeting_audio_is_kept_for_omi_dedupe(self):
-        # Planned Omi dedupe correlates later Omi jobs against meeting audio
-        # (docs/superpowers/specs/2026-09-29-meeting-capture-design.md), so meeting
+        # Omi dedupe correlates later Omi jobs against meeting audio
+        # (src/second_brain/adaptive/dedupe.py), so meeting
         # captures are not deleted at completion; only their working audio is.
         meetings = self.cfg.incoming_dir / "meetings"
         (meetings / ".ready").mkdir(parents=True)

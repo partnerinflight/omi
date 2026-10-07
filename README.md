@@ -141,8 +141,12 @@ local mailbox. It cannot read the pairing key or stop the service.
   speakers. Meetings are never dropped by the memory gate, and meeting audio is retained.
   Captures uploaded before enabling are processed on the next scan.
   When an Omi recording overlaps a finished capture, the Omi segments the meeting already holds
-  are dropped from its note; anything else the Omi heard (someone in the room) is kept. An Omi
-  recording whose meeting is still uploading waits for it (up to 24 hours).
+  are dropped from its note; other speech the Omi heard (someone in the room) is kept. Room speech
+  the Mac's microphone also picked up can instead appear in the meeting note, under `owner_name`
+  (the mic channel is the owner), and is then dropped from the Omi note. An Omi
+  recording whose meeting is still uploading waits for it (up to 24 hours). Dedupe needs the
+  Omi's clock within 10 seconds of the Mac's; keep it synced (`omi-local time-sync`, also done on
+  every `omi-local` Bluetooth connect), otherwise both notes keep the speech.
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
   default). Once a recording's note is published and its job is complete, the
   service deletes the original Omi recording, its sidecar and receipt, and all
@@ -151,8 +155,8 @@ local mailbox. It cannot read the pairing key or stop the service.
   pending recordings keep their audio for retry, and speaker-review clips stay
   until you name or discard the speaker. A startup sweep finishes deletions
   interrupted by a crash and applies the policy to recordings completed earlier.
-  Deleted audio cannot be reprocessed. Meeting captures are not deleted: planned
-  Omi dedupe needs their audio. Set the option to `false` in `service.json` to
+  Deleted audio cannot be reprocessed. Meeting captures are not deleted: Omi
+  dedupe needs their audio. Set the option to `false` in `service.json` to
   keep audio (for example while debugging a recording).
 - SQLite records jobs, attempts, errors and operations. Interrupted jobs resume
   after service restart. Failed jobs retry with backoff, then stay visible.
