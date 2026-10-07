@@ -11,6 +11,7 @@ from pathlib import Path
 from omi_local.server import UploadServer, load_or_create_secret
 from .config import Config, read_json
 from .io import InstanceLock, utc_from_ms, write_json
+from .meetings import overlapping, recording_span
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
 from .router import RouterQueue, route
@@ -20,6 +21,7 @@ from .clarifications import Clarifications
 
 log = logging.getLogger("second_brain")
 STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
+MEETING_WAIT_SECONDS = 300  # recheck an Omi job whose meeting is still uploading
 AUDIO_SUFFIXES = {".opus", ".m4a", ".caf", ".wav", ".ogg", ".mp3", ".flac"}
 
 
@@ -128,6 +130,32 @@ class Runtime:
         for job in self.queue.completed():
             self.purge_audio_logged(job["id"], job["audio"])
 
+    def meeting_overlaps(self, job):
+        """Meeting captures overlapping this Omi recording, or None when dedupe does not apply."""
+        if not self.cfg.meetings_enabled:
+            return None
+        return overlapping(self.cfg.incoming_dir / "meetings", json.loads(job["metadata"]))
+
+    def defer_for_meeting(self, job):
+        """True when an overlapping capture is still open: the job waits rather than publishing
+        speech the meeting note will also contain."""
+        found = self.meeting_overlaps(job)
+        if not found or not found.open:
+            return False
+        log.info("Job %s waits for %d uploading meeting capture(s)", job["id"], len(found.open))
+        self.queue.defer(job, MEETING_WAIT_SECONDS, "waiting-for-meeting")
+        return True
+
+    def meeting_index(self, job, root: Path):
+        """Write the dedupe index for the pipeline, or None when there is nothing to compare."""
+        found = self.meeting_overlaps(job)
+        if not found or not found.closed:
+            return None
+        span = recording_span(json.loads(job["metadata"]))
+        path = root / "meeting-dedupe.json"
+        write_json(path, {"recording_epoch": int(span[0]), "captures": found.closed})
+        return str(path)
+
     async def process(self, job):
         cfg = self.cfg
         root = cfg.data_dir / "jobs" / job["id"]
@@ -165,6 +193,10 @@ class Runtime:
                 cmd.append("--no-hermes")
             if meeting:
                 cmd.append("--meeting")
+            # Only on a fresh run: a replay from a saved manifest never re-runs dedupe.
+            index = None if meeting else self.meeting_index(job, root)
+            if index:
+                cmd += ["--meeting-dedupe", index]
             env = os.environ.copy()
             env["PYTHONUTF8"] = "1"
             if cfg.ffmpeg_dir:
@@ -228,12 +260,17 @@ class Runtime:
             "warnings": len(manifest.get("fallbacks", [])),
             "filtered": sum(w.get("memory_keep") is not True for w in manifest["windows"]),
             "windows": len(manifest["windows"]),
+            **({"deduped": manifest["dedupe"]["dropped_count"],
+                "alignment_failed": manifest["dedupe"]["alignment_failed"]}
+               if "dedupe" in manifest else {}),
         }
 
     async def worker(self):
         while not self.stop.is_set():
             await asyncio.to_thread(self.discover)
             job = self.queue.claim()
+            if job and await asyncio.to_thread(self.defer_for_meeting, job):
+                job = None
             if job:
                 try:
                     result = await self.process(job)

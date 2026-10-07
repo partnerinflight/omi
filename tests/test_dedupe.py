@@ -630,5 +630,62 @@ class DeferTests(unittest.TestCase):
         self.assertIsNone(snapshot["recent"][0]["error"])
 
 
+class RuntimeDedupeTests(unittest.TestCase):
+    def setUp(self):
+        from second_brain.runtime import Runtime
+        from tests.helpers import configuration
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.cfg = dataclasses.replace(configuration(self.root), meetings_enabled=True)
+        self.runtime = Runtime(self.cfg)
+        self.captures = self.cfg.incoming_dir / "meetings" / ".captures"
+        self.captures.mkdir(parents=True)
+        audio = self.cfg.incoming_dir / "omi.opus"
+        audio.write_bytes(b"audio")
+        self.job_id = self.runtime.queue.enqueue(
+            audio, {"device": "d", "start_seq": 1, "first_timestamp": 1000, "audio_seconds": 600})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def marker(self, cid, state, **extra):
+        # `updated` is the real clock: the runtime classifies markers against time.time(), and a
+        # fixed timestamp would turn an open capture into an expired one a day after it was written.
+        import time
+        (self.captures / f"{cid}.json").write_text(json.dumps(
+            {"capture_id": cid, "client": "mac", "state": state, "start_ms": 1_200_000,
+             "app": "us.zoom.xos", "updated": time.time(), **extra}))
+
+    def test_an_open_overlapping_capture_defers_the_job(self):
+        self.marker("cd" * 16, "open")
+        job = self.runtime.queue.claim()
+        self.assertTrue(self.runtime.defer_for_meeting(job))
+        with self.runtime.queue.connect() as db:
+            row = dict(db.execute("SELECT stage,state,attempts FROM jobs").fetchone())
+        self.assertEqual(row, {"stage": "waiting-for-meeting", "state": "pending", "attempts": 0})
+
+    def test_a_closed_capture_does_not_defer_and_yields_an_index(self):
+        self.marker("ab" * 16, "closed", end_ms=1_500_000)
+        (self.cfg.incoming_dir / "meetings" / f"{'ab' * 16}.caf").write_bytes(b"caf")
+        job = self.runtime.queue.claim()
+        self.assertFalse(self.runtime.defer_for_meeting(job))
+        index = self.runtime.meeting_index(job, self.cfg.data_dir / "jobs" / job["id"])
+        value = json.loads(Path(index).read_text())
+        self.assertEqual(value["recording_epoch"], 1000)
+        self.assertEqual([c["capture_id"] for c in value["captures"]], ["ab" * 16])
+
+    def test_no_overlap_means_no_index_and_no_flag(self):
+        job = self.runtime.queue.claim()
+        self.assertFalse(self.runtime.defer_for_meeting(job))
+        self.assertIsNone(self.runtime.meeting_index(job, self.cfg.data_dir / "jobs" / job["id"]))
+
+    def test_meetings_disabled_skips_dedupe_entirely(self):
+        self.marker("cd" * 16, "open")
+        self.runtime.cfg = dataclasses.replace(self.cfg, meetings_enabled=False)
+        job = self.runtime.queue.claim()
+        self.assertFalse(self.runtime.defer_for_meeting(job))
+        self.assertIsNone(self.runtime.meeting_index(job, self.cfg.data_dir / "jobs" / job["id"]))
+
+
 if __name__ == "__main__":
     unittest.main()
