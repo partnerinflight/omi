@@ -281,5 +281,90 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(len(decisions.kept), len(self.segments))
 
 
+class OverlapTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.meetings = Path(self.tmp.name) / "meetings"
+        (self.meetings / ".captures").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def marker(self, cid, state, start_ms, end_ms=None, updated=None):
+        value = {"capture_id": cid, "client": "mac", "state": state, "start_ms": start_ms,
+                 "app": "us.zoom.xos", "updated": updated if updated is not None else 1_791_300_000.0}
+        if end_ms is not None:
+            value["end_ms"] = end_ms
+        (self.meetings / ".captures" / f"{cid}.json").write_text(json.dumps(value))
+        if state == "closed":
+            (self.meetings / f"{cid}.caf").write_bytes(b"audio")
+        return value
+
+    # An Omi recording covering epoch 1000..1600.
+    def omi(self, first=1000, seconds=600):
+        return {"first_timestamp": first, "audio_seconds": seconds}
+
+    def test_a_closed_overlapping_capture_is_offered_with_its_audio(self):
+        from second_brain.meetings import overlapping
+        self.marker("ab" * 16, "closed", 1_200_000, 1_500_000)
+        found = overlapping(self.meetings, self.omi())
+        self.assertEqual([m["capture_id"] for m in found.closed], ["ab" * 16])
+        self.assertEqual(Path(found.closed[0]["audio"]), self.meetings / f"{'ab' * 16}.caf")
+        self.assertEqual(found.open, [])
+
+    def test_an_open_overlapping_capture_asks_the_caller_to_wait(self):
+        from second_brain.meetings import overlapping
+        self.marker("cd" * 16, "open", 1_200_000)
+        # `now` is pinned: the marker's `updated` is fixed, and a real clock would expire it a day later.
+        found = overlapping(self.meetings, self.omi(), now=1_791_300_100.0)
+        self.assertEqual(found.open, ["cd" * 16])   # open holds ids, like expired
+        self.assertEqual(found.closed, [])
+
+    def test_an_open_capture_older_than_a_day_no_longer_blocks(self):
+        from second_brain.meetings import overlapping
+        self.marker("cd" * 16, "open", 1_200_000, updated=1_791_300_000.0)
+        found = overlapping(self.meetings, self.omi(), now=1_791_300_000.0 + 24 * 3600 + 1)
+        self.assertEqual(found.open, [])
+        self.assertEqual(found.expired, ["cd" * 16])
+
+    def test_cancelled_and_non_overlapping_captures_are_ignored(self):
+        from second_brain.meetings import overlapping
+        self.marker("11" * 16, "cancelled", 1_200_000)
+        self.marker("22" * 16, "closed", 9_000_000, 9_100_000)      # long after the recording
+        self.marker("33" * 16, "closed", 10_000, 90_000)            # long before it
+        found = overlapping(self.meetings, self.omi())
+        self.assertEqual((found.closed, found.open, found.expired), ([], [], []))
+
+    def test_a_capture_touching_the_edge_within_the_search_window_counts(self):
+        from second_brain.meetings import overlapping
+        self.marker("44" * 16, "closed", 1_605_000, 1_800_000)      # starts 5 s after the Omi ends
+        self.assertEqual(len(overlapping(self.meetings, self.omi()).closed), 1)
+
+    def test_a_recording_without_a_device_clock_is_never_deduped(self):
+        from second_brain.meetings import overlapping
+        self.marker("ab" * 16, "closed", 1_200_000, 1_500_000)
+        found = overlapping(self.meetings, {"first_timestamp": 0, "audio_seconds": 600})
+        self.assertEqual((found.closed, found.open), ([], []))
+
+    def test_a_meeting_job_is_never_deduped_against_meetings(self):
+        from second_brain.meetings import overlapping
+        self.marker("ab" * 16, "closed", 1_200_000, 1_500_000)
+        found = overlapping(self.meetings, {"source": "meeting", "capture_id": "ab" * 16,
+                                            "start_ms": 1_200_000, "end_ms": 1_500_000})
+        self.assertEqual((found.closed, found.open), ([], []))
+
+    def test_an_unreadable_marker_is_skipped_without_losing_the_others(self):
+        from second_brain.meetings import overlapping
+        (self.meetings / ".captures" / "bad.json").write_text("{not json")
+        self.marker("ab" * 16, "closed", 1_200_000, 1_500_000)
+        self.assertEqual(len(overlapping(self.meetings, self.omi()).closed), 1)
+
+    def test_a_closed_capture_whose_audio_vanished_is_skipped(self):
+        from second_brain.meetings import overlapping
+        self.marker("ab" * 16, "closed", 1_200_000, 1_500_000)
+        (self.meetings / f"{'ab' * 16}.caf").unlink()
+        self.assertEqual(overlapping(self.meetings, self.omi()).closed, [])
+
+
 if __name__ == "__main__":
     unittest.main()
