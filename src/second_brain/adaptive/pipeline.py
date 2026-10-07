@@ -1068,6 +1068,7 @@ def transcribe_meeting(audio, total, cfg, coarse_dir, manifest):
 
     if ffprobe_channels(audio) != 2:
         raise ValueError("Meeting capture must be stereo (L = mic, R = meeting app)")
+    left, right = stereo_frames(audio, COMMAND_TIMEOUT)
     spans, active, silences = {}, [], {}
     for channel in ("L", "R"):
         silences[channel] = detect_long_silences(audio, cfg["silence_noise_db"], cfg["long_silence_seconds"], channel)
@@ -1076,12 +1077,16 @@ def transcribe_meeting(audio, total, cfg, coarse_dir, manifest):
         spans[channel] = split_spans(channel_active, cfg["coarse_max_seconds"])
     manifest["long_silences"] = silences
     manifest["active_duration_seconds"] = sum(en - st for st, en in merge_spans(active))
+    print(
+        f"Meeting {total/3600:.2f}h -> L {len(spans['L'])} / R {len(spans['R'])} MOSS chunks, "
+        f"{manifest['active_duration_seconds']/3600:.2f}h active",
+        flush=True,
+    )
     progress("transcribing")
     print("=== Stage 1: MOSS per meeting channel ===", flush=True)
     mic, mic_chunks = transcribe_spans(audio, spans["L"], cfg, coarse_dir, "l", "L")
     remote, remote_chunks = transcribe_spans(audio, spans["R"], cfg, coarse_dir, "r", "R")
     manifest["coarse_chunks"] = mic_chunks + remote_chunks
-    left, right = stereo_frames(audio, COMMAND_TIMEOUT)
     owner, bleed = [], []
     for seg in mic:
         seg["speaker"] = "owner"
