@@ -294,10 +294,28 @@ missed duplicate leaves one repeated line; a false drop loses real speech, so th
 toward keeping. This task replaces `src/second_brain/adaptive/dedupe.py` and the `DecisionTests`
 class wholesale.
 
+**Second revision (same day):** whole-overlap alignment scored only 0.50 when half the overlap
+was the owner talking to the room: that speech dilutes the correlation. Alignment now takes the
+strongest 60 s block in the first 10 min of overlap. More blocks means more chances for unrelated
+audio, so the threshold rose to 0.7: across 110 pairs of the owner's unrelated real recordings the
+best block peaked at 0.52 (95th percentile 0.32), while true alignments score about 0.99. Even a
+false alignment only risks about 1% false drops, because segments are still checked within
++-0.1 s of the offset.
+
+**Third revision (same day), after review of commit 325cb15b30:** alignment searched +-10 s but
+built its envelope from the *whole* overlap, so with real (unpadded) meeting audio no full-length
+window existed for a negative offset whenever the Omi was already recording when the meeting began,
+the normal case. Alignment silently failed and nothing was deduped. The tests passed only because
+the fixture padded the meeting audio. Now: alignment blocks start and end 10 s inside the overlap,
+every 60 s block is aligned on its own (each segment uses the nearest aligned block's offset,
+which tracks clock drift and an owner who is silent at first), and the tests use exact-length
+meeting audio with offsets in both directions, 1000 ppm drift and a silent-at-first owner.
+Cost: about 2 s of alignment per minute of overlap.
+
 **Interface change for later tasks:** dropped records use `deduped_channel` (not `channel`,
 which already means mic/remote on meeting segments). `Decisions` gains `alignments`, one dict per
-meeting: `capture_id`, `status` (`aligned` / `failed` / `too little overlap`), `score`, and when
-aligned `offset_seconds` and `channel`. `alignment_failed` is true when at least one meeting was
+meeting: `capture_id`, `status` (`aligned` / `failed` / `too little overlap`), `best_score`, and
+`blocks` (each aligned block's `start`/`end` in meeting seconds, `score`, `offset_seconds`, `channel`). `alignment_failed` is true when at least one meeting was
 attempted and none aligned.
 
 **Files:**
@@ -334,16 +352,15 @@ def second_mic(frames, seed, gain=0.5, floor=60.0):
 
 class DecisionTests(unittest.TestCase):
     """A 2-minute Omi recording: the owner on a call for 60 s, then someone in the room for 60 s.
-    The meeting started at the same epoch; the Mac clock is 3.7 s late (74 frames). The meeting's
+    The meeting started at the same epoch. Meeting audio is exactly as long as the meeting
+    (no padding): alignment must work from inside the overlap, in both offset directions. The
     remote channel is busy with other speech throughout, which is what makes chance matches likely."""
 
     @classmethod
     def setUpClass(cls):
-        call, room, remote = pseudo_speech(120, 1), pseudo_speech(120, 2), pseudo_speech(200, 3)
-        cls.omi = call[:1200] + room[1200:2400]
-        left = [0.0] * 74 + second_mic(call[:1200], 4) + second_mic([0.0] * 1200, 5)
-        cls.meeting = {"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
-                        "left": left + [0.0] * 500, "right": remote[: len(left) + 500]}
+        cls.call, cls.room, cls.remote = pseudo_speech(120, 1), pseudo_speech(120, 2), pseudo_speech(200, 3)
+        cls.omi = cls.call[:1200] + cls.room[1200:2400]
+        cls.meeting = cls.make_meeting(74)               # the Mac clock is 3.7 s late
         r = random.Random(7)
         cls.segments, t = [], 0.0
         while t < 118:
@@ -351,30 +368,58 @@ class DecisionTests(unittest.TestCase):
             cls.segments.append({"start": round(t, 2), "end": round(t + length, 2), "text": f"s{t:.0f}"})
             t += length + r.uniform(0.2, 1.0)
 
+    @classmethod
+    def make_meeting(cls, lag_frames, cid="ab" * 16):
+        """Meeting frames exactly 120 s long. Positive lag: the Mac holds each sound later than the
+        Omi's clock says; negative: earlier."""
+        mic = second_mic(cls.call[:1200], 4) + second_mic([0.0] * 1300, 5)
+        left = [0.0] * lag_frames + mic if lag_frames >= 0 else mic[-lag_frames:]
+        return {"capture_id": cid, "start_ms": 1_000_000, "end_ms": 1_120_000,
+                "left": (left + [0.0] * 2400)[:2400], "right": cls.remote[:2400]}
+
+    def call_and_room(self, decisions, segments=None):
+        segments = segments or self.segments
+        dropped = {d["text"] for d in decisions.dropped}
+        call = {s["text"] for s in segments if s["end"] <= 60}
+        room = {s["text"] for s in segments if s["start"] >= 60}
+        return dropped & call, call, dropped & room
+
     def test_constants_are_the_measured_ones(self):
         from second_brain.adaptive import dedupe
         self.assertEqual((dedupe.DROP_THRESHOLD, dedupe.ALIGNMENT_THRESHOLD, dedupe.SEARCH_SECONDS,
-                          dedupe.SEGMENT_TOLERANCE, dedupe.MIN_SEGMENT_SECONDS, dedupe.MIN_ALIGN_SECONDS,
-                          dedupe.MAX_ALIGN_SECONDS),
-                         (0.6, 0.5, 10.0, 0.1, 2.0, 30.0, 600.0))
+                          dedupe.SEGMENT_TOLERANCE, dedupe.MIN_SEGMENT_SECONDS, dedupe.BLOCK_SECONDS,
+                          dedupe.MIN_BLOCK_SECONDS),
+                         (0.6, 0.7, 10.0, 0.1, 2.0, 60.0, 30.0))
 
-    def test_one_offset_is_estimated_per_meeting(self):
+    def test_a_late_mac_clock_is_found_without_padding(self):
         from second_brain.adaptive.dedupe import decide
         decisions = decide(self.segments, self.omi, 1000, [self.meeting])
         (alignment,) = decisions.alignments
-        self.assertEqual((alignment["status"], alignment["channel"], alignment["offset_seconds"]),
-                         ("aligned", "L", 3.7))
-        self.assertGreaterEqual(alignment["score"], 0.5)
+        self.assertEqual(alignment["status"], "aligned")
+        self.assertEqual({(b["channel"], b["offset_seconds"]) for b in alignment["blocks"]}, {("L", 3.7)})
+        self.assertGreaterEqual(min(b["score"] for b in alignment["blocks"]), 0.7)
         self.assertFalse(decisions.alignment_failed)
+
+    def test_an_early_mac_clock_is_found_too(self):
+        """The reviewed defect: with the Omi already recording when the meeting began, negative
+        shifts had no room inside the overlap and alignment silently failed."""
+        from second_brain.adaptive.dedupe import decide
+        decisions = decide(self.segments, self.omi, 1000, [self.make_meeting(-74)])
+        (alignment,) = decisions.alignments
+        self.assertEqual(alignment["status"], "aligned")
+        self.assertEqual({b["offset_seconds"] for b in alignment["blocks"]}, {-3.7})
+        got, call, wrong = self.call_and_room(decisions)
+        self.assertEqual(wrong, set())
+        self.assertGreaterEqual(len(got) / len(call), 0.8)
 
     def test_the_call_is_dropped_and_the_room_is_kept(self):
         from second_brain.adaptive.dedupe import decide
         decisions = decide(self.segments, self.omi, 1000, [self.meeting])
-        dropped = {d["text"] for d in decisions.dropped}
-        call = [s["text"] for s in self.segments if s["end"] <= 60]
-        room = [s["text"] for s in self.segments if s["start"] >= 60]
-        self.assertEqual(sorted(dropped & set(call)), sorted(call))
-        self.assertEqual(dropped & set(room), set())
+        got, call, wrong = self.call_and_room(decisions)
+        # Segments in the first and last 10 s of the overlap cannot be aligned, so a few edge
+        # segments may survive as duplicates; that is the conservative direction.
+        self.assertGreaterEqual(len(got) / len(call), 0.8)
+        self.assertEqual(wrong, set())
         record = decisions.dropped[0]
         self.assertEqual((record["deduped_by"], record["deduped_channel"]), ("ab" * 16, "L"))
         self.assertNotIn("channel", record)          # `channel` means mic/remote on meeting segments
@@ -382,20 +427,50 @@ class DecisionTests(unittest.TestCase):
         self.assertAlmostEqual(record["offset_seconds"], 3.7, delta=0.1)
 
     def test_short_room_speech_against_a_busy_meeting_is_almost_never_dropped(self):
-        """The regression this revision exists for: 150 random 2-3 s room segments while the
-        remote channel is full of other speech. (Each call re-estimates the alignment, so the
-        sample is kept small enough to run in a few seconds.)"""
+        """The regression the first revision exists for: 400 random 2-3 s room segments while the
+        remote channel is full of other speech, all scored against one alignment."""
         from second_brain.adaptive.dedupe import decide
-        r, dropped = random.Random(11), 0
-        for _ in range(150):
-            start = r.uniform(60, 115)
-            segment = {"start": start, "end": start + r.uniform(2.0, 3.0), "text": "room"}
-            dropped += bool(decide([segment], self.omi, 1000, [self.meeting]).dropped)
-        self.assertLessEqual(dropped / 150, 0.02)
+        r = random.Random(11)
+        room = []
+        for index in range(400):
+            start = r.uniform(60, 105)                  # inside the aligned part of the overlap
+            room.append({"start": start, "end": start + r.uniform(2.0, 3.0), "text": f"room{index}"})
+        decisions = decide(room, self.omi, 1000, [self.meeting])   # segments are scored independently
+        self.assertEqual(decisions.alignments[0]["status"], "aligned")
+        self.assertLessEqual(len(decisions.dropped) / 400, 0.02)
+
+    def test_clock_drift_is_tracked_block_by_block(self):
+        """Five minutes on a call with the Mac clock drifting 1000 ppm (0.3 s by the end): one
+        offset for the whole meeting would miss the late segments; per-block offsets follow it."""
+        from second_brain.adaptive.dedupe import decide
+        call = pseudo_speech(300, 21)
+        heard = second_mic(call, 22)
+        left = [heard[min(len(call) - 1, round(k * (1 - 1000e-6)))] for k in range(6000)]
+        meeting = {"capture_id": "ef" * 16, "start_ms": 1_000_000, "end_ms": 1_300_000,
+                   "left": left, "right": pseudo_speech(300, 23)}
+        late = [{"start": float(t), "end": float(t) + 4.0, "text": f"late{t}"} for t in range(200, 284, 6)]
+        decisions = decide(late, call, 1000, [meeting])
+        offsets = [b["offset_seconds"] for b in decisions.alignments[0]["blocks"]]
+        self.assertGreater(max(offsets) - min(offsets), 0.15)     # drift really is present
+        self.assertGreaterEqual(len(decisions.dropped) / len(late), 0.8)
+
+    def test_an_owner_silent_at_first_still_aligns_later(self):
+        from second_brain.adaptive.dedupe import decide
+        # Five minutes: room speech only for the first 3 min, then the owner on the call.
+        call, room = pseudo_speech(300, 31), pseudo_speech(300, 32)
+        omi = room[:3600] + call[3600:6000]
+        left = second_mic([0.0] * 3600 + call[3600:6000], 33)
+        meeting = {"capture_id": "aa" * 16, "start_ms": 1_000_000, "end_ms": 1_300_000,
+                   "left": left, "right": pseudo_speech(300, 34)}
+        late = [{"start": float(t), "end": float(t) + 4.0, "text": f"t{t}"} for t in range(190, 280, 6)]
+        decisions = decide(late, omi, 1000, [meeting])
+        self.assertEqual(decisions.alignments[0]["status"], "aligned")
+        self.assertTrue(all(b["start"] >= 170 for b in decisions.alignments[0]["blocks"]))
+        self.assertGreaterEqual(len(decisions.dropped) / len(late), 0.8)
 
     def test_segments_shorter_than_two_seconds_are_never_dropped(self):
         from second_brain.adaptive.dedupe import decide
-        short = [{"start": 10.0, "end": 11.9, "text": "duplicate but short"}]
+        short = [{"start": 20.0, "end": 21.9, "text": "duplicate but short"}]
         decisions = decide(short, self.omi, 1000, [self.meeting])
         self.assertEqual(decisions.dropped, [])
         self.assertNotIn("dedupe_score", decisions.kept[0])
@@ -403,18 +478,18 @@ class DecisionTests(unittest.TestCase):
     def test_an_unrelated_meeting_fails_alignment_and_drops_nothing(self):
         from second_brain.adaptive.dedupe import decide
         other = {"capture_id": "cd" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
-                  "left": pseudo_speech(130, 9), "right": pseudo_speech(130, 10)}
+                 "left": pseudo_speech(120, 9), "right": pseudo_speech(120, 10)}
         decisions = decide(self.segments, self.omi, 1000, [other])
         self.assertEqual(decisions.alignments[0]["status"], "failed")
-        self.assertLess(decisions.alignments[0]["score"], 0.5)
+        self.assertLess(decisions.alignments[0]["best_score"], 0.7)
         self.assertTrue(decisions.alignment_failed)
         self.assertEqual(decisions.dropped, [])
         self.assertEqual(len(decisions.kept), len(self.segments))
 
     def test_too_little_overlap_is_not_an_alignment_failure(self):
         from second_brain.adaptive.dedupe import decide
-        # The meeting starts 100 s into the Omi recording, leaving 20 s of overlap.
-        late = dict(self.meeting, start_ms=1_100_000, end_ms=1_220_000)
+        # The meeting starts 75 s into the Omi recording: 45 s of overlap, 25 s after the margins.
+        late = dict(self.meeting, start_ms=1_075_000, end_ms=1_195_000)
         decisions = decide(self.segments, self.omi, 1000, [late])
         self.assertEqual(decisions.alignments[0]["status"], "too little overlap")
         self.assertFalse(decisions.alignment_failed)
@@ -424,7 +499,7 @@ class DecisionTests(unittest.TestCase):
         from second_brain.adaptive.dedupe import decide
         swapped = dict(self.meeting, left=self.meeting["right"], right=self.meeting["left"])
         decisions = decide(self.segments, self.omi, 1000, [swapped])
-        self.assertEqual(decisions.alignments[0]["channel"], "R")
+        self.assertEqual({b["channel"] for b in decisions.alignments[0]["blocks"]}, {"R"})
         self.assertTrue(decisions.dropped)
         self.assertTrue(all(d["deduped_channel"] == "R" for d in decisions.dropped))
 
@@ -469,39 +544,64 @@ from dataclasses import dataclass, field
 from .channels import FRAME_SECONDS, match_envelope, rms_envelope
 
 DROP_THRESHOLD = 0.6         # per-segment correlation that means "the meeting already has this"
-ALIGNMENT_THRESHOLD = 0.5    # whole-overlap peak needed to trust an offset (unrelated real pairs: max 0.35)
+ALIGNMENT_THRESHOLD = 0.7    # block peak needed to trust an offset (unrelated real pairs: max 0.52)
 SEARCH_SECONDS = 10.0        # clock offset tolerated between the Omi and the Mac
-SEGMENT_TOLERANCE = 0.1      # per-segment wiggle around the estimated offset
+SEGMENT_TOLERANCE = 0.1      # per-segment wiggle around its block's offset
 MIN_SEGMENT_SECONDS = 2.0    # shorter segments are never dropped (chance matches; a duplicate is cheaper)
-MIN_ALIGN_SECONDS = 30.0     # overlap needed to estimate the offset at all
-MAX_ALIGN_SECONDS = 600.0    # cost cap; clock drift over an hour (~20 ppm, ~0.07 s) fits SEGMENT_TOLERANCE
+BLOCK_SECONDS = 60.0         # alignment block; each block gets its own offset, so drift is tracked
+MIN_BLOCK_SECONDS = 30.0     # a final partial block shorter than this is not used
+
 
 @dataclass
 class Decisions:
     kept: list = field(default_factory=list)
     dropped: list = field(default_factory=list)
     alignment_failed: bool = False
-    alignments: list = field(default_factory=list)
+    alignments: list = field(default_factory=list)   # one per meeting, with its aligned blocks
 
 def align(omi_frames, omi_epoch, meeting):
-    """One clock offset per meeting from the longest overlapping stretch, or None."""
+    """Clock offsets for one meeting, one per 60 s block of overlap.
+
+    Each block is searched +-SEARCH_SECONDS, so blocks start SEARCH_SECONDS inside the overlap:
+    a full-length comparison window must exist for every shift, including a negative offset when
+    the Omi was already recording as the meeting began. Blocks below ALIGNMENT_THRESHOLD are
+    unusable (the owner silent, or only room speech); a meeting with no usable block fails.
+    """
     m_start, m_end = meeting["start_ms"] / 1000, meeting["end_ms"] / 1000
     o_end = omi_epoch + len(omi_frames) * FRAME_SECONDS
-    lo, hi = max(omi_epoch, m_start), min(o_end, m_end)
-    if hi - lo < MIN_ALIGN_SECONDS:
-        return {"capture_id": meeting["capture_id"], "status": "too little overlap"}
-    hi = min(hi, lo + MAX_ALIGN_SECONDS)
-    envelope = rms_envelope(omi_frames, lo - omi_epoch, hi - omi_epoch)
-    best = (None, 0.0, None)
-    for name, frames in (("L", meeting["left"]), ("R", meeting["right"])):
-        peak, offset = match_envelope(envelope, frames, lo - m_start, SEARCH_SECONDS)
-        if peak is not None and (best[0] is None or peak > best[0]):
-            best = (peak, offset, name)
-    peak, offset, channel = best
-    result = {"capture_id": meeting["capture_id"], "score": None if peak is None else round(peak, 3)}
-    if peak is None or peak < ALIGNMENT_THRESHOLD:
-        return {**result, "status": "failed"}
-    return {**result, "status": "aligned", "offset_seconds": offset, "channel": channel}
+    lo = max(omi_epoch, m_start) + SEARCH_SECONDS
+    hi = min(o_end, m_end) - SEARCH_SECONDS
+    result = {"capture_id": meeting["capture_id"], "blocks": []}
+    if hi - lo < MIN_BLOCK_SECONDS:
+        return {**result, "status": "too little overlap"}
+    block = lo
+    while hi - block >= MIN_BLOCK_SECONDS:
+        end = min(block + BLOCK_SECONDS, hi)
+        if hi - end < MIN_BLOCK_SECONDS:
+            end = hi                          # fold a short remainder into the last block
+        envelope = rms_envelope(omi_frames, block - omi_epoch, end - omi_epoch)
+        best = (None, 0.0, None)
+        for name, frames in (("L", meeting["left"]), ("R", meeting["right"])):
+            peak, offset = match_envelope(envelope, frames, block - m_start, SEARCH_SECONDS)
+            if peak is not None and (best[0] is None or peak > best[0]):
+                best = (peak, offset, name)
+        if best[0] is not None and best[0] >= ALIGNMENT_THRESHOLD:
+            result["blocks"].append({"start": round(block - m_start, 3), "end": round(end - m_start, 3),
+                                     "score": round(best[0], 3), "offset_seconds": best[1],
+                                     "channel": best[2]})
+        result.setdefault("best_score", None)
+        if best[0] is not None and (result["best_score"] is None or best[0] > result["best_score"]):
+            result["best_score"] = round(best[0], 3)
+        block = end
+    result["status"] = "aligned" if result["blocks"] else "failed"
+    return result
+
+
+def _offset_at(alignment, meeting_seconds):
+    """The offset of the aligned block nearest to a point in the meeting's timeline."""
+    return min(alignment["blocks"],
+               key=lambda b: abs((b["start"] + b["end"]) / 2 - meeting_seconds))["offset_seconds"]
+
 
 def decide(segments, omi_frames, omi_epoch, meetings):
     result = Decisions()
@@ -510,7 +610,7 @@ def decide(segments, omi_frames, omi_epoch, meetings):
         a = align(omi_frames, omi_epoch, meeting)
         result.alignments.append(a)
         if a["status"] == "aligned":
-            aligned.append((meeting, a["offset_seconds"]))
+            aligned.append((meeting, a))
     attempted = [a for a in result.alignments if a["status"] != "too little overlap"]
     result.alignment_failed = bool(attempted) and not aligned
     for segment in segments:
@@ -518,8 +618,10 @@ def decide(segments, omi_frames, omi_epoch, meetings):
         best = (None, None, None, None)
         if end - start >= MIN_SEGMENT_SECONDS:
             envelope = rms_envelope(omi_frames, start, end)
-            for meeting, offset in aligned:
-                into = omi_epoch + start - meeting["start_ms"] / 1000 + offset
+            for meeting, alignment in aligned:
+                expected = omi_epoch + start - meeting["start_ms"] / 1000
+                offset = _offset_at(alignment, expected)
+                into = expected + offset
                 for name, frames in (("L", meeting["left"]), ("R", meeting["right"])):
                     peak, shift = match_envelope(envelope, frames, into, SEGMENT_TOLERANCE)
                     if peak is not None and (best[0] is None or peak > best[0]):
@@ -546,7 +648,7 @@ Run `python3 scripts/test.py`: both Python suites `OK`.
 
 ```bash
 git add src/second_brain/adaptive/dedupe.py tests/test_dedupe.py
-git commit -m "fix(dedupe): estimate one clock offset per meeting before scoring segments"
+git commit -m "fix(dedupe): align per 60 s block inside the overlap so any offset and drift are found"
 ```
 
 ---
@@ -756,6 +858,14 @@ git commit -m "feat(dedupe): find the meeting captures that overlap an Omi recor
 Append to `tests/test_dedupe.py`:
 
 ```python
+# Speech-like test audio: a carrier inside a slowly varying envelope, so 50 ms envelopes have the
+# timing structure the alignment needs. Different modulation rates make them mutually unrelated.
+CALL = "0.4*sin(2*PI*1000*t)*abs(sin(2*PI*1.3*t)*sin(2*PI*0.37*t+1))"
+ROOM = "0.4*sin(2*PI*1500*t)*abs(sin(2*PI*1.7*t+2)*sin(2*PI*0.53*t))"
+OTHER = "0.4*sin(2*PI*800*t)*abs(sin(2*PI*1.1*t+0.5)*sin(2*PI*0.29*t+2))"
+OTHER2 = "0.4*sin(2*PI*600*t)*abs(sin(2*PI*0.9*t)*sin(2*PI*0.41*t+1))"
+
+
 def pipeline_config(root: Path, moss="fake_moss.py") -> Path:
     cfg = json.loads((ROOT / "config/pipeline.example.json").read_text())
     cfg.update(moss_command=[sys.executable, str(ROOT / "tests/fixtures" / moss)],
@@ -784,12 +894,12 @@ class PipelineDedupeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.root = Path(cls.tmp.name)
-        # Omi hears the owner's "call" tone in its first half and a room tone in its second.
-        call, room = "0.4*sin(2*PI*1000*t)", "0.4*sin(2*PI*2500*t)"
-        cls.omi = tone_wav(cls.root / "omi.wav", f"if(lt(t,5),{call},{room})", 10)
-        # The meeting holds the same call tone on L for its whole length; R is silent.
-        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,5),{call},0)|0", 10, channels=2)
-        index = [{"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_010_000,
+        # Two minutes: the owner on the call for 60 s, then someone in the room for 60 s. Alignment
+        # needs >= 30 s of overlap and envelope structure, so constant tones cannot be used.
+        cls.omi = tone_wav(cls.root / "omi.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        # The meeting's mic holds the call; its remote channel carries unrelated speech throughout.
+        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        index = [{"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
                   "audio": str(cls.capture)}]
         (cls.root / "index.json").write_text(json.dumps({"recording_epoch": 1000, "captures": index}))
         cls.manifest = run_pipeline(cls.root, cls.omi, cls.root / "run",
@@ -816,7 +926,7 @@ class PipelineDedupeTests(unittest.TestCase):
         self.assertTrue(self.manifest["windows"])
         for window in self.manifest["windows"]:
             self.assertNotIn("first half", window["moss_transcript"])
-            self.assertGreaterEqual(window["start"], 4.9)
+            self.assertGreaterEqual(window["start"], 59.9)
 
     def test_without_the_flag_nothing_is_deduped(self):
         manifest = run_pipeline(self.root, self.omi, self.root / "plain")
@@ -826,9 +936,8 @@ class PipelineDedupeTests(unittest.TestCase):
 
     def test_an_unrelated_capture_drops_nothing_and_reports_failed_alignment(self):
         index = {"recording_epoch": 1000, "captures": [
-            {"capture_id": "cd" * 16, "start_ms": 1_000_000, "end_ms": 1_010_000,
-             "audio": str(tone_wav(self.root / "other.wav",
-                                   "0.4*sin(2*PI*700*t)*between(t,2.1,2.4)|0", 10, channels=2))}]}
+            {"capture_id": "cd" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
+             "audio": str(tone_wav(self.root / "other.wav", f"{OTHER}|{OTHER2}", 120, channels=2))}]}
         (self.root / "other-index.json").write_text(json.dumps(index))
         manifest = run_pipeline(self.root, self.omi, self.root / "unrelated",
                                 "--meeting-dedupe", str(self.root / "other-index.json"))
@@ -887,6 +996,7 @@ def apply_meeting_dedupe(index_path, audio, segments, manifest):
         "captures": [c["capture_id"] for c in captures],
         "dropped_count": len(decisions.dropped),
         "dropped": decisions.dropped,
+        "alignments": decisions.alignments,
         "alignment_failed": decisions.alignment_failed,
     }
     print(f"[dedupe] dropped {len(decisions.dropped)} of {len(segments)} segments"
@@ -1228,7 +1338,7 @@ class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         target = incoming / "omi.wav"
         target.write_bytes(Path(audio).read_bytes())
         metadata = {"device": "112233445566", "start_seq": 1, "first_timestamp": first_timestamp,
-                    "audio_seconds": 10.0, "first_utc": "2026-10-06 14:30:00Z", "complete": True}
+                    "audio_seconds": 120.0, "first_utc": "2026-10-06 14:30:00Z", "complete": True}
         (incoming / "omi.json").write_text(json.dumps(metadata))
         (incoming / ".ready").mkdir(exist_ok=True)
         (incoming / ".ready" / "omi.json").write_text(json.dumps({"audio": str(target), "metadata": metadata}))
@@ -1242,10 +1352,9 @@ class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.fail(f"timed out waiting for {what}: {self.runtime.queue.snapshot()}\n{logs}")
 
     async def test_an_omi_recording_loses_only_the_meeting_half(self):
-        call, room = "0.4*sin(2*PI*1000*t)", "0.4*sin(2*PI*2500*t)"
-        omi = tone_wav(self.root / "omi-src.wav", f"if(lt(t,5),{call},{room})", 10)
-        capture = tone_wav(self.root / "cap.wav", f"if(lt(t,5),{call},0)|0", 10, channels=2)
-        self.place_capture("ab" * 16, "closed", 1_000_000, 1_010_000, capture)
+        omi = tone_wav(self.root / "omi-src.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        capture = tone_wav(self.root / "cap.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        self.place_capture("ab" * 16, "closed", 1_000_000, 1_120_000, capture)
         self.place_omi(1000, omi)
         await self.wait(lambda: self.runtime.queue.snapshot()["counts"].get("complete") == 1, "the job")
         notes = list((self.cfg.vault_path / "Omi" / "Conversations").glob("*.md"))
@@ -1261,9 +1370,8 @@ class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([d["text"] for d in manifest["dedupe"]["dropped"]], ["first half"])
 
     async def test_an_uploading_meeting_holds_the_omi_job_until_it_closes(self):
-        call = "0.4*sin(2*PI*1000*t)"
-        omi = tone_wav(self.root / "omi2.wav", f"if(lt(t,5),{call},0.4*sin(2*PI*2500*t))", 10)
-        capture = tone_wav(self.root / "cap2.wav", f"if(lt(t,5),{call},0)|0", 10, channels=2)
+        omi = tone_wav(self.root / "omi2.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        capture = tone_wav(self.root / "cap2.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
         self.place_capture("cd" * 16, "open", 1_000_000)
         self.place_omi(1000, omi)
         await self.wait(lambda: self.runtime.queue.snapshot()["recent"]
@@ -1272,7 +1380,7 @@ class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.queue.snapshot()["counts"], {"pending": 1})
         self.assertEqual(list((self.cfg.vault_path / "Omi" / "Conversations").glob("*.md")), [])
         # The capture finishes uploading; the job must stop waiting and dedupe against it.
-        self.place_capture("cd" * 16, "closed", 1_000_000, 1_010_000, capture)
+        self.place_capture("cd" * 16, "closed", 1_000_000, 1_120_000, capture)
         with self.runtime.queue.connect() as db:          # do not wait out MEETING_WAIT_SECONDS
             db.execute("UPDATE jobs SET next_attempt=0")
         await self.wait(lambda: self.runtime.queue.snapshot()["counts"].get("complete") == 1, "the job")
