@@ -245,5 +245,43 @@ class MeetingPipelineTests(unittest.TestCase):
         self.assertEqual(self.manifest["speaker_observations"][0]["channel"], "R")
 
 
+class MeetingSpeakerTests(unittest.TestCase):
+    def setUp(self):
+        from second_brain.speakers import Speakers
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.speakers = Speakers(root / "data", root / "review")
+        self.manifest = {"windows": [{
+            "id": "w0000", "memory_keep": False, "scores": {"importance": 20},
+            "final_segments": [
+                {"start": 0.0, "end": 5.0, "speaker": "owner", "channel": "L", "text": OWNER_TEXT},
+                {"start": 5.0, "end": 10.0, "speaker": "r0000:S1", "channel": "R", "text": REMOTE_TEXT},
+            ]}]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_mic_segments_render_as_the_owner(self):
+        window = self.speakers.render("job", self.manifest, owner_name="Eugene")["windows"][0]
+        self.assertIn(f"[0.00-5.00] Eugene (mic): {OWNER_TEXT}", window["final_transcript"])
+        self.assertIn(f"r0000:S1 (r0000:S1): {REMOTE_TEXT}", window["final_transcript"])
+        self.assertEqual(window["speaker_identities"]["owner"], {"name": "Eugene", "source": "meeting microphone"})
+
+    def test_omi_rendering_is_unchanged_without_an_owner(self):
+        window = self.speakers.render("job", self.manifest)["windows"][0]
+        self.assertIn("owner (owner):", window["final_transcript"])
+
+    def test_meeting_speakers_are_reviewable_even_if_the_gate_dropped_the_window(self):
+        clip = Path(self.tmp.name) / "data" / "jobs" / "job" / "c.wav"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"RIFF")
+        manifest = dict(self.manifest, speaker_observations=[{"label": "r0000:S1", "channel": "R", "clips": [
+            {"start": 5.0, "end": 10.0, "text": REMOTE_TEXT, "quality": "clean turn", "path": str(clip)}]}])
+        job = {"id": "job", "metadata": json.dumps({"source": "meeting", "first_utc": "2026-10-06T14:30:00Z"})}
+        self.speakers.ingest(job, manifest)
+        with self.speakers.connect() as db:
+            self.assertEqual(db.execute("SELECT published FROM observations").fetchone()[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

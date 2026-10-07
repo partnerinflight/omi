@@ -145,6 +145,8 @@ class Speakers:
     def ingest(self, job, manifest):
         observations = manifest.get("speaker_observations", [])
         metadata = json.loads(job["metadata"])
+        # Every meeting becomes a note, so its speakers are worth naming whatever the gate said.
+        meeting = metadata.get("source") == "meeting"
         # Copy clips before committing rows; a replay repairs interrupted copies.
         for index, obs in enumerate(observations):
             key = hashlib.sha256((job["id"] + ":" + obs["label"]).encode()).hexdigest()
@@ -184,7 +186,8 @@ class Speakers:
                             )
                         ),
                         time.time(),
-                        *conversation_value(manifest, obs["label"]),
+                        *((1, conversation_value(manifest, obs["label"])[1]) if meeting
+                          else conversation_value(manifest, obs["label"])),
                     ),
                 )
         with self.connect() as db:
@@ -342,7 +345,7 @@ class Speakers:
                 "people": db.execute("SELECT count(*) FROM people").fetchone()[0],
             }
 
-    def render(self, job_id, manifest):
+    def render(self, job_id, manifest, owner_name=None):
         result = copy.deepcopy(manifest)
         with self.connect() as db:
             names = {
@@ -357,6 +360,10 @@ class Speakers:
                 continue
             rows, identities = [], {}
             for seg in window["final_segments"]:
+                if owner_name and seg.get("channel") == "L":
+                    rows.append(f"[{seg['start']:.2f}-{seg['end']:.2f}] {owner_name} (mic): {seg['text'].strip()}")
+                    identities["owner"] = {"name": owner_name, "source": "meeting microphone"}
+                    continue
                 label = seg["speaker"]
                 display, person, manual = names.get(label, (label, None, False))
                 # Keep machine labels visible as provenance, never equate a label
