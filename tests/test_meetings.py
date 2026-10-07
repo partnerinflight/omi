@@ -282,6 +282,80 @@ class MeetingSpeakerTests(unittest.TestCase):
         with self.speakers.connect() as db:
             self.assertEqual(db.execute("SELECT published FROM observations").fetchone()[0], 1)
 
+    def test_omi_speakers_still_follow_the_memory_gate(self):
+        clip = Path(self.tmp.name) / "data" / "jobs" / "job" / "c.wav"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"RIFF")
+        manifest = dict(self.manifest, speaker_observations=[{"label": "r0000:S1", "channel": "R", "clips": [
+            {"start": 5.0, "end": 10.0, "text": REMOTE_TEXT, "quality": "clean turn", "path": str(clip)}]}])
+        job = {"id": "job", "metadata": json.dumps({"first_utc": "2026-10-06T14:30:00Z"})}
+        self.speakers.ingest(job, manifest)
+        with self.speakers.connect() as db:
+            self.assertEqual(db.execute("SELECT published FROM observations").fetchone()[0], 0)
+
+
+def meeting_job(audio=str(Path(tempfile.gettempdir()) / "meetings" / "abc.caf")):
+    return {"id": "f" * 64, "audio": audio, "sha256": "0" * 64, "metadata": json.dumps({
+        "source": "meeting", "capture_id": "ab" * 16, "app": "us.zoom.xos",
+        "start_ms": 1759761000000, "end_ms": 1759764600000, "first_utc": "2025-10-06T14:30:00Z"})}
+
+
+def meeting_manifest():
+    return {"windows": [
+        {"id": "w0000", "start": 0.0, "end": 65.0, "memory_keep": False,
+         "memory_gate": {"contains": {"decision": True, "task": True, "date_or_event": False}},
+         "final_transcript": "[0.00-5.00] Eugene (mic): We decided.",
+         "speaker_identities": {"owner": {"name": "Eugene", "source": "meeting microphone"}}},
+        {"id": "w0001", "start": 3700.0, "end": 3720.0, "memory_keep": False,
+         "memory_gate": {"contains": {}},
+         "final_transcript": "[3700.00-3720.00] Ana (r0001:S1): Small talk.",
+         "speaker_identities": {"r0001:S1": {"id": "p1", "name": "Ana", "source": "voice match"}}},
+    ]}
+
+
+class MeetingNoteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self.tmp.name) / "vault"
+        self.vault.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def publish(self, manifest=None):
+        from second_brain.vault import publish_meeting
+        return publish_meeting(self.vault, "Omi/Meetings", meeting_job(), manifest or meeting_manifest())
+
+    def test_one_note_with_highlights_first_and_every_window(self):
+        written = self.publish()
+        self.assertEqual(written, [f"Omi/Meetings/{'f' * 64}.md"])
+        text = (self.vault / written[0]).read_text()
+        self.assertIn('type: "omi-meeting"', text)
+        self.assertIn('app: "us.zoom.xos"', text)
+        self.assertIn('started_at: "2025-10-06T14:30:00Z"', text)
+        self.assertIn('ended_at: "2025-10-06T15:30:00Z"', text)
+        self.assertIn('participants: ["Ana", "Eugene"]', text)
+        self.assertLess(text.index("## Highlights"), text.index("## Transcript"))
+        self.assertIn("- 0:00–1:05 · decision, task", text)
+        # The memory gate dropped both windows; meetings publish them anyway.
+        self.assertIn("We decided.", text)
+        self.assertIn("### 1:01:40", text)
+        self.assertIn("Small talk.", text)
+
+    def test_republishing_is_idempotent_and_edits_are_preserved(self):
+        from second_brain.vault import NoteConflict
+        path = self.vault / self.publish()[0]
+        self.assertEqual(self.publish(), [str(path.relative_to(self.vault))])
+        path.write_text(path.read_text() + "\nmy notes\n")
+        with self.assertRaises(NoteConflict):
+            self.publish()
+        self.assertTrue(path.read_text().endswith("my notes\n"))
+
+    def test_a_meeting_without_speech_still_gets_a_note(self):
+        text = (self.vault / self.publish({"windows": []})[0]).read_text()
+        self.assertIn("No decisions, tasks or dates detected.", text)
+        self.assertIn("No speech was transcribed.", text)
+
 
 if __name__ == "__main__":
     unittest.main()
