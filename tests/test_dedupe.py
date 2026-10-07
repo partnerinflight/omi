@@ -722,5 +722,103 @@ class RuntimeDedupeTests(unittest.TestCase):
         self.assertFalse(self.runtime.defer_for_meeting(job))
 
 
+class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from second_brain.runtime import Runtime
+        from tests.helpers import configuration
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        base = configuration(self.root)
+        cfg = json.loads(base.pipeline_config.read_text())
+        cfg["moss_command"] = [sys.executable, str(ROOT / "tests/fixtures/fake_moss_halves.py")]
+        # The v3 memory gate rightly files a two-word "second half" window as ephemeral, which would
+        # leave no note to inspect. The gate is not under test here; dedupe is, so it is switched off.
+        cfg["memory_gate_enabled"] = False
+        base.pipeline_config.write_text(json.dumps(cfg))
+        self.cfg = dataclasses.replace(base, meetings_enabled=True, owner_name="Eugene",
+                                       delete_audio_after_processing=False)
+        self.runtime = Runtime(self.cfg)
+        self.task = asyncio.create_task(self.runtime.run())
+        for _ in range(100):
+            if self.runtime.server and self.runtime.server._server:
+                break
+            if self.task.done():
+                await self.task
+            await asyncio.sleep(0.01)
+
+    async def asyncTearDown(self):
+        self.runtime.stop.set()
+        await asyncio.wait_for(self.task, 10)
+        self.tmp.cleanup()
+
+    def place_capture(self, cid, state, start_ms, end_ms=None, audio=None):
+        """Write a capture marker (and audio) the way the receiver would have."""
+        captures = self.cfg.incoming_dir / "meetings" / ".captures"
+        captures.mkdir(parents=True, exist_ok=True)
+        value = {"capture_id": cid, "client": "mac", "state": state, "start_ms": start_ms,
+                 "app": "us.zoom.xos", "updated": __import__("time").time()}
+        if end_ms is not None:
+            value["end_ms"] = end_ms
+        (captures / f"{cid}.json").write_text(json.dumps(value))
+        if audio is not None:
+            (self.cfg.incoming_dir / "meetings" / f"{cid}.caf").write_bytes(Path(audio).read_bytes())
+
+    def place_omi(self, first_timestamp, audio):
+        """Publish an Omi recording receipt the way the receiver would have."""
+        incoming = self.cfg.incoming_dir
+        target = incoming / "omi.wav"
+        target.write_bytes(Path(audio).read_bytes())
+        metadata = {"device": "112233445566", "start_seq": 1, "first_timestamp": first_timestamp,
+                    "audio_seconds": 120.0, "first_utc": "2026-10-06 14:30:00Z", "complete": True}
+        (incoming / "omi.json").write_text(json.dumps(metadata))
+        (incoming / ".ready").mkdir(exist_ok=True)
+        (incoming / ".ready" / "omi.json").write_text(json.dumps({"audio": str(target), "metadata": metadata}))
+
+    async def wait(self, predicate, what, seconds=40):
+        for _ in range(int(seconds / 0.05)):
+            if predicate():
+                return
+            await asyncio.sleep(0.05)
+        logs = "\n".join(p.read_text()[-3000:] for p in (self.root / "data/jobs").rglob("pipeline.log"))
+        self.fail(f"timed out waiting for {what}: {self.runtime.queue.snapshot()}\n{logs}")
+
+    async def test_an_omi_recording_loses_only_the_meeting_half(self):
+        omi = tone_wav(self.root / "omi-src.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        capture = tone_wav(self.root / "cap.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        self.place_capture("ab" * 16, "closed", 1_000_000, 1_120_000, capture)
+        self.place_omi(1000, omi)
+        await self.wait(lambda: self.runtime.queue.snapshot()["counts"].get("complete") == 1, "the job")
+        notes = list((self.cfg.vault_path / "Omi" / "Conversations").glob("*.md"))
+        text = "\n".join(n.read_text() for n in notes)
+        self.assertIn("second half", text)
+        self.assertNotIn("first half", text)
+        with self.runtime.queue.connect() as db:
+            saved = json.loads(db.execute("SELECT result FROM jobs").fetchone()[0])
+        self.assertEqual(saved["deduped"], 1)
+        self.assertFalse(saved["alignment_failed"])
+        # The full archive keeps every segment; only windows and the note lose the duplicate.
+        manifest = json.loads(next((self.root / "data/jobs").rglob("attempt-*/manifest.json")).read_text())
+        self.assertEqual([d["text"] for d in manifest["dedupe"]["dropped"]], ["first half"])
+
+    async def test_an_uploading_meeting_holds_the_omi_job_until_it_closes(self):
+        omi = tone_wav(self.root / "omi2.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        capture = tone_wav(self.root / "cap2.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        self.place_capture("cd" * 16, "open", 1_000_000)
+        self.place_omi(1000, omi)
+        await self.wait(lambda: self.runtime.queue.snapshot()["recent"]
+                        and self.runtime.queue.snapshot()["recent"][0]["stage"] == "waiting-for-meeting",
+                        "the deferral")
+        self.assertEqual(self.runtime.queue.snapshot()["counts"], {"pending": 1})
+        self.assertEqual(list((self.cfg.vault_path / "Omi" / "Conversations").glob("*.md")), [])
+        # The capture finishes uploading; the job must stop waiting and dedupe against it.
+        self.place_capture("cd" * 16, "closed", 1_000_000, 1_120_000, capture)
+        with self.runtime.queue.connect() as db:          # do not wait out MEETING_WAIT_SECONDS
+            db.execute("UPDATE jobs SET next_attempt=0")
+        await self.wait(lambda: self.runtime.queue.snapshot()["counts"].get("complete") == 1, "the job")
+        text = "\n".join(n.read_text() for n in (self.cfg.vault_path / "Omi" / "Conversations").glob("*.md"))
+        self.assertNotIn("first half", text)
+        self.assertIn("second half", text)
+
+
 if __name__ == "__main__":
     unittest.main()
