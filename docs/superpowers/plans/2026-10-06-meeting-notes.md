@@ -201,7 +201,7 @@ def make_capture(path: Path, seconds: int = 10) -> Path:
     """Stereo Opus: owner tone on L, remote tone on R, remote bleed into L after 5 s."""
     subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
-         "-i", f"aevalsrc={L_EXPR}|{R_EXPR}:s=48000:d={seconds}",
+         "-i", f"aevalsrc='{L_EXPR}|{R_EXPR}':s=48000:d={seconds}",
          "-c:a", "libopus", "-b:a", "96k", "-f", "ogg", str(path)],
         check=True,
     )
