@@ -120,6 +120,23 @@ class ChannelTests(unittest.TestCase):
         from second_brain.io import utc_from_ms
         self.assertEqual(utc_from_ms(1759761000000), "2025-10-06T14:30:00Z")
 
+    def test_stereo_frames_leaves_no_pipes_open(self):
+        import gc
+        import warnings
+        from second_brain.adaptive.channels import stereo_frames
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            stereo_frames(self.capture)
+            gc.collect()
+        self.assertEqual([w for w in caught if issubclass(w.category, ResourceWarning)], [])
+
+    def test_undecodable_capture_raises_a_clear_error(self):
+        from second_brain.adaptive.channels import stereo_frames
+        bad = Path(self.tmp.name) / "bad.caf"
+        bad.write_bytes(b"not audio")
+        with self.assertRaisesRegex(RuntimeError, "ffmpeg could not decode the capture"):
+            stereo_frames(bad)
+
 
 if __name__ == "__main__":
     unittest.main()

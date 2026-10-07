@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import operator
 import subprocess
+import tempfile
 from array import array
 
 CHANNEL_INDEX = {"L": 0, "R": 1}
@@ -25,7 +26,8 @@ def stereo_frames(audio, timeout=14400):
     """Mean-square 300–3400 Hz level of each 50 ms frame: ([L...], [R...]). Streams the decode."""
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(audio), "-af", "highpass=f=300,lowpass=f=3400",
            "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    errors = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg can never block on a full stderr
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors)
     left, right = [], []
     try:
         while chunk := proc.stdout.read(FRAME * 4):
@@ -36,10 +38,12 @@ def stereo_frames(audio, timeout=14400):
             l, r = samples[0::2], samples[1::2]
             left.append(sum(map(operator.mul, l, l)) / len(l))
             right.append(sum(map(operator.mul, r, r)) / len(r))
-        error = proc.stderr.read()
         if proc.wait(timeout=timeout) != 0:
-            raise RuntimeError("ffmpeg could not decode the capture: " + error.decode(errors="replace")[-2000:])
+            errors.seek(0)
+            raise RuntimeError("ffmpeg could not decode the capture: " + errors.read().decode(errors="replace")[-2000:])
     finally:
+        proc.stdout.close()
+        errors.close()
         if proc.poll() is None:
             proc.kill()
             proc.wait()
