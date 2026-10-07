@@ -6,6 +6,7 @@ import dataclasses
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -100,115 +101,127 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(match_envelope([], [1.0] * 800, 10.0, 10.0), (None, 0.0))
 
 
+def pseudo_speech(seconds, seed):
+    """Mean-square 50 ms frames shaped like speech: syllable bursts with pauses. Burstier than
+    real speech, so chance matches are more likely here than on real recordings."""
+    r = random.Random(seed)
+    out = []
+    while len(out) < seconds / 0.05:
+        if r.random() < 0.25:
+            out += [r.uniform(0, 40) ** 2] * r.randint(4, 16)
+        else:
+            amp, k = r.uniform(300, 3000), r.randint(2, 6)
+            out += [(amp * math.sin(math.pi * (i + 0.5) / k)) ** 2 for i in range(k)]
+    return out[: int(seconds / 0.05)]
+
+
+def second_mic(frames, seed, gain=0.5, floor=60.0):
+    """The same speech heard by another microphone: different level, jitter, a noise floor."""
+    r = random.Random(seed)
+    return [v * gain * r.uniform(0.6, 1.4) + floor ** 2 * r.uniform(0.5, 1.5) for v in frames]
+
+
 class DecisionTests(unittest.TestCase):
-    SHAPE = [0.0, 1.0, 9.0, 3.0, 0.0, 0.0] * 4        # 24 frames = 1.2 s of structured speech
-    ROOM = [9.0, 0.0, 0.0, 1.0, 9.0, 0.0] * 4
+    """A 2-minute Omi recording: the owner on a call for 60 s, then someone in the room for 60 s.
+    The meeting started at the same epoch; the Mac clock is 3.7 s late (74 frames). The meeting's
+    remote channel is busy with other speech throughout, which is what makes chance matches likely."""
 
-    def meeting(self, left, right, start_ms=1_000_000, end_ms=1_100_000, cid="ab" * 16):
-        return {"capture_id": cid, "start_ms": start_ms, "end_ms": end_ms, "left": left, "right": right}
+    @classmethod
+    def setUpClass(cls):
+        call, room, remote = pseudo_speech(120, 1), pseudo_speech(120, 2), pseudo_speech(200, 3)
+        cls.omi = call[:1200] + room[1200:2400]
+        left = [0.0] * 74 + second_mic(call[:1200], 4) + second_mic([0.0] * 1200, 5)
+        cls.meeting = {"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
+                        "left": left + [0.0] * 500, "right": remote[: len(left) + 500]}
+        r = random.Random(7)
+        cls.segments, t = [], 0.0
+        while t < 118:
+            length = r.uniform(2.0, 6.0)
+            cls.segments.append({"start": round(t, 2), "end": round(t + length, 2), "text": f"s{t:.0f}"})
+            t += length + r.uniform(0.2, 1.0)
 
-    def at(self, pad, frames=None):
-        """A meeting envelope holding `frames` starting `pad` frames in."""
-        return [0.0] * pad + (self.SHAPE if frames is None else frames) + [0.0] * 500
+    def test_constants_are_the_measured_ones(self):
+        from second_brain.adaptive import dedupe
+        self.assertEqual((dedupe.DROP_THRESHOLD, dedupe.ALIGNMENT_THRESHOLD, dedupe.SEARCH_SECONDS,
+                          dedupe.SEGMENT_TOLERANCE, dedupe.MIN_SEGMENT_SECONDS, dedupe.MIN_ALIGN_SECONDS,
+                          dedupe.MAX_ALIGN_SECONDS),
+                         (0.6, 0.5, 10.0, 0.1, 2.0, 30.0, 600.0))
 
-    def segment(self, start, text, duration=1.2):
-        return {"start": start, "end": start + duration, "text": text}
-
-    # The Omi recording starts at epoch 1000; the meeting starts at epoch 1000 too (start_ms
-    # 1_000_000), so an Omi offset of 10 s is 10 s into the meeting (frame 200).
-
-    def test_a_segment_matching_the_mic_channel_is_dropped(self):
+    def test_one_offset_is_estimated_per_meeting(self):
         from second_brain.adaptive.dedupe import decide
-        decisions = decide([self.segment(10.0, "same words")], self.at(200), 1000,
-                           [self.meeting(self.at(200), [0.0] * 800)])
-        self.assertEqual(len(decisions.dropped), 1)
-        dropped = decisions.dropped[0]
-        self.assertEqual((dropped["channel"], dropped["deduped_by"]), ("L", "ab" * 16))
-        self.assertAlmostEqual(dropped["score"], 1.0, places=3)
-        self.assertEqual(dropped["offset_seconds"], 0.0)
-        self.assertEqual(decisions.kept, [])
+        decisions = decide(self.segments, self.omi, 1000, [self.meeting])
+        (alignment,) = decisions.alignments
+        self.assertEqual((alignment["status"], alignment["channel"], alignment["offset_seconds"]),
+                         ("aligned", "L", 3.7))
+        self.assertGreaterEqual(alignment["score"], 0.5)
         self.assertFalse(decisions.alignment_failed)
 
-    def test_in_room_speech_during_a_meeting_is_kept(self):
+    def test_the_call_is_dropped_and_the_room_is_kept(self):
         from second_brain.adaptive.dedupe import decide
-        omi = [0.0] * 200 + self.SHAPE + self.ROOM + [0.0] * 500
-        decisions = decide([self.segment(10.0, "owner on the call"),
-                            self.segment(11.2, "spouse in the room")],
-                           omi, 1000, [self.meeting(self.at(200), [0.0] * 800)])
-        self.assertEqual([d["text"] for d in decisions.dropped], ["owner on the call"])
-        self.assertEqual([k["text"] for k in decisions.kept], ["spouse in the room"])
-        self.assertLess(decisions.kept[0]["dedupe_score"], 0.6)
+        decisions = decide(self.segments, self.omi, 1000, [self.meeting])
+        dropped = {d["text"] for d in decisions.dropped}
+        call = [s["text"] for s in self.segments if s["end"] <= 60]
+        room = [s["text"] for s in self.segments if s["start"] >= 60]
+        self.assertEqual(sorted(dropped & set(call)), sorted(call))
+        self.assertEqual(dropped & set(room), set())
+        record = decisions.dropped[0]
+        self.assertEqual((record["deduped_by"], record["deduped_channel"]), ("ab" * 16, "L"))
+        self.assertNotIn("channel", record)          # `channel` means mic/remote on meeting segments
+        self.assertGreaterEqual(record["score"], 0.6)
+        self.assertAlmostEqual(record["offset_seconds"], 3.7, delta=0.1)
 
-    def test_a_clock_offset_within_ten_seconds_is_tolerated_and_reported(self):
+    def test_short_room_speech_against_a_busy_meeting_is_almost_never_dropped(self):
+        """The regression this revision exists for: 150 random 2-3 s room segments while the
+        remote channel is full of other speech. (Each call re-estimates the alignment, so the
+        sample is kept small enough to run in a few seconds.)"""
         from second_brain.adaptive.dedupe import decide
-        # The Mac holds the same audio 3.7 s later than the Omi's clock claims.
-        decisions = decide([self.segment(10.0, "same words")], self.at(200), 1000,
-                           [self.meeting(self.at(274), [0.0] * 800)])
-        self.assertEqual(len(decisions.dropped), 1)
-        self.assertEqual(decisions.dropped[0]["offset_seconds"], 3.7)
+        r, dropped = random.Random(11), 0
+        for _ in range(150):
+            start = r.uniform(60, 115)
+            segment = {"start": start, "end": start + r.uniform(2.0, 3.0), "text": "room"}
+            dropped += bool(decide([segment], self.omi, 1000, [self.meeting]).dropped)
+        self.assertLessEqual(dropped / 150, 0.02)
 
-    def test_an_offset_beyond_the_search_window_fails_alignment_and_keeps_everything(self):
-        """The spec's alignment-failure rule: an overlapping segment that matches nothing anywhere
-        is evidence the clocks cannot be reconciled, so no segment may be dropped."""
+    def test_segments_shorter_than_two_seconds_are_never_dropped(self):
         from second_brain.adaptive.dedupe import decide
-        decisions = decide([self.segment(10.0, "same words")], self.at(200), 1000,
-                           [self.meeting(self.at(600), [0.0] * 1200)])
+        short = [{"start": 10.0, "end": 11.9, "text": "duplicate but short"}]
+        decisions = decide(short, self.omi, 1000, [self.meeting])
         self.assertEqual(decisions.dropped, [])
-        self.assertEqual([k["text"] for k in decisions.kept], ["same words"])
-        self.assertTrue(decisions.alignment_failed)
-
-    def test_segments_outside_the_meeting_span_are_never_compared(self):
-        from second_brain.adaptive.dedupe import decide
-        # The meeting covers epoch 1000-1100; this segment is at epoch 1200.
-        decisions = decide([self.segment(200.0, "after the meeting")], self.at(4000), 1000,
-                           [self.meeting(self.at(200), [0.0] * 800)])
-        self.assertEqual(decisions.dropped, [])
-        self.assertEqual(len(decisions.kept), 1)
         self.assertNotIn("dedupe_score", decisions.kept[0])
-        self.assertFalse(decisions.alignment_failed)   # nothing overlapped, so alignment never ran
 
-    def test_matching_the_remote_channel_counts_too(self):
+    def test_an_unrelated_meeting_fails_alignment_and_drops_nothing(self):
         from second_brain.adaptive.dedupe import decide
-        decisions = decide([self.segment(10.0, "remote words the omi also heard")], self.at(200), 1000,
-                           [self.meeting([0.0] * 800, self.at(200))])
-        self.assertEqual(decisions.dropped[0]["channel"], "R")
-
-    def test_a_segment_too_short_to_identify_is_kept(self):
-        from second_brain.adaptive.dedupe import decide
-        decisions = decide([self.segment(10.0, "yeah", duration=0.4)], self.at(200), 1000,
-                           [self.meeting(self.at(200), [0.0] * 800)])
+        other = {"capture_id": "cd" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
+                  "left": pseudo_speech(130, 9), "right": pseudo_speech(130, 10)}
+        decisions = decide(self.segments, self.omi, 1000, [other])
+        self.assertEqual(decisions.alignments[0]["status"], "failed")
+        self.assertLess(decisions.alignments[0]["score"], 0.5)
+        self.assertTrue(decisions.alignment_failed)
         self.assertEqual(decisions.dropped, [])
-        self.assertEqual(len(decisions.kept), 1)
-        self.assertNotIn("dedupe_score", decisions.kept[0])   # never compared, so no score
+        self.assertEqual(len(decisions.kept), len(self.segments))
 
-    def test_alignment_failure_restores_a_segment_that_did_match(self):
-        """One segment matches the meeting exactly, another overlapping segment matches nothing.
-        The drop still stands, because alignment only fails when *nothing* reaches the floor."""
-        from second_brain.adaptive.dedupe import decide, ALIGNMENT_THRESHOLD, DROP_THRESHOLD
-        self.assertEqual((DROP_THRESHOLD, ALIGNMENT_THRESHOLD), (0.6, 0.3))
-        decisions = decide([self.segment(10.0, "matches"), self.segment(40.0, "silence here")],
-                           self.at(200) + [0.0] * 400, 1000, [self.meeting(self.at(200), [0.0] * 1600)])
-        self.assertEqual([d["text"] for d in decisions.dropped], ["matches"])
-        self.assertEqual([k["text"] for k in decisions.kept], ["silence here"])
-        self.assertFalse(decisions.alignment_failed)
-
-    def test_a_segment_too_short_to_attempt_is_not_evidence_of_misalignment(self):
+    def test_too_little_overlap_is_not_an_alignment_failure(self):
         from second_brain.adaptive.dedupe import decide
-        decisions = decide([self.segment(10.0, "yeah", duration=0.4)], self.at(200), 1000,
-                           [self.meeting([0.0] * 800, [0.0] * 800)])
+        # The meeting starts 100 s into the Omi recording, leaving 20 s of overlap.
+        late = dict(self.meeting, start_ms=1_100_000, end_ms=1_220_000)
+        decisions = decide(self.segments, self.omi, 1000, [late])
+        self.assertEqual(decisions.alignments[0]["status"], "too little overlap")
         self.assertFalse(decisions.alignment_failed)
-        self.assertEqual(len(decisions.kept), 1)
-
-    def test_an_only_weakly_aligned_segment_is_kept_without_failing_alignment(self):
-        from second_brain.adaptive.dedupe import decide
-        # Correlates about 0.47: real alignment, but not the same passage.
-        offbeat = [0.0] * 200 + [1.0, 0.0, 9.0, 0.0, 3.0, 0.0] * 4 + [0.0] * 500
-        decisions = decide([self.segment(10.0, "unclear")], self.at(200), 1000,
-                           [self.meeting(offbeat, [0.0] * 800)])
-        peak = decisions.kept[0]["dedupe_score"]
-        self.assertTrue(0.3 <= peak < 0.6, peak)
         self.assertEqual(decisions.dropped, [])
-        self.assertFalse(decisions.alignment_failed)
+
+    def test_a_meeting_on_the_remote_channel_aligns_too(self):
+        from second_brain.adaptive.dedupe import decide
+        swapped = dict(self.meeting, left=self.meeting["right"], right=self.meeting["left"])
+        decisions = decide(self.segments, self.omi, 1000, [swapped])
+        self.assertEqual(decisions.alignments[0]["channel"], "R")
+        self.assertTrue(decisions.dropped)
+        self.assertTrue(all(d["deduped_channel"] == "R" for d in decisions.dropped))
+
+    def test_no_meetings_keeps_everything_without_failing(self):
+        from second_brain.adaptive.dedupe import decide
+        decisions = decide(self.segments, self.omi, 1000, [])
+        self.assertEqual((decisions.dropped, decisions.alignments, decisions.alignment_failed), ([], [], False))
+        self.assertEqual(len(decisions.kept), len(self.segments))
 
 
 if __name__ == "__main__":
