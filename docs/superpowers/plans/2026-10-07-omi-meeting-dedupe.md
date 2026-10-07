@@ -310,7 +310,7 @@ the fixture padded the meeting audio. Now: alignment blocks start and end 10 s i
 every 60 s block is aligned on its own (each segment uses the nearest aligned block's offset,
 which tracks clock drift and an owner who is silent at first), and the tests use exact-length
 meeting audio with offsets in both directions, 1000 ppm drift and a silent-at-first owner.
-Cost: about 2 s of alignment per minute of overlap.
+Cost measured in review: about 7 s of alignment for a one-hour overlap on this Mac.
 
 **Interface change for later tasks:** dropped records use `deduped_channel` (not `channel`,
 which already means mic/remote on meeting segments). `Decisions` gains `alignments`, one dict per
@@ -516,7 +516,7 @@ do not import it twice.
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src:omi/firmware/scripts/omi-local python3 -m unittest tests.test_dedupe.DecisionTests -v`
-Expected: FAIL (no `alignments` attribute, `deduped_channel` missing, and the 150-segment test
+Expected: FAIL (no `alignments` attribute, `deduped_channel` missing, and the 400-segment test
 drops far more than 2%).
 
 - [ ] **Step 3: Replace the implementation**
@@ -526,11 +526,11 @@ Replace the whole of `src/second_brain/adaptive/dedupe.py` with:
 ```python
 """Drop Omi transcript segments that duplicate a Mac meeting capture (spec section 3).
 
-Two stages, because the Omi and the Mac clocks differ by one roughly constant offset:
-1. `align`: estimate that offset once per meeting from the whole overlapping stretch (at least
-   30 s). A long envelope gives an unambiguous peak; below ALIGNMENT_THRESHOLD the recordings do
-   not line up and nothing is dropped against that meeting.
-2. Each segment of at least 2 s is scored only within +-0.1 s of that offset.
+Two stages, because the Omi and the Mac clocks differ by a slowly drifting offset:
+1. `align`: every 60 s block of overlap (starting and ending 10 s inside it, so all +-10 s
+   shifts have a full window) is aligned on its own. A block below ALIGNMENT_THRESHOLD is unusable
+   (owner silent, or only room speech); a meeting needs at least 50 s of overlap to try.
+2. Each segment of at least 2 s is scored only within +-0.1 s of its nearest aligned block's offset.
 
 Searching +-10 s per segment instead (the spec's original rule) was measured on real Omi speech
 to drop 93% of unrelated 0.8 s segments and 9% of 8 s ones by chance: the best of ~800 shifted
@@ -558,6 +558,7 @@ class Decisions:
     dropped: list = field(default_factory=list)
     alignment_failed: bool = False
     alignments: list = field(default_factory=list)   # one per meeting, with its aligned blocks
+
 
 def align(omi_frames, omi_epoch, meeting):
     """Clock offsets for one meeting, one per 60 s block of overlap.

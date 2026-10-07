@@ -1,10 +1,10 @@
 """Drop Omi transcript segments that duplicate a Mac meeting capture (spec section 3).
 
-Two stages, because the Omi and the Mac clocks differ by one roughly constant offset:
-1. `align`: estimate that offset once per meeting from the whole overlapping stretch (at least
-   30 s). A long envelope gives an unambiguous peak; below ALIGNMENT_THRESHOLD the recordings do
-   not line up and nothing is dropped against that meeting.
-2. Each segment of at least 2 s is scored only within +-0.1 s of that offset.
+Two stages, because the Omi and the Mac clocks differ by a slowly drifting offset:
+1. `align`: every 60 s block of overlap (starting and ending 10 s inside it, so all +-10 s
+   shifts have a full window) is aligned on its own. A block below ALIGNMENT_THRESHOLD is unusable
+   (owner silent, or only room speech); a meeting needs at least 50 s of overlap to try.
+2. Each segment of at least 2 s is scored only within +-0.1 s of its nearest aligned block's offset.
 
 Searching +-10 s per segment instead (the spec's original rule) was measured on real Omi speech
 to drop 93% of unrelated 0.8 s segments and 9% of 8 s ones by chance: the best of ~800 shifted
@@ -32,6 +32,7 @@ class Decisions:
     dropped: list = field(default_factory=list)
     alignment_failed: bool = False
     alignments: list = field(default_factory=list)   # one per meeting, with its aligned blocks
+
 
 def align(omi_frames, omi_epoch, meeting):
     """Clock offsets for one meeting, one per 60 s block of overlap.
