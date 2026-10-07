@@ -413,6 +413,14 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   count means "not routed to Hermes"; those windows are still in the note. Real ASR on
   meeting audio, real voice matching of remote speakers, and Windows ffmpeg decoding
   of a real Mac CAF are unverified (fixtures only).
+- Mac encoder stereo separation, measured 2026-10-07 on this Mac with the production
+  `CaptureEncoder` settings (16 kHz stereo Opus, 32 kbit/s): with one channel active the
+  other sits about 43 dB down, so owner attribution is correct. Two simultaneous pure
+  tones collapse almost completely (leakage 1.5-3.2 dB), while two simultaneous real
+  speech sources kept an 10.9 dB channel margin versus 11.4 dB at 64 kbit/s. So
+  low-bitrate joint-stereo coding can merge channels during overlapping talk, but real
+  speech showed no material loss. Raising `bitRate` to 64000 removes the risk at double
+  the size (about 29 MB/h); not changed, since the 32 kbit/s evidence is adequate.
 - Keep changes on the feature branch; do not merge/push `main` without instruction.
   Preserve durability boundaries, v3 gates, edited notes, and third-party licenses.
   Add tests at real failure boundaries. Never present mocked model tests or a
