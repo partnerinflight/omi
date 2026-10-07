@@ -576,5 +576,19 @@ class UnreadableCaptureTests(unittest.TestCase):
                                                   "reason": "RuntimeError"}])
 
 
+    def test_a_bug_inside_decide_keeps_everything_instead_of_failing_the_job(self):
+        from unittest import mock
+        from second_brain.adaptive import dedupe
+        from second_brain.adaptive.pipeline import apply_meeting_dedupe
+
+        index = self.root / "bug.json"
+        index.write_text(json.dumps({"recording_epoch": 1000, "captures": [self.entry("ab" * 16, self.capture)]}))
+        segments = [{"start": 0.0, "end": 60.0, "text": "first half"}]
+        manifest = {"fallbacks": []}
+        with mock.patch.object(dedupe, "decide", side_effect=ZeroDivisionError("unexpected")):
+            self.assertEqual(apply_meeting_dedupe(str(index), str(self.omi), segments, manifest), segments)
+        self.assertEqual(manifest["dedupe"]["skipped"], "ZeroDivisionError")
+        self.assertEqual(manifest["fallbacks"][-1]["reason"], "ZeroDivisionError")
+
 if __name__ == "__main__":
     unittest.main()

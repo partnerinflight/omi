@@ -1152,7 +1152,10 @@ def apply_meeting_dedupe(index_path, audio, segments, manifest):
         omi_frames = mono_frames(audio, COMMAND_TIMEOUT)
     except DEDUPE_ERRORS as error:
         return skip(error, [c["capture_id"] for c in captures])
-    decisions = decide(segments, omi_frames, epoch, captures)
+    try:
+        decisions = decide(segments, omi_frames, epoch, captures)
+    except Exception as error:  # a dedupe bug must never cost the recording its note
+        return skip(error, [c["capture_id"] for c in captures])
     manifest["dedupe"] = {
         "captures": [c["capture_id"] for c in captures],
         "dropped_count": len(decisions.dropped),
