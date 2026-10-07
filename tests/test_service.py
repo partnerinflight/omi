@@ -343,9 +343,10 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
         import uuid
         import wave
 
-        for _ in range(100):
+        # Ingest commits speakers one at a time while the catalog is rewritten every second; wait for both.
+        for _ in range(250):
             catalog = json.loads((self.cfg.review_dir / "catalog.json").read_text())
-            if catalog["speakers"]:
+            if len(catalog["speakers"]) >= 2:
                 break
             await asyncio.sleep(0.02)
         self.assertEqual(len(catalog["speakers"]), 2)
