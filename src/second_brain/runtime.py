@@ -138,8 +138,17 @@ class Runtime:
 
     def defer_for_meeting(self, job):
         """True when an overlapping capture is still open: the job waits rather than publishing
-        speech the meeting note will also contain."""
-        found = self.meeting_overlaps(job)
+        speech the meeting note will also contain. Fails open: a broken check never blocks a job."""
+        if (self.cfg.data_dir / "jobs" / job["id"] / "manifest.json").exists():
+            return False                          # a replay ignores meetings; waiting is pointless
+        try:
+            found = self.meeting_overlaps(job)
+        except Exception:
+            log.exception("Meeting overlap check failed for job %s; processing without waiting", job["id"])
+            return False
+        if found and found.expired:
+            log.info("Job %s: %d overlapping capture(s) open over 24 h; not waiting for them",
+                     job["id"], len(found.expired))
         if not found or not found.open:
             return False
         log.info("Job %s waits for %d uploading meeting capture(s)", job["id"], len(found.open))
@@ -155,6 +164,16 @@ class Runtime:
         path = root / "meeting-dedupe.json"
         write_json(path, {"recording_epoch": int(span[0]), "captures": found.closed})
         return str(path)
+
+    def dedupe_index_or_none(self, job, root: Path, meeting):
+        """The dedupe index path, or None. Dedupe never fails a job: any error means no dedupe."""
+        if meeting:
+            return None
+        try:
+            return self.meeting_index(job, root)
+        except Exception:
+            log.exception("Meeting dedupe index failed for job %s; processing without dedupe", job["id"])
+            return None
 
     async def process(self, job):
         cfg = self.cfg
@@ -194,7 +213,7 @@ class Runtime:
             if meeting:
                 cmd.append("--meeting")
             # Only on a fresh run: a replay from a saved manifest never re-runs dedupe.
-            index = None if meeting else self.meeting_index(job, root)
+            index = self.dedupe_index_or_none(job, root, meeting)
             if index:
                 cmd += ["--meeting-dedupe", index]
             env = os.environ.copy()

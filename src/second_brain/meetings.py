@@ -72,6 +72,6 @@ def overlapping(meetings_dir: Path, metadata: dict, now=None) -> Overlaps:
                 continue                          # committed audio deleted or moved: nothing to compare
             result.closed.append({"capture_id": value["capture_id"], "start_ms": value["start_ms"],
                                   "end_ms": value["end_ms"], "audio": str(audio)})
-        except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError):
+        except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, OverflowError):
             log.exception("Ignoring unreadable capture marker %s", marker.name)
     return result

@@ -327,6 +327,13 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual(found.open, [])
         self.assertEqual(found.expired, ["cd" * 16])
 
+    def test_an_absurd_marker_start_is_skipped(self):
+        from second_brain.meetings import overlapping
+        self.marker("ee" * 16, "closed", 10**400, 10**400 + 1)
+        self.marker("ab" * 16, "closed", 1_200_000, 1_500_000)
+        found = overlapping(self.meetings, self.omi())
+        self.assertEqual([m["capture_id"] for m in found.closed], ["ab" * 16])
+
     def test_cancelled_and_non_overlapping_captures_are_ignored(self):
         from second_brain.meetings import overlapping
         self.marker("11" * 16, "cancelled", 1_200_000)
@@ -685,6 +692,34 @@ class RuntimeDedupeTests(unittest.TestCase):
         job = self.runtime.queue.claim()
         self.assertFalse(self.runtime.defer_for_meeting(job))
         self.assertIsNone(self.runtime.meeting_index(job, self.cfg.data_dir / "jobs" / job["id"]))
+
+    def test_a_failing_overlap_check_never_defers_or_raises(self):
+        from unittest import mock
+        self.marker("cd" * 16, "open")
+        job = self.runtime.queue.claim()
+        with mock.patch("second_brain.runtime.overlapping", side_effect=OSError("boom")):
+            self.assertFalse(self.runtime.defer_for_meeting(job))
+        with self.runtime.queue.connect() as db:
+            row = dict(db.execute("SELECT stage,state FROM jobs").fetchone())
+        self.assertEqual(row["state"], "processing")
+        self.assertNotEqual(row["stage"], "waiting-for-meeting")
+
+    def test_a_failing_index_falls_back_to_no_dedupe(self):
+        from unittest import mock
+        self.marker("ab" * 16, "closed", end_ms=1_500_000)
+        job = self.runtime.queue.claim()
+        root = self.cfg.data_dir / "jobs" / job["id"]
+        with mock.patch("second_brain.runtime.overlapping", side_effect=OSError("boom")):
+            self.assertIsNone(self.runtime.dedupe_index_or_none(job, root, False))
+        self.assertIsNone(self.runtime.dedupe_index_or_none(job, root, True))
+
+    def test_a_replay_from_a_saved_manifest_never_waits(self):
+        self.marker("cd" * 16, "open")
+        job = self.runtime.queue.claim()
+        root = self.cfg.data_dir / "jobs" / job["id"]
+        root.mkdir(parents=True)
+        (root / "manifest.json").write_text("{}")
+        self.assertFalse(self.runtime.defer_for_meeting(job))
 
 
 if __name__ == "__main__":
