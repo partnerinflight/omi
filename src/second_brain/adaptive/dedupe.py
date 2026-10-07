@@ -9,13 +9,17 @@ Two stages, because the Omi and the Mac clocks differ by a slowly drifting offse
 Searching +-10 s per segment instead (the spec's original rule) was measured on real Omi speech
 to drop 93% of unrelated 0.8 s segments and 9% of 8 s ones by chance: the best of ~800 shifted
 comparisons routinely exceeds 0.6. That would delete exactly the in-room speech this keeps.
+A mic (L) match drops a segment only where the meeting job itself would publish that mic span as
+the owner (`mic_dominates`); elsewhere the meeting note files it as bleed, so dropping it here would
+lose the owner's words from both notes. The remote (R) channel is always published. Alignment may
+use either channel: it only finds the clock offset.
 Nothing here deletes audio.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-from .channels import FRAME_SECONDS, match_envelope, rms_envelope
+from .channels import FRAME_SECONDS, match_envelope, mic_dominates, rms_envelope
 
 DROP_THRESHOLD = 0.6         # per-segment correlation that means "the meeting already has this"
 ALIGNMENT_THRESHOLD = 0.7    # block peak needed to trust an offset (unrelated real pairs: max 0.52)
@@ -78,6 +82,11 @@ def _offset_at(alignment, meeting_seconds):
                key=lambda b: abs((b["start"] + b["end"]) / 2 - meeting_seconds))["offset_seconds"]
 
 
+def _meeting_publishes_mic(meeting, at, seconds):
+    """The meeting job's own owner rule over the matched mic window [at, at + seconds)."""
+    return mic_dominates(meeting["left"], meeting["right"], at, at + seconds)
+
+
 def decide(segments, omi_frames, omi_epoch, meetings):
     result = Decisions()
     aligned = []
@@ -99,6 +108,9 @@ def decide(segments, omi_frames, omi_epoch, meetings):
                 into = expected + offset
                 for name, frames in (("L", meeting["left"]), ("R", meeting["right"])):
                     peak, shift = match_envelope(envelope, frames, into, SEGMENT_TOLERANCE)
+                    if name == "L" and peak is not None and not _meeting_publishes_mic(
+                            meeting, into + shift, end - start):
+                        continue    # the meeting note drops this mic span as bleed; only R may match
                     if peak is not None and (best[0] is None or peak > best[0]):
                         best = (peak, round(offset + shift, 3), name, meeting["capture_id"])
         peak, offset, channel, capture = best

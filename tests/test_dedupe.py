@@ -115,6 +115,14 @@ def pseudo_speech(seconds, seed):
     return out[: int(seconds / 0.05)]
 
 
+def remote_channel(frames, gain=0.01):
+    """A meeting's remote channel, 20 dB below the owner's mic as heard by the Mac. The meeting job
+    publishes a mic span as the owner only when the mic is >= 6 dB over the remote, so a call the
+    meeting note actually carries needs a remote quieter than the owner while they speak. Scaling
+    changes no correlation, so chance matches against the busy remote are unaffected."""
+    return [v * gain for v in frames]
+
+
 def second_mic(frames, seed, gain=0.5, floor=60.0):
     """The same speech heard by another microphone: different level, jitter, a noise floor."""
     r = random.Random(seed)
@@ -125,7 +133,8 @@ class DecisionTests(unittest.TestCase):
     """A 2-minute Omi recording: the owner on a call for 60 s, then someone in the room for 60 s.
     The meeting started at the same epoch. Meeting audio is exactly as long as the meeting
     (no padding): alignment must work from inside the overlap, in both offset directions. The
-    remote channel is busy with other speech throughout, which is what makes chance matches likely."""
+    remote channel is busy with other speech throughout, which is what makes chance matches likely,
+    but 20 dB below the owner, so the meeting note publishes the owner's call (see remote_channel)."""
 
     @classmethod
     def setUpClass(cls):
@@ -146,7 +155,7 @@ class DecisionTests(unittest.TestCase):
         mic = second_mic(cls.call[:1200], 4) + second_mic([0.0] * 1300, 5)
         left = [0.0] * lag_frames + mic if lag_frames >= 0 else mic[-lag_frames:]
         return {"capture_id": cid, "start_ms": 1_000_000, "end_ms": 1_120_000,
-                "left": (left + [0.0] * 2400)[:2400], "right": cls.remote[:2400]}
+                "left": (left + [0.0] * 2400)[:2400], "right": remote_channel(cls.remote[:2400])}
 
     def call_and_room(self, decisions, segments=None):
         segments = segments or self.segments
@@ -184,7 +193,12 @@ class DecisionTests(unittest.TestCase):
         self.assertGreaterEqual(len(got) / len(call), 0.8)
 
     def test_the_call_is_dropped_and_the_room_is_kept(self):
+        from second_brain.adaptive.channels import OWNER_MARGIN_DB, span_level_db
         from second_brain.adaptive.dedupe import decide
+        left, right = self.meeting["left"], self.meeting["right"]
+        margins = [span_level_db(left, s["start"] + 3.7, s["end"] + 3.7) - span_level_db(right, s["start"] + 3.7, s["end"] + 3.7)
+                   for s in self.segments if s["end"] <= 60]
+        self.assertGreaterEqual(min(margins), OWNER_MARGIN_DB)   # the meeting note publishes this call
         decisions = decide(self.segments, self.omi, 1000, [self.meeting])
         got, call, wrong = self.call_and_room(decisions)
         # Segments in the first and last 10 s of the overlap cannot be aligned, so a few edge
@@ -196,6 +210,23 @@ class DecisionTests(unittest.TestCase):
         self.assertNotIn("channel", record)          # `channel` means mic/remote on meeting segments
         self.assertGreaterEqual(record["score"], 0.6)
         self.assertAlmostEqual(record["offset_seconds"], 3.7, delta=0.1)
+
+    def test_owner_speech_the_meeting_note_drops_as_bleed_is_kept_in_the_omi_note(self):
+        """Talking over a louder remote: the meeting job files the owner's mic span as bleed (the mic
+        is not 6 dB over the remote), so the meeting note lacks it. The Omi note must keep it."""
+        from second_brain.adaptive.channels import mic_dominates
+        from second_brain.adaptive.dedupe import decide
+        loud_remote = second_mic(pseudo_speech(120, 41), 42, gain=8.0)
+        meeting = dict(self.meeting, right=loud_remote[:2400])
+        call_segments = [s for s in self.segments if s["end"] <= 60]
+        self.assertFalse(any(mic_dominates(meeting["left"], meeting["right"], s["start"] + 3.7, s["end"] + 3.7)
+                             for s in call_segments))      # the meeting note drops every one as bleed
+        decisions = decide(self.segments, self.omi, 1000, [meeting])
+        self.assertEqual({(b["channel"], b["offset_seconds"]) for b in decisions.alignments[0]["blocks"]},
+                         {("L", 3.7)})                      # alignment still uses the mic channel
+        got, call, wrong = self.call_and_room(decisions)
+        self.assertEqual(got, set())
+        self.assertEqual(wrong, set())
 
     def test_short_room_speech_against_a_busy_meeting_is_almost_never_dropped(self):
         """The regression the first revision exists for: 400 random 2-3 s room segments while the
@@ -218,7 +249,7 @@ class DecisionTests(unittest.TestCase):
         heard = second_mic(call, 22)
         left = [heard[min(len(call) - 1, round(k * (1 - 1000e-6)))] for k in range(6000)]
         meeting = {"capture_id": "ef" * 16, "start_ms": 1_000_000, "end_ms": 1_300_000,
-                   "left": left, "right": pseudo_speech(300, 23)}
+                   "left": left, "right": remote_channel(pseudo_speech(300, 23))}
         late = [{"start": float(t), "end": float(t) + 4.0, "text": f"late{t}"} for t in range(200, 284, 6)]
         decisions = decide(late, call, 1000, [meeting])
         offsets = [b["offset_seconds"] for b in decisions.alignments[0]["blocks"]]
@@ -232,7 +263,7 @@ class DecisionTests(unittest.TestCase):
         omi = room[:3600] + call[3600:6000]
         left = second_mic([0.0] * 3600 + call[3600:6000], 33)
         meeting = {"capture_id": "aa" * 16, "start_ms": 1_000_000, "end_ms": 1_300_000,
-                   "left": left, "right": pseudo_speech(300, 34)}
+                   "left": left, "right": remote_channel(pseudo_speech(300, 34))}
         late = [{"start": float(t), "end": float(t) + 4.0, "text": f"t{t}"} for t in range(190, 280, 6)]
         decisions = decide(late, omi, 1000, [meeting])
         self.assertEqual(decisions.alignments[0]["status"], "aligned")
@@ -402,6 +433,10 @@ CALL = "0.4*sin(2*PI*1000*t)*abs(sin(2*PI*1.3*t)*sin(2*PI*0.37*t+1))"
 ROOM = "0.4*sin(2*PI*1500*t)*abs(sin(2*PI*1.7*t+2)*sin(2*PI*0.53*t))"
 OTHER = "0.4*sin(2*PI*800*t)*abs(sin(2*PI*1.1*t+0.5)*sin(2*PI*0.29*t+2))"
 OTHER2 = "0.4*sin(2*PI*600*t)*abs(sin(2*PI*0.9*t)*sin(2*PI*0.41*t+1))"
+# The meeting's remote channel: OTHER 20 dB below the owner's mic. The meeting job publishes a mic
+# span as the owner only when the mic is >= 6 dB over the remote (channels.mic_dominates); with the
+# remote as loud as the mic it files the owner as bleed, and dedupe rightly keeps the Omi copy.
+REMOTE = "0.04*sin(2*PI*800*t)*abs(sin(2*PI*1.1*t+0.5)*sin(2*PI*0.29*t+2))"
 
 
 def pipeline_config(root: Path, moss="fake_moss.py") -> Path:
@@ -436,7 +471,7 @@ class PipelineDedupeTests(unittest.TestCase):
         # needs >= 30 s of overlap and envelope structure, so constant tones cannot be used.
         cls.omi = tone_wav(cls.root / "omi.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
         # The meeting's mic holds the call; its remote channel carries unrelated speech throughout.
-        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{REMOTE}", 120, channels=2)
         index = [{"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
                   "audio": str(cls.capture)}]
         (cls.root / "index.json").write_text(json.dumps({"recording_epoch": 1000, "captures": index}))
@@ -529,7 +564,7 @@ class UnreadableCaptureTests(unittest.TestCase):
         cls.omi = tone_wav(cls.root / "omi.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
         cls.junk = cls.root / "junk.caf"
         cls.junk.write_bytes(b"not audio")
-        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{REMOTE}", 120, channels=2)
 
     @classmethod
     def tearDownClass(cls):
@@ -784,7 +819,7 @@ class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_omi_recording_loses_only_the_meeting_half(self):
         omi = tone_wav(self.root / "omi-src.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
-        capture = tone_wav(self.root / "cap.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        capture = tone_wav(self.root / "cap.wav", f"if(lt(t,60),{CALL},0)|{REMOTE}", 120, channels=2)
         self.place_capture("ab" * 16, "closed", 1_000_000, 1_120_000, capture)
         self.place_omi(1000, omi)
         await self.wait(lambda: self.runtime.queue.snapshot()["counts"].get("complete") == 1, "the job")
@@ -802,7 +837,7 @@ class DedupeEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_uploading_meeting_holds_the_omi_job_until_it_closes(self):
         omi = tone_wav(self.root / "omi2.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
-        capture = tone_wav(self.root / "cap2.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        capture = tone_wav(self.root / "cap2.wav", f"if(lt(t,60),{CALL},0)|{REMOTE}", 120, channels=2)
         self.place_capture("cd" * 16, "open", 1_000_000)
         self.place_omi(1000, omi)
         await self.wait(lambda: self.runtime.queue.snapshot()["recent"]
