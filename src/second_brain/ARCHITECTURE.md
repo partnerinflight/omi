@@ -18,8 +18,8 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    into `incoming/meetings/` through `MeetingStore` (`omi_local.file_store`):
    resumable fsynced partials, SHA-256-verified atomic commit, and capture
    markers (`open`/`cancelled`/`closed`). Meeting receipts go to
-   `incoming/meetings/.ready/`, which Omi discovery does not scan; processing is
-   added separately. The client lives in `mac/SecondBrainCapture`.
+   `incoming/meetings/.ready/`, scanned only when meetings_enabled; meeting jobs run the pipeline
+   with --meeting and publish one note per capture. The client lives in `mac/SecondBrainCapture`.
 3. Discovery places each recording in SQLite with source identity and SHA-256.
    One worker atomically claims jobs. Attempts use separate directories. The
    source hash is checked before processing, and a saved complete manifest is

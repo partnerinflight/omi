@@ -129,7 +129,13 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
 6. Receiver protocol v2 serves authenticated file clients (Mac meeting capture).
    Whole files land in `incoming/meetings/` only after a verified atomic commit
    (length and SHA-256); capture markers live in `.captures/` and completion
-   receipts in `.ready/`. The pipeline does not yet process these receipts.
+   receipts in `.ready/`. With `meetings_enabled`, discovery queues these receipts as ordinary jobs. The pipeline's
+   `--meeting` mode transcribes L (mic) and R (meeting app) separately. A mic segment is kept as
+   `owner_name` only where the mic is >= 6 dB louder than R in the 300-3400 Hz band; the rest is remote
+   bleed, kept only in the manifest (`meeting.bleed_dropped`). R is diarized and voice-matched.
+   Windows are scored as usual and the gate still decides routing, but every window is published in
+   one meeting note (highlights first). 7B refinement is off for meetings because it works on a mono
+   mix. Omi recordings overlapping a meeting are not yet deduplicated (Plan 2b).
    Directory fsync is a no-op on Windows, so after a power loss a rename the
    client was already told is committed can be lost; the client has then
    deleted its copy. Accepted platform limit, as for other receiver renames.
@@ -350,7 +356,7 @@ Default machine state (`service.json` may override paths):
 | `incoming/`, `.omi-local/state.json`, `devices/`, `.ready/` | Audio, receiver checkpoints, completion receipts |
 | `incoming/meetings/` | v2 whole-file meeting captures (audio + JSON sidecar), committed after verification |
 | `incoming/meetings/.captures/` | Per-capture open/closed/cancelled markers |
-| `incoming/meetings/.ready/` | v2 commit receipts; not yet consumed by the pipeline |
+| `incoming/meetings/.ready/` | v2 commit receipts; queued when meetings_enabled |
 | `data/queue.sqlite3`, `data/speakers.sqlite3` | Authoritative job and identity stores |
 | `data/service.log` | Rotating receiver/discovery/worker errors |
 | `data/jobs/<id>/attempt-N/pipeline.log`, `progress.json` | Detailed stage/model output; may contain transcripts |
@@ -398,6 +404,15 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   Build with pinned SDK, bump both version strings for behavior changes, verify
   signed OTA ZIP; deployment requires user authorization. SDK caches/build outputs,
   recordings, credentials, transcripts, and weights stay outside Git.
+- Meeting notes, known limits (2026-10-07): the 6 dB owner rule compares whole MOSS
+  segments. A segment mixing owner speech and remote bleed is credited to the owner
+  when the owner is loud (remote words then appear twice), and a short owner
+  interjection inside long remote speech can be dropped as bleed. Headsets and clean
+  turn-taking are unaffected. Everything on the mic channel is the owner, including
+  other people in the room sharing that mic. For meetings the job result's `filtered`
+  count means "not routed to Hermes"; those windows are still in the note. Real ASR on
+  meeting audio, real voice matching of remote speakers, and Windows ffmpeg decoding
+  of a real Mac CAF are unverified (fixtures only).
 - Keep changes on the feature branch; do not merge/push `main` without instruction.
   Preserve durability boundaries, v3 gates, edited notes, and third-party licenses.
   Add tests at real failure boundaries. Never present mocked model tests or a

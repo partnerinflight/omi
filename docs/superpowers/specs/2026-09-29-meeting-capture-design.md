@@ -1,6 +1,8 @@
 # Meeting capture and Omi dedupe — design
 
-Date: 2026-09-29. Status: approved design, not yet implemented.
+Date: 2026-09-29. Status: approved design. Implemented: §1 Mac app, §2 receiver v2, §3 meeting jobs
+(plan `docs/superpowers/plans/2026-10-06-meeting-notes.md`; owner named by `owner_name`, 7B
+refinement off for meetings). Not yet: §3 Omi dedupe and §4 tray meeting counts (Plan 2b).
 
 ## Problem
 

@@ -135,6 +135,11 @@ local mailbox. It cannot read the pairing key or stop the service.
 - This is an additive vault writer, not a semantic merger into existing people,
   project or task notes. Existing notes are only read for novelty/hotwords.
 - Filtered conversation remains in private job results and is not published.
+- `meetings_enabled` (false): process Mac meeting captures from `incoming/meetings/` into one note
+  each under `meetings_vault_folder` (default `Omi/Meetings`). The capture's microphone channel is
+  attributed to `owner_name`; the meeting app's channel is diarized and voice-matched like Omi
+  speakers. Meetings are never dropped by the memory gate, and meeting audio is retained.
+  Captures uploaded before enabling are processed on the next scan.
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
   default). Once a recording's note is published and its job is complete, the
   service deletes the original Omi recording, its sidecar and receipt, and all
