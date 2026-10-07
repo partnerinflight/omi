@@ -140,6 +140,9 @@ local mailbox. It cannot read the pairing key or stop the service.
   attributed to `owner_name`; the meeting app's channel is diarized and voice-matched like Omi
   speakers. Meetings are never dropped by the memory gate, and meeting audio is retained.
   Captures uploaded before enabling are processed on the next scan.
+  When an Omi recording overlaps a finished capture, the Omi segments the meeting already holds
+  are dropped from its note; anything else the Omi heard (someone in the room) is kept. An Omi
+  recording whose meeting is still uploading waits for it (up to 24 hours).
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
   default). Once a recording's note is published and its job is complete, the
   service deletes the original Omi recording, its sidecar and receipt, and all

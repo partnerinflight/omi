@@ -2,7 +2,11 @@
 
 Date: 2026-09-29. Status: approved design. Implemented: §1 Mac app, §2 receiver v2, §3 meeting jobs
 (plan `docs/superpowers/plans/2026-10-06-meeting-notes.md`; owner named by `owner_name`, 7B
-refinement off for meetings). Not yet: §3 Omi dedupe and §4 tray meeting counts (Plan 2b).
+refinement off for meetings), §3 Omi dedupe (plan `docs/superpowers/plans/2026-10-07-omi-meeting-dedupe.md`).
+Deviations: 60 s block alignment plus per-segment ±0.1 s instead of per-segment ±10 s (measured false-drop
+rates); alignment threshold 0.7 per block instead of 0.3; segments < 2 s never dropped; open markers are
+treated as expired without rewriting them; open capture span capped at 8 h; timing from `first_timestamp`.
+Not yet: §4 tray meeting counts.
 
 ## Problem
 

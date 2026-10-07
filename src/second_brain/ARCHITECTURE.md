@@ -20,6 +20,9 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    markers (`open`/`cancelled`/`closed`). Meeting receipts go to
    `incoming/meetings/.ready/`, scanned only when meetings_enabled; meeting jobs run the pipeline
    with --meeting and publish one note per capture. The client lives in `mac/SecondBrainCapture`.
+   For Omi jobs the service resolves capture overlap (`second_brain.meetings`) and passes the
+   pipeline only a written index, so the pipeline holds no receiver-layout knowledge; dedupe runs
+   between ASR and windowing.
 3. Discovery places each recording in SQLite with source identity and SHA-256.
    One worker atomically claims jobs. Attempts use separate directories. The
    source hash is checked before processing, and a saved complete manifest is

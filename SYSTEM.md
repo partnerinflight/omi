@@ -135,7 +135,25 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    bleed, kept only in the manifest (`meeting.bleed_dropped`). R is diarized and voice-matched.
    Windows are scored as usual and the gate still decides routing, but every window is published in
    one meeting note (highlights first). 7B refinement is off for meetings because it works on a mono
-   mix. Omi recordings overlapping a meeting are not yet deduplicated (Plan 2b).
+   mix. Omi recordings overlapping a meeting are deduplicated
+   after ASR and before windows. The service (`second_brain.meetings`) picks overlapping
+   captures from the capture markers and passes the pipeline a written index
+   (`--meeting-dedupe`); the pipeline never reads receiver layout. Alignment: each 60 s block of
+   overlap, starting and ending 10 s inside it, is matched (50 ms speech-band RMS envelopes,
+   Pearson) against the capture's L and R within +-10 s; a block needs a peak >= 0.7 to be
+   trusted, and a meeting needs >= 50 s of overlap to try. Per-block offsets track clock drift.
+   Per segment: only segments >= 2 s, scored within +-0.1 s of the nearest aligned block's
+   offset; >= 0.6 drops it. `dedupe.dropped` in the manifest records deduped_by,
+   deduped_channel, score, offset_seconds; `dedupe.alignments` records per-meeting status and
+   blocks. No audio is deleted; moss_all_segments.json keeps every segment. Conversation windows
+   never span dropped speech, so 7B refinement cannot restore it. Dedupe never fails a job:
+   unreadable captures are skipped (status "unreadable" + a fallbacks entry); any other error
+   keeps every segment. While an overlapping capture is `open` the job waits (stage
+   `waiting-for-meeting`, rechecked every 5 min) without spending a retry; an open marker older
+   than 24 h stops blocking, and an open capture is assumed to last at most 8 h. A recording whose
+   device clock was never set (`first_timestamp` 0) is never deduplicated. Replays from a saved
+   manifest never re-run dedupe or wait. The spec's per-segment +-10 s search was rejected:
+   on the owner's real Omi recordings it falsely dropped 93% of unrelated 0.8 s segments (9% at 8 s).
    Directory fsync is a no-op on Windows, so after a power loss a rename the
    client was already told is committed can be lost; the client has then
    deleted its copy. Accepted platform limit, as for other receiver renames.
@@ -413,6 +431,17 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   count means "not routed to Hermes"; those windows are still in the note. Real ASR on
   meeting audio, real voice matching of remote speakers, and Windows ffmpeg decoding
   of a real Mac CAF are unverified (fixtures only).
+- Omi/meeting dedupe, known limits (2026-10-07): a meeting uploaded after its overlapping Omi
+  recording was already processed leaves two notes; nothing reconciles them (owner accepted).
+  Decisions are per ASR segment: a segment mixing meeting and room speech is kept or dropped
+  whole, and segments < 2 s are never dropped (duplicate backchannels remain). Loud room speech
+  through a whole block, or the owner silent in it, makes that block unusable; segments then use
+  the nearest aligned block, or none. Thresholds (0.7 alignment, 0.6 drop) were measured on the
+  owner's real Omi audio for false drops (0.7% at 2 s) and on simulated second-microphone audio
+  for detection (80-87%); real Mac-mic vs Omi pairs are unverified. Meeting audio is never
+  deleted, so incoming/meetings/ grows without bound; capture markers are re-read per job. The
+  end-to-end dedupe tests turn the memory gate off (their fixture text is too short to pass it);
+  dedupe with the gate on is covered only at the pipeline level.
 - Mac encoder stereo separation, measured 2026-10-07 on this Mac with the production
   `CaptureEncoder` settings (16 kHz stereo Opus, 32 kbit/s): with one channel active the
   other sits about 43 dB down, so owner attribution is correct. Two simultaneous pure
