@@ -701,8 +701,9 @@ class OverlapTests(unittest.TestCase):
     def test_an_open_overlapping_capture_asks_the_caller_to_wait(self):
         from second_brain.meetings import overlapping
         self.marker("cd" * 16, "open", 1_200_000)
-        found = overlapping(self.meetings, self.omi())
-        self.assertEqual([m["capture_id"] for m in found.open], ["cd" * 16])
+        # `now` is pinned: the marker's `updated` is fixed, and a real clock would expire it a day later.
+        found = overlapping(self.meetings, self.omi(), now=1_791_300_100.0)
+        self.assertEqual(found.open, ["cd" * 16])     # open holds ids, like expired
         self.assertEqual(found.closed, [])
 
     def test_an_open_capture_older_than_a_day_no_longer_blocks(self):
@@ -1157,9 +1158,12 @@ class RuntimeDedupeTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def marker(self, cid, state, **extra):
+        # `updated` is the real clock: the runtime classifies markers against time.time(), and a
+        # fixed timestamp would turn an open capture into an expired one a day after it was written.
+        import time
         (self.captures / f"{cid}.json").write_text(json.dumps(
             {"capture_id": cid, "client": "mac", "state": state, "start_ms": 1_200_000,
-             "app": "us.zoom.xos", "updated": 1_791_300_000.0, **extra}))
+             "app": "us.zoom.xos", "updated": time.time(), **extra}))
 
     def test_an_open_overlapping_capture_defers_the_job(self):
         self.marker("cd" * 16, "open")
