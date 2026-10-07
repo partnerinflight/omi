@@ -15,6 +15,7 @@ log = logging.getLogger("second_brain.meetings")
 
 SEARCH_SECONDS = 10.0        # same tolerance the correlation search uses
 OPEN_EXPIRY_SECONDS = 24 * 3600
+MAX_OPEN_SECONDS = 8 * 3600  # an open capture is assumed to last at most this long
 
 
 @dataclass
@@ -51,12 +52,17 @@ def overlapping(meetings_dir: Path, metadata: dict, now=None) -> Overlaps:
             if state == "cancelled":
                 continue
             capture_start = value["start_ms"] / 1000
-            # An open capture has no end yet; treat it as still running.
-            capture_end = value["end_ms"] / 1000 if state == "closed" else max(capture_start, now)
+            # An open capture has no end yet; treat it as still running, but only for so long:
+            # CAPTURE_OPEN may arrive late, and a days-old start must not hold every later recording.
+            capture_end = (value["end_ms"] / 1000 if state == "closed"
+                           else min(max(capture_start, now), capture_start + MAX_OPEN_SECONDS))
             if capture_end + SEARCH_SECONDS < start or capture_start - SEARCH_SECONDS > end:
                 continue
             if state == "open":
-                if now - float(value.get("updated", 0)) > OPEN_EXPIRY_SECONDS:
+                updated = float(value.get("updated", 0))
+                if updated > now + 60:            # clock skew: a future stamp would never expire
+                    updated = capture_start
+                if max(0.0, now - updated) > OPEN_EXPIRY_SECONDS:
                     result.expired.append(value["capture_id"])
                 else:
                     result.open.append(value["capture_id"])

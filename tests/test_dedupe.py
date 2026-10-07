@@ -365,6 +365,29 @@ class OverlapTests(unittest.TestCase):
         (self.meetings / f"{'ab' * 16}.caf").unlink()
         self.assertEqual(overlapping(self.meetings, self.omi()).closed, [])
 
+    def test_an_open_capture_from_days_earlier_does_not_hold_a_later_recording(self):
+        from second_brain.meetings import overlapping
+        now = 1000 + 2 * 86400 + 700
+        self.marker("cd" * 16, "open", 1_000_000, updated=now)
+        found = overlapping(self.meetings, self.omi(first=1000 + 2 * 86400), now=now)
+        self.assertEqual(found.open, [])
+        self.assertEqual(found.expired, [])
+
+    def test_an_open_capture_still_holds_a_recording_within_its_first_hours(self):
+        from second_brain.meetings import overlapping
+        now = 1000 + 3 * 3600 + 700
+        self.marker("cd" * 16, "open", 1_000_000, updated=now)
+        found = overlapping(self.meetings, self.omi(first=1000 + 3 * 3600), now=now)
+        self.assertEqual(found.open, ["cd" * 16])
+
+    def test_a_future_dated_open_marker_still_expires(self):
+        from second_brain.meetings import overlapping
+        now = 1000 + 2 * 86400
+        self.marker("cd" * 16, "open", 1_000_000, updated=now + 10 * 86400)
+        found = overlapping(self.meetings, self.omi(), now=now)
+        self.assertEqual(found.expired, ["cd" * 16])
+        self.assertEqual(found.open, [])
+
 
 if __name__ == "__main__":
     unittest.main()
