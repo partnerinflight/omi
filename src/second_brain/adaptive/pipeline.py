@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 import wave
+from second_brain.adaptive.channels import CHANNEL_INDEX, downmix
 from second_brain.io import write_json
 
 PROGRESS_FILE = None
@@ -242,7 +243,16 @@ def ffprobe_duration(audio):
     return float(proc.stdout.strip())
 
 
-def detect_long_silences(audio, noise_db, duration):
+def ffprobe_channels(audio):
+    proc = run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels",
+         "-of", "default=noprint_wrappers=1:nokey=1", audio]
+    )
+    return int(proc.stdout.strip())
+
+
+def detect_long_silences(audio, noise_db, duration, channel=None):
+    select = f"pan=mono|c0=c{CHANNEL_INDEX[channel]}," if channel else ""
     proc = run(
         [
             "ffmpeg",
@@ -251,7 +261,7 @@ def detect_long_silences(audio, noise_db, duration):
             "-i",
             audio,
             "-af",
-            f"silencedetect=noise={noise_db}dB:d={duration}",
+            f"{select}silencedetect=noise={noise_db}dB:d={duration}",
             "-f",
             "null",
             "-",
@@ -304,7 +314,7 @@ def split_spans(spans, max_seconds):
     return out
 
 
-def extract_wav(audio, start, end, sample_rate, out):
+def extract_wav(audio, start, end, sample_rate, out, channel=None):
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     run(
@@ -321,8 +331,7 @@ def extract_wav(audio, start, end, sample_rate, out):
             "-t",
             f"{max(0.01, end-start):.3f}",
             "-vn",
-            "-ac",
-            "1",
+            *downmix(channel),
             "-ar",
             str(sample_rate),
             "-c:a",
@@ -991,6 +1000,55 @@ def parse_vibe_text(result, start, end, window_id):
     return "\n".join(f"{s['speaker']}: {s['text']}" for s in parse_vibe_segments(result, start, end, window_id))
 
 
+def transcribe_spans(audio, spans, cfg, coarse_dir, prefix="c", channel=None):
+    """MOSS each span of one channel (or the mono mix). Returns (segments, chunk records)."""
+    moss_exe = str(Path(cfg["moss_cpp_engine_dir"]) / ("moss-transcribe.exe" if os.name == "nt" else "moss-transcribe"))
+    moss_runner = str(Path(__file__).parent / "runners" / "moss_cpp_runner.py")
+    segments, chunks = [], []
+    for idx, (st, en) in enumerate(spans):
+        cid = f"{prefix}{idx:04d}"
+        wav = coarse_dir / f"{cid}.wav"
+        jout = coarse_dir / f"{cid}.json"
+        extract_wav(audio, st, en, 16000, wav, channel)
+        run(
+            [
+                sys.executable,
+                moss_runner,
+                "--command-json",
+                json.dumps(cfg.get("moss_command", [moss_exe])),
+                "--model",
+                cfg["moss_model"],
+                "--audio",
+                str(wav),
+                "--output",
+                str(jout),
+                "--threads",
+                str(cfg["moss_threads"]),
+                "--device",
+                cfg.get("moss_device", "cpu"),
+                "--max-new",
+                str(cfg["moss_max_new"]),
+            ],
+            capture=False,
+        )
+        count = 0
+        for seg in load_json(jout).get("segments", []):
+            abs_seg = dict(seg)
+            abs_seg["start"] = st + float(seg["start"])
+            abs_seg["end"] = st + float(seg["end"])
+            abs_seg["coarse_chunk"] = cid
+            abs_seg["speaker"] = cid + ":" + str(seg.get("speaker", "S?"))
+            if channel:
+                abs_seg["channel"] = channel
+            segments.append(abs_seg)
+            count += 1
+        chunk = {"id": cid, "start": st, "end": en, "audio": str(wav), "moss_json": str(jout), "segment_count": count}
+        if channel:
+            chunk["channel"] = channel
+        chunks.append(chunk)
+    return segments, chunks
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio", required=True)
@@ -1049,58 +1107,7 @@ def main():
     # Stage 1: MOSS everything meaningful.
     progress("transcribing")
     print("=== Stage 1: MOSS first pass ===", flush=True)
-    moss_exe = str(Path(cfg["moss_cpp_engine_dir"]) / ("moss-transcribe.exe" if os.name == "nt" else "moss-transcribe"))
-    moss_runner = str(Path(__file__).parent / "runners" / "moss_cpp_runner.py")
-    all_segments = []
-
-    for idx, (st, en) in enumerate(coarse_spans):
-        cid = f"c{idx:04d}"
-        wav = coarse_dir / f"{cid}.wav"
-        jout = coarse_dir / f"{cid}.json"
-        extract_wav(audio, st, en, 16000, wav)
-        run(
-            [
-                sys.executable,
-                moss_runner,
-                "--command-json",
-                json.dumps(cfg.get("moss_command", [moss_exe])),
-                "--model",
-                cfg["moss_model"],
-                "--audio",
-                str(wav),
-                "--output",
-                str(jout),
-                "--threads",
-                str(cfg["moss_threads"]),
-                "--device",
-                cfg.get("moss_device", "cpu"),
-                "--max-new",
-                str(cfg["moss_max_new"]),
-            ],
-            capture=False,
-        )
-
-        obj = load_json(jout)
-        segs = []
-        for seg in obj.get("segments", []):
-            abs_seg = dict(seg)
-            abs_seg["start"] = st + float(seg["start"])
-            abs_seg["end"] = st + float(seg["end"])
-            abs_seg["coarse_chunk"] = cid
-            abs_seg["speaker"] = cid + ":" + str(seg.get("speaker", "S?"))
-            segs.append(abs_seg)
-            all_segments.append(abs_seg)
-
-        manifest["coarse_chunks"].append(
-            {
-                "id": cid,
-                "start": st,
-                "end": en,
-                "audio": str(wav),
-                "moss_json": str(jout),
-                "segment_count": len(segs),
-            }
-        )
+    all_segments, manifest["coarse_chunks"] = transcribe_spans(audio, coarse_spans, cfg, coarse_dir)
 
     all_segments.sort(key=lambda s: (s["start"], s["end"]))
     (run_dir / "moss_all_segments.json").write_text(

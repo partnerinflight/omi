@@ -138,5 +138,47 @@ class ChannelTests(unittest.TestCase):
             stereo_frames(bad)
 
 
+def dominant_hz(path: Path) -> float:
+    with wave.open(str(path)) as w:
+        frames = w.readframes(w.getnframes())
+        rate, n = w.getframerate(), w.getnframes()
+    samples = array("h")
+    samples.frombytes(frames)
+    crossings = sum(1 for a, b in zip(samples, samples[1:]) if (a < 0) != (b < 0))
+    return crossings / 2 / (n / rate)
+
+
+class ChannelExtractionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.capture = make_capture(cls.root / "capture.caf")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_extract_wav_selects_the_requested_channel(self):
+        from second_brain.adaptive.pipeline import extract_wav
+        left = extract_wav(str(self.capture), 0, 5, 16000, self.root / "l.wav", "L")
+        right = extract_wav(str(self.capture), 5, 10, 16000, self.root / "r.wav", "R")
+        self.assertAlmostEqual(dominant_hz(left), 440, delta=30)
+        self.assertAlmostEqual(dominant_hz(right), 880, delta=30)
+        with wave.open(str(left)) as w:
+            self.assertEqual((w.getnchannels(), w.getframerate()), (1, 16000))
+
+    def test_silence_detection_can_listen_to_one_channel(self):
+        from second_brain.adaptive.pipeline import detect_long_silences
+        silences = detect_long_silences(str(self.capture), -42.0, 2.0, "R")
+        self.assertEqual(len(silences), 1)
+        self.assertAlmostEqual(silences[0][1], 5.0, delta=0.3)
+        self.assertEqual(detect_long_silences(str(self.capture), -42.0, 2.0, "L"), [])
+
+    def test_channel_count(self):
+        from second_brain.adaptive.pipeline import ffprobe_channels
+        self.assertEqual(ffprobe_channels(str(self.capture)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
