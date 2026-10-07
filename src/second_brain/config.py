@@ -9,6 +9,17 @@ def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
+def check_folder(key: str, value: str) -> None:
+    folder = value.replace("\\", "/")
+    if (
+        not folder
+        or Path(folder).is_absolute()
+        or any(x in ("..", ".", "") for x in folder.split("/"))
+        or ":" in folder
+    ):
+        raise ValueError(f"{key} must be a safe relative folder")
+
+
 @dataclass(frozen=True)
 class Config:
     data_dir: Path
@@ -31,6 +42,10 @@ class Config:
     speaker_match_margin: float = 0.12
     # Delete a recording's audio once its note is published (see docs/speakers.md, README).
     delete_audio_after_processing: bool = True
+    # Mac meeting captures (docs/superpowers/specs/2026-09-29-meeting-capture-design.md §3).
+    meetings_enabled: bool = False
+    meetings_vault_folder: str = "Omi/Meetings"
+    owner_name: str = "Me"  # who speaks on a meeting capture's mic channel
 
     @property
     def review_dir(self):
@@ -56,14 +71,13 @@ class Config:
             raise ValueError("Invalid port or polling/retry interval")
         if cfg.max_attempts < 1 or cfg.job_timeout_seconds <= 0:
             raise ValueError("Invalid retry count or job timeout")
-        folder = cfg.vault_folder.replace("\\", "/")
-        if (
-            not folder
-            or Path(folder).is_absolute()
-            or any(x in ("..", ".", "") for x in folder.split("/"))
-            or ":" in folder
+        check_folder("vault_folder", cfg.vault_folder)
+        check_folder("meetings_vault_folder", cfg.meetings_vault_folder)
+        owner = cfg.owner_name.strip()
+        if not 1 <= len(owner) <= 80 or owner != cfg.owner_name or any(
+            ord(c) < 32 or c in "[]<>\\|" for c in owner
         ):
-            raise ValueError("vault_folder must be a safe relative folder")
+            raise ValueError("owner_name must be 1–80 characters without control characters or markup brackets")
         return cfg
 
     def pipeline(self):
