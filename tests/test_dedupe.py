@@ -123,16 +123,15 @@ def second_mic(frames, seed, gain=0.5, floor=60.0):
 
 class DecisionTests(unittest.TestCase):
     """A 2-minute Omi recording: the owner on a call for 60 s, then someone in the room for 60 s.
-    The meeting started at the same epoch; the Mac clock is 3.7 s late (74 frames). The meeting's
+    The meeting started at the same epoch. Meeting audio is exactly as long as the meeting
+    (no padding): alignment must work from inside the overlap, in both offset directions. The
     remote channel is busy with other speech throughout, which is what makes chance matches likely."""
 
     @classmethod
     def setUpClass(cls):
-        call, room, remote = pseudo_speech(120, 1), pseudo_speech(120, 2), pseudo_speech(200, 3)
-        cls.omi = call[:1200] + room[1200:2400]
-        left = [0.0] * 74 + second_mic(call[:1200], 4) + second_mic([0.0] * 1200, 5)
-        cls.meeting = {"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
-                        "left": left + [0.0] * 500, "right": remote[: len(left) + 500]}
+        cls.call, cls.room, cls.remote = pseudo_speech(120, 1), pseudo_speech(120, 2), pseudo_speech(200, 3)
+        cls.omi = cls.call[:1200] + cls.room[1200:2400]
+        cls.meeting = cls.make_meeting(74)               # the Mac clock is 3.7 s late
         r = random.Random(7)
         cls.segments, t = [], 0.0
         while t < 118:
@@ -140,30 +139,58 @@ class DecisionTests(unittest.TestCase):
             cls.segments.append({"start": round(t, 2), "end": round(t + length, 2), "text": f"s{t:.0f}"})
             t += length + r.uniform(0.2, 1.0)
 
+    @classmethod
+    def make_meeting(cls, lag_frames, cid="ab" * 16):
+        """Meeting frames exactly 120 s long. Positive lag: the Mac holds each sound later than the
+        Omi's clock says; negative: earlier."""
+        mic = second_mic(cls.call[:1200], 4) + second_mic([0.0] * 1300, 5)
+        left = [0.0] * lag_frames + mic if lag_frames >= 0 else mic[-lag_frames:]
+        return {"capture_id": cid, "start_ms": 1_000_000, "end_ms": 1_120_000,
+                "left": (left + [0.0] * 2400)[:2400], "right": cls.remote[:2400]}
+
+    def call_and_room(self, decisions, segments=None):
+        segments = segments or self.segments
+        dropped = {d["text"] for d in decisions.dropped}
+        call = {s["text"] for s in segments if s["end"] <= 60}
+        room = {s["text"] for s in segments if s["start"] >= 60}
+        return dropped & call, call, dropped & room
+
     def test_constants_are_the_measured_ones(self):
         from second_brain.adaptive import dedupe
         self.assertEqual((dedupe.DROP_THRESHOLD, dedupe.ALIGNMENT_THRESHOLD, dedupe.SEARCH_SECONDS,
-                          dedupe.SEGMENT_TOLERANCE, dedupe.MIN_SEGMENT_SECONDS, dedupe.MIN_ALIGN_SECONDS,
-                          dedupe.MAX_ALIGN_SECONDS),
-                         (0.6, 0.5, 10.0, 0.1, 2.0, 30.0, 600.0))
+                          dedupe.SEGMENT_TOLERANCE, dedupe.MIN_SEGMENT_SECONDS, dedupe.BLOCK_SECONDS,
+                          dedupe.MIN_BLOCK_SECONDS),
+                         (0.6, 0.7, 10.0, 0.1, 2.0, 60.0, 30.0))
 
-    def test_one_offset_is_estimated_per_meeting(self):
+    def test_a_late_mac_clock_is_found_without_padding(self):
         from second_brain.adaptive.dedupe import decide
         decisions = decide(self.segments, self.omi, 1000, [self.meeting])
         (alignment,) = decisions.alignments
-        self.assertEqual((alignment["status"], alignment["channel"], alignment["offset_seconds"]),
-                         ("aligned", "L", 3.7))
-        self.assertGreaterEqual(alignment["score"], 0.5)
+        self.assertEqual(alignment["status"], "aligned")
+        self.assertEqual({(b["channel"], b["offset_seconds"]) for b in alignment["blocks"]}, {("L", 3.7)})
+        self.assertGreaterEqual(min(b["score"] for b in alignment["blocks"]), 0.7)
         self.assertFalse(decisions.alignment_failed)
+
+    def test_an_early_mac_clock_is_found_too(self):
+        """The reviewed defect: with the Omi already recording when the meeting began, negative
+        shifts had no room inside the overlap and alignment silently failed."""
+        from second_brain.adaptive.dedupe import decide
+        decisions = decide(self.segments, self.omi, 1000, [self.make_meeting(-74)])
+        (alignment,) = decisions.alignments
+        self.assertEqual(alignment["status"], "aligned")
+        self.assertEqual({b["offset_seconds"] for b in alignment["blocks"]}, {-3.7})
+        got, call, wrong = self.call_and_room(decisions)
+        self.assertEqual(wrong, set())
+        self.assertGreaterEqual(len(got) / len(call), 0.8)
 
     def test_the_call_is_dropped_and_the_room_is_kept(self):
         from second_brain.adaptive.dedupe import decide
         decisions = decide(self.segments, self.omi, 1000, [self.meeting])
-        dropped = {d["text"] for d in decisions.dropped}
-        call = [s["text"] for s in self.segments if s["end"] <= 60]
-        room = [s["text"] for s in self.segments if s["start"] >= 60]
-        self.assertEqual(sorted(dropped & set(call)), sorted(call))
-        self.assertEqual(dropped & set(room), set())
+        got, call, wrong = self.call_and_room(decisions)
+        # Segments in the first and last 10 s of the overlap cannot be aligned, so a few edge
+        # segments may survive as duplicates; that is the conservative direction.
+        self.assertGreaterEqual(len(got) / len(call), 0.8)
+        self.assertEqual(wrong, set())
         record = decisions.dropped[0]
         self.assertEqual((record["deduped_by"], record["deduped_channel"]), ("ab" * 16, "L"))
         self.assertNotIn("channel", record)          # `channel` means mic/remote on meeting segments
@@ -171,20 +198,50 @@ class DecisionTests(unittest.TestCase):
         self.assertAlmostEqual(record["offset_seconds"], 3.7, delta=0.1)
 
     def test_short_room_speech_against_a_busy_meeting_is_almost_never_dropped(self):
-        """The regression this revision exists for: 150 random 2-3 s room segments while the
-        remote channel is full of other speech. (Each call re-estimates the alignment, so the
-        sample is kept small enough to run in a few seconds.)"""
+        """The regression the first revision exists for: 400 random 2-3 s room segments while the
+        remote channel is full of other speech, all scored against one alignment."""
         from second_brain.adaptive.dedupe import decide
-        r, dropped = random.Random(11), 0
-        for _ in range(150):
-            start = r.uniform(60, 115)
-            segment = {"start": start, "end": start + r.uniform(2.0, 3.0), "text": "room"}
-            dropped += bool(decide([segment], self.omi, 1000, [self.meeting]).dropped)
-        self.assertLessEqual(dropped / 150, 0.02)
+        r = random.Random(11)
+        room = []
+        for index in range(400):
+            start = r.uniform(60, 105)                  # inside the aligned part of the overlap
+            room.append({"start": start, "end": start + r.uniform(2.0, 3.0), "text": f"room{index}"})
+        decisions = decide(room, self.omi, 1000, [self.meeting])   # segments are scored independently
+        self.assertEqual(decisions.alignments[0]["status"], "aligned")
+        self.assertLessEqual(len(decisions.dropped) / 400, 0.02)
+
+    def test_clock_drift_is_tracked_block_by_block(self):
+        """Five minutes on a call with the Mac clock drifting 1000 ppm (0.3 s by the end): one
+        offset for the whole meeting would miss the late segments; per-block offsets follow it."""
+        from second_brain.adaptive.dedupe import decide
+        call = pseudo_speech(300, 21)
+        heard = second_mic(call, 22)
+        left = [heard[min(len(call) - 1, round(k * (1 - 1000e-6)))] for k in range(6000)]
+        meeting = {"capture_id": "ef" * 16, "start_ms": 1_000_000, "end_ms": 1_300_000,
+                   "left": left, "right": pseudo_speech(300, 23)}
+        late = [{"start": float(t), "end": float(t) + 4.0, "text": f"late{t}"} for t in range(200, 284, 6)]
+        decisions = decide(late, call, 1000, [meeting])
+        offsets = [b["offset_seconds"] for b in decisions.alignments[0]["blocks"]]
+        self.assertGreater(max(offsets) - min(offsets), 0.15)     # drift really is present
+        self.assertGreaterEqual(len(decisions.dropped) / len(late), 0.8)
+
+    def test_an_owner_silent_at_first_still_aligns_later(self):
+        from second_brain.adaptive.dedupe import decide
+        # Five minutes: room speech only for the first 3 min, then the owner on the call.
+        call, room = pseudo_speech(300, 31), pseudo_speech(300, 32)
+        omi = room[:3600] + call[3600:6000]
+        left = second_mic([0.0] * 3600 + call[3600:6000], 33)
+        meeting = {"capture_id": "aa" * 16, "start_ms": 1_000_000, "end_ms": 1_300_000,
+                   "left": left, "right": pseudo_speech(300, 34)}
+        late = [{"start": float(t), "end": float(t) + 4.0, "text": f"t{t}"} for t in range(190, 280, 6)]
+        decisions = decide(late, omi, 1000, [meeting])
+        self.assertEqual(decisions.alignments[0]["status"], "aligned")
+        self.assertTrue(all(b["start"] >= 170 for b in decisions.alignments[0]["blocks"]))
+        self.assertGreaterEqual(len(decisions.dropped) / len(late), 0.8)
 
     def test_segments_shorter_than_two_seconds_are_never_dropped(self):
         from second_brain.adaptive.dedupe import decide
-        short = [{"start": 10.0, "end": 11.9, "text": "duplicate but short"}]
+        short = [{"start": 20.0, "end": 21.9, "text": "duplicate but short"}]
         decisions = decide(short, self.omi, 1000, [self.meeting])
         self.assertEqual(decisions.dropped, [])
         self.assertNotIn("dedupe_score", decisions.kept[0])
@@ -192,18 +249,18 @@ class DecisionTests(unittest.TestCase):
     def test_an_unrelated_meeting_fails_alignment_and_drops_nothing(self):
         from second_brain.adaptive.dedupe import decide
         other = {"capture_id": "cd" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
-                  "left": pseudo_speech(130, 9), "right": pseudo_speech(130, 10)}
+                 "left": pseudo_speech(120, 9), "right": pseudo_speech(120, 10)}
         decisions = decide(self.segments, self.omi, 1000, [other])
         self.assertEqual(decisions.alignments[0]["status"], "failed")
-        self.assertLess(decisions.alignments[0]["score"], 0.5)
+        self.assertLess(decisions.alignments[0]["best_score"], 0.7)
         self.assertTrue(decisions.alignment_failed)
         self.assertEqual(decisions.dropped, [])
         self.assertEqual(len(decisions.kept), len(self.segments))
 
     def test_too_little_overlap_is_not_an_alignment_failure(self):
         from second_brain.adaptive.dedupe import decide
-        # The meeting starts 100 s into the Omi recording, leaving 20 s of overlap.
-        late = dict(self.meeting, start_ms=1_100_000, end_ms=1_220_000)
+        # The meeting starts 75 s into the Omi recording: 45 s of overlap, 25 s after the margins.
+        late = dict(self.meeting, start_ms=1_075_000, end_ms=1_195_000)
         decisions = decide(self.segments, self.omi, 1000, [late])
         self.assertEqual(decisions.alignments[0]["status"], "too little overlap")
         self.assertFalse(decisions.alignment_failed)
@@ -213,7 +270,7 @@ class DecisionTests(unittest.TestCase):
         from second_brain.adaptive.dedupe import decide
         swapped = dict(self.meeting, left=self.meeting["right"], right=self.meeting["left"])
         decisions = decide(self.segments, self.omi, 1000, [swapped])
-        self.assertEqual(decisions.alignments[0]["channel"], "R")
+        self.assertEqual({b["channel"] for b in decisions.alignments[0]["blocks"]}, {"R"})
         self.assertTrue(decisions.dropped)
         self.assertTrue(all(d["deduped_channel"] == "R" for d in decisions.dropped))
 
