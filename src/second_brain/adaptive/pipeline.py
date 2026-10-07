@@ -365,10 +365,14 @@ def format_segments(segments):
     return "\n".join(rows)
 
 
-def build_conversation_windows(segments, gap_seconds, max_seconds):
+def build_conversation_windows(segments, gap_seconds, max_seconds, breaks=()):
+    """Group segments into windows. `breaks` are (start, end) spans no window may bridge (speech
+    meeting dedupe dropped): refinement re-transcribes a window's whole span, so a window across a
+    break would bring the dropped speech back."""
     if not segments:
         return []
     segments = sorted(segments, key=lambda x: (x["start"], x["end"]))
+    breaks = [(float(b_start), float(b_end)) for b_start, b_end in breaks]
     windows = []
     current = [segments[0]]
     start = segments[0]["start"]
@@ -376,7 +380,9 @@ def build_conversation_windows(segments, gap_seconds, max_seconds):
     for seg in segments[1:]:
         gap = max(0.0, seg["start"] - current[-1]["end"])
         proposed_duration = seg["end"] - start
-        if gap > gap_seconds or proposed_duration > max_seconds:
+        # A break counts when it overlaps (even partly) the span between the window and this segment.
+        bridges = any(b_end > current[-1]["end"] and b_start < seg["start"] for b_start, b_end in breaks)
+        if gap > gap_seconds or proposed_duration > max_seconds or bridges:
             windows.append(current)
             current = [seg]
             start = seg["start"]
@@ -1101,24 +1107,57 @@ def transcribe_meeting(audio, total, cfg, coarse_dir, manifest):
     return owner + remote
 
 
+DEDUPE_ERRORS = (RuntimeError, OSError, KeyError, ValueError, TypeError, subprocess.SubprocessError)
+
+
 def apply_meeting_dedupe(index_path, audio, segments, manifest):
     """Drop segments a Mac meeting capture already holds (spec section 3). The index is written by
-    the service, which owns capture state; this only reads audio it was pointed at."""
+    the service, which owns capture state; this only reads audio it was pointed at.
+
+    Dedupe never fails the job: an unreadable capture is excluded (status "unreadable"), and if the
+    index or the Omi recording itself cannot be read every segment is kept."""
     from second_brain.adaptive.channels import mono_frames, stereo_frames
     from second_brain.adaptive.dedupe import decide
 
-    index = load_json(index_path)
-    captures = []
-    for capture in index["captures"]:
-        left, right = stereo_frames(capture["audio"], COMMAND_TIMEOUT)
+    def skip(error, capture_ids=()):
+        manifest["fallbacks"].append(
+            {"from": "meeting dedupe", "to": "no dedupe", "reason": type(error).__name__}
+        )
+        manifest["dedupe"] = {"captures": list(capture_ids), "dropped_count": 0, "dropped": [],
+                              "alignments": [], "alignment_failed": False, "skipped": type(error).__name__}
+        print(f"[dedupe] skipped ({type(error).__name__}): kept all {len(segments)} segments", flush=True)
+        return segments
+
+    try:
+        index = load_json(index_path)
+        epoch = float(index["recording_epoch"])
+        entries = list(index["captures"])
+    except DEDUPE_ERRORS as error:
+        return skip(error)
+    captures, unreadable = [], []
+    for capture in entries:
+        cid = capture.get("capture_id") if isinstance(capture, dict) else None
+        try:
+            float(capture["start_ms"]), float(capture["end_ms"]), str(capture["capture_id"])
+            left, right = stereo_frames(capture["audio"], COMMAND_TIMEOUT)
+        except DEDUPE_ERRORS as error:
+            unreadable.append({"capture_id": cid, "status": "unreadable"})
+            manifest["fallbacks"].append({"from": "meeting dedupe", "to": "no dedupe for capture",
+                                          "reason": type(error).__name__, "capture_id": cid})
+            print(f"[dedupe] capture {cid} unreadable ({type(error).__name__}); not used", flush=True)
+            continue
         captures.append({**capture, "left": left, "right": right})
     print(f"=== Meeting dedupe: {len(captures)} overlapping capture(s) ===", flush=True)
-    decisions = decide(segments, mono_frames(audio, COMMAND_TIMEOUT), index["recording_epoch"], captures)
+    try:
+        omi_frames = mono_frames(audio, COMMAND_TIMEOUT)
+    except DEDUPE_ERRORS as error:
+        return skip(error, [c["capture_id"] for c in captures])
+    decisions = decide(segments, omi_frames, epoch, captures)
     manifest["dedupe"] = {
         "captures": [c["capture_id"] for c in captures],
         "dropped_count": len(decisions.dropped),
         "dropped": decisions.dropped,
-        "alignments": decisions.alignments,
+        "alignments": unreadable + decisions.alignments,
         "alignment_failed": decisions.alignment_failed,
     }
     print(f"[dedupe] dropped {len(decisions.dropped)} of {len(segments)} segments"
@@ -1207,6 +1246,7 @@ def main():
         all_segments,
         cfg["conversation_gap_seconds"],
         cfg["conversation_max_seconds"],
+        breaks=[(d["start"], d["end"]) for d in manifest.get("dedupe", {}).get("dropped", [])],
     )
 
     vault_index = []

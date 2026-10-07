@@ -478,5 +478,103 @@ class PipelineDedupeTests(unittest.TestCase):
         self.assertEqual(manifest["dedupe"]["dropped_count"], 0)
 
 
+    def test_no_window_spans_a_dropped_segment(self):
+        dropped = self.manifest["dedupe"]["dropped"]
+        self.assertTrue(dropped)
+        for window in self.manifest["windows"]:
+            for d in dropped:
+                self.assertFalse(window["start"] < d["end"] and d["start"] < window["end"],
+                                 f"window {window['start']}-{window['end']} overlaps dropped {d}")
+
+
+class WindowBreakTests(unittest.TestCase):
+    """Refinement re-transcribes a whole window's span, so no window may contain dropped speech."""
+
+    @staticmethod
+    def windows(breaks=None):
+        from second_brain.adaptive.pipeline import build_conversation_windows
+
+        segments = [{"start": 0.0, "end": 3.0, "text": "a"}, {"start": 10.0, "end": 13.0, "text": "b"}]
+        if breaks is None:
+            return build_conversation_windows(segments, 35, 600)
+        return build_conversation_windows(segments, 35, 600, breaks=breaks)
+
+    def test_a_break_between_two_segments_splits_the_window(self):
+        windows = self.windows([(4.0, 9.0)])
+        self.assertEqual([(w["start"], w["end"]) for w in windows], [(0.0, 3.0), (10.0, 13.0)])
+
+    def test_without_breaks_the_segments_share_one_window(self):
+        self.assertEqual([(w["start"], w["end"]) for w in self.windows()], [(0.0, 13.0)])
+        self.assertEqual(self.windows(), self.windows([]))
+
+    def test_a_break_outside_every_gap_changes_nothing(self):
+        self.assertEqual(self.windows([(20.0, 25.0)]), self.windows())
+        self.assertEqual(self.windows([(-5.0, -1.0)]), self.windows())
+
+
+class UnreadableCaptureTests(unittest.TestCase):
+    """One corrupt or vanished capture must never fail the Omi job: it is skipped, not fatal."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.omi = tone_wav(cls.root / "omi.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        cls.junk = cls.root / "junk.caf"
+        cls.junk.write_bytes(b"not audio")
+        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def run_with(self, name, captures):
+        (self.root / f"{name}.json").write_text(json.dumps({"recording_epoch": 1000, "captures": captures}))
+        return run_pipeline(self.root, self.omi, self.root / name, "--meeting-dedupe", str(self.root / f"{name}.json"))
+
+    @staticmethod
+    def entry(cid, audio):
+        return {"capture_id": cid, "start_ms": 1_000_000, "end_ms": 1_120_000, "audio": str(audio)}
+
+    def test_a_junk_capture_keeps_everything_and_is_reported(self):
+        manifest = self.run_with("junk", [self.entry("ee" * 16, self.junk)])
+        kept = [s["text"] for w in manifest["windows"] for s in w["moss_segments"]]
+        self.assertEqual(kept, ["first half", "second half"])
+        self.assertEqual(manifest["dedupe"]["dropped_count"], 0)
+        self.assertIn({"capture_id": "ee" * 16, "status": "unreadable"}, manifest["dedupe"]["alignments"])
+        fallbacks = [f for f in manifest["fallbacks"] if f["from"] == "meeting dedupe"]
+        self.assertEqual(fallbacks, [{"from": "meeting dedupe", "to": "no dedupe for capture",
+                                      "reason": "RuntimeError", "capture_id": "ee" * 16}])
+
+    def test_a_valid_capture_still_dedupes_beside_a_junk_one(self):
+        manifest = self.run_with("mixed", [self.entry("ee" * 16, self.junk), self.entry("ab" * 16, self.capture)])
+        kept = [s["text"] for w in manifest["windows"] for s in w["moss_segments"]]
+        self.assertEqual(kept, ["second half"])
+        self.assertEqual([d["deduped_by"] for d in manifest["dedupe"]["dropped"]], ["ab" * 16])
+        statuses = {a["capture_id"]: a["status"] for a in manifest["dedupe"]["alignments"]}
+        self.assertEqual(statuses, {"ee" * 16: "unreadable", "ab" * 16: "aligned"})
+        self.assertEqual(manifest["dedupe"]["captures"], ["ab" * 16])
+
+    def test_a_vanished_capture_is_skipped_too(self):
+        manifest = self.run_with("vanished", [self.entry("ff" * 16, self.root / "gone.caf")])
+        kept = [s["text"] for w in manifest["windows"] for s in w["moss_segments"]]
+        self.assertEqual(kept, ["first half", "second half"])
+        self.assertIn({"capture_id": "ff" * 16, "status": "unreadable"}, manifest["dedupe"]["alignments"])
+
+    def test_an_undecodable_omi_recording_skips_dedupe_and_keeps_everything(self):
+        from second_brain.adaptive.pipeline import apply_meeting_dedupe
+
+        index = self.root / "skip.json"
+        index.write_text(json.dumps({"recording_epoch": 1000, "captures": [self.entry("ab" * 16, self.capture)]}))
+        segments = [{"start": 0.0, "end": 60.0, "text": "first half"}]
+        manifest = {"fallbacks": []}
+        self.assertEqual(apply_meeting_dedupe(str(index), str(self.junk), segments, manifest), segments)
+        self.assertEqual(manifest["dedupe"], {"captures": ["ab" * 16], "dropped_count": 0, "dropped": [],
+                                              "alignments": [], "alignment_failed": False,
+                                              "skipped": "RuntimeError"})
+        self.assertEqual(manifest["fallbacks"], [{"from": "meeting dedupe", "to": "no dedupe",
+                                                  "reason": "RuntimeError"}])
+
+
 if __name__ == "__main__":
     unittest.main()
