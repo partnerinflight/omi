@@ -1,9 +1,22 @@
 from __future__ import annotations
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from .config import Config
+
+
+def meeting_decoder_problem(ffmpeg="ffmpeg"):
+    """None if ffmpeg lists an Opus decoder (the Mac app's CAF codec), else a short problem."""
+    try:
+        proc = subprocess.run([ffmpeg, "-hide_banner", "-decoders"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "ffmpeg is not runnable; meeting captures cannot be decoded"
+    names = {line.split()[1] for line in proc.stdout.splitlines() if len(line.split()) > 1}
+    if proc.returncode or not names & {"opus", "libopus"}:
+        return "ffmpeg has no Opus decoder; meeting captures cannot be decoded"
+    return None
 
 
 def check(cfg: Config):
@@ -19,6 +32,11 @@ def check(cfg: Config):
         search = cfg.ffmpeg_dir + os.pathsep + os.environ.get("PATH", "") if cfg.ffmpeg_dir else None
         if not shutil.which(name, path=search):
             errors.append(f"{name} is unavailable to this account")
+    if cfg.meetings_enabled:
+        search = cfg.ffmpeg_dir + os.pathsep + os.environ.get("PATH", "") if cfg.ffmpeg_dir else None
+        ffmpeg = shutil.which("ffmpeg", path=search)
+        if ffmpeg and (problem := meeting_decoder_problem(ffmpeg)):
+            errors.append(problem)
     for key in ["moss_model", "moss_cpp_engine_dir"]:
         if not Path(pipeline.get(key, "")).is_absolute() or not Path(pipeline.get(key, "")).exists():
             errors.append(f"{key} does not exist")

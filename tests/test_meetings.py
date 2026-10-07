@@ -471,5 +471,16 @@ class MeetingEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(list((self.root / "data/jobs").rglob("pipeline.log"))), 1)
 
 
+class MeetingPreflightTests(unittest.TestCase):
+    def test_ffmpeg_with_opus_passes(self):
+        from second_brain.preflight import meeting_decoder_problem
+        self.assertIsNone(meeting_decoder_problem("ffmpeg"))
+
+    def test_missing_ffmpeg_is_reported(self):
+        from second_brain.preflight import meeting_decoder_problem
+        problem = meeting_decoder_problem(str(Path(tempfile.gettempdir()) / "no-such-ffmpeg"))
+        self.assertIn("meeting captures cannot be decoded", problem)
+
+
 if __name__ == "__main__":
     unittest.main()
