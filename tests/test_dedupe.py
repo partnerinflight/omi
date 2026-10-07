@@ -389,5 +389,94 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual(found.open, [])
 
 
+# Speech-like test audio: a carrier inside a slowly varying envelope, so 50 ms envelopes have the
+# timing structure the alignment needs. Different modulation rates make them mutually unrelated.
+CALL = "0.4*sin(2*PI*1000*t)*abs(sin(2*PI*1.3*t)*sin(2*PI*0.37*t+1))"
+ROOM = "0.4*sin(2*PI*1500*t)*abs(sin(2*PI*1.7*t+2)*sin(2*PI*0.53*t))"
+OTHER = "0.4*sin(2*PI*800*t)*abs(sin(2*PI*1.1*t+0.5)*sin(2*PI*0.29*t+2))"
+OTHER2 = "0.4*sin(2*PI*600*t)*abs(sin(2*PI*0.9*t)*sin(2*PI*0.41*t+1))"
+
+
+def pipeline_config(root: Path, moss="fake_moss.py") -> Path:
+    cfg = json.loads((ROOT / "config/pipeline.example.json").read_text())
+    cfg.update(moss_command=[sys.executable, str(ROOT / "tests/fixtures" / moss)],
+               scan_vault_for_novelty=False, long_silence_seconds=999, memory_gate_min_words=1,
+               work_root=str(root / "work"))
+    path = root / "pipeline.json"
+    path.write_text(json.dumps(cfg))
+    return path
+
+
+def run_pipeline(root: Path, audio: Path, out: Path, *extra) -> dict:
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")]))
+    proc = subprocess.run(
+        [sys.executable, "-m", "second_brain.adaptive.pipeline", "--audio", str(audio),
+         "--config", str(pipeline_config(root, "fake_moss_halves.py")), "--output-dir", str(out),
+         "--no-hermes", "--skip-vibe7", *extra],
+        capture_output=True, text=True, env=env,
+    )
+    if proc.returncode:
+        raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+    return json.loads((out / "manifest.json").read_text())
+
+
+class PipelineDedupeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        # Two minutes: the owner on the call for 60 s, then someone in the room for 60 s. Alignment
+        # needs >= 30 s of overlap and envelope structure, so constant tones cannot be used.
+        cls.omi = tone_wav(cls.root / "omi.wav", f"if(lt(t,60),{CALL},{ROOM})", 120)
+        # The meeting's mic holds the call; its remote channel carries unrelated speech throughout.
+        cls.capture = tone_wav(cls.root / "capture.wav", f"if(lt(t,60),{CALL},0)|{OTHER}", 120, channels=2)
+        index = [{"capture_id": "ab" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
+                  "audio": str(cls.capture)}]
+        (cls.root / "index.json").write_text(json.dumps({"recording_epoch": 1000, "captures": index}))
+        cls.manifest = run_pipeline(cls.root, cls.omi, cls.root / "run",
+                                    "--meeting-dedupe", str(cls.root / "index.json"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_duplicated_half_is_dropped_and_the_room_half_survives(self):
+        kept = [s["text"] for w in self.manifest["windows"] for s in w["moss_segments"]]
+        self.assertEqual(kept, ["second half"])
+        self.assertEqual([d["text"] for d in self.manifest["dedupe"]["dropped"]], ["first half"])
+
+    def test_the_dropped_record_names_the_capture_and_channel(self):
+        dropped = self.manifest["dedupe"]["dropped"][0]
+        self.assertEqual(dropped["deduped_by"], "ab" * 16)
+        self.assertEqual(dropped["deduped_channel"], "L")
+        self.assertGreaterEqual(dropped["score"], 0.6)
+        self.assertEqual(self.manifest["dedupe"]["dropped_count"], 1)
+        self.assertFalse(self.manifest["dedupe"]["alignment_failed"])
+
+    def test_windows_are_built_only_from_the_surviving_segments(self):
+        self.assertTrue(self.manifest["windows"])
+        for window in self.manifest["windows"]:
+            self.assertNotIn("first half", window["moss_transcript"])
+            self.assertGreaterEqual(window["start"], 59.9)
+
+    def test_without_the_flag_nothing_is_deduped(self):
+        manifest = run_pipeline(self.root, self.omi, self.root / "plain")
+        kept = [s["text"] for w in manifest["windows"] for s in w["moss_segments"]]
+        self.assertEqual(kept, ["first half", "second half"])
+        self.assertNotIn("dedupe", manifest)
+
+    def test_an_unrelated_capture_drops_nothing_and_reports_failed_alignment(self):
+        index = {"recording_epoch": 1000, "captures": [
+            {"capture_id": "cd" * 16, "start_ms": 1_000_000, "end_ms": 1_120_000,
+             "audio": str(tone_wav(self.root / "other.wav", f"{OTHER}|{OTHER2}", 120, channels=2))}]}
+        (self.root / "other-index.json").write_text(json.dumps(index))
+        manifest = run_pipeline(self.root, self.omi, self.root / "unrelated",
+                                "--meeting-dedupe", str(self.root / "other-index.json"))
+        kept = [s["text"] for w in manifest["windows"] for s in w["moss_segments"]]
+        self.assertEqual(kept, ["first half", "second half"])
+        self.assertTrue(manifest["dedupe"]["alignment_failed"])
+        self.assertEqual(manifest["dedupe"]["dropped_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

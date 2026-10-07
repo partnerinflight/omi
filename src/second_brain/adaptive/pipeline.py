@@ -1101,6 +1101,31 @@ def transcribe_meeting(audio, total, cfg, coarse_dir, manifest):
     return owner + remote
 
 
+def apply_meeting_dedupe(index_path, audio, segments, manifest):
+    """Drop segments a Mac meeting capture already holds (spec section 3). The index is written by
+    the service, which owns capture state; this only reads audio it was pointed at."""
+    from second_brain.adaptive.channels import mono_frames, stereo_frames
+    from second_brain.adaptive.dedupe import decide
+
+    index = load_json(index_path)
+    captures = []
+    for capture in index["captures"]:
+        left, right = stereo_frames(capture["audio"], COMMAND_TIMEOUT)
+        captures.append({**capture, "left": left, "right": right})
+    print(f"=== Meeting dedupe: {len(captures)} overlapping capture(s) ===", flush=True)
+    decisions = decide(segments, mono_frames(audio, COMMAND_TIMEOUT), index["recording_epoch"], captures)
+    manifest["dedupe"] = {
+        "captures": [c["capture_id"] for c in captures],
+        "dropped_count": len(decisions.dropped),
+        "dropped": decisions.dropped,
+        "alignments": decisions.alignments,
+        "alignment_failed": decisions.alignment_failed,
+    }
+    print(f"[dedupe] dropped {len(decisions.dropped)} of {len(segments)} segments"
+          + (" (alignment failed: kept everything)" if decisions.alignment_failed else ""), flush=True)
+    return decisions.kept
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio", required=True)
@@ -1110,6 +1135,7 @@ def main():
     ap.add_argument("--output-dir")
     ap.add_argument("--progress-file")
     ap.add_argument("--meeting", action="store_true", help="stereo meeting capture: L mic (owner), R remote")
+    ap.add_argument("--meeting-dedupe", help="JSON index of overlapping meeting captures (service-written)")
     args = ap.parse_args()
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
@@ -1168,6 +1194,11 @@ def main():
         json.dumps(all_segments, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (run_dir / "moss_transcript.txt").write_text(format_segments(all_segments), encoding="utf-8")
+    if args.meeting_dedupe:
+        all_segments = apply_meeting_dedupe(args.meeting_dedupe, audio, all_segments, manifest)
+        (run_dir / "deduped_segments.json").write_text(
+            json.dumps(all_segments, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # Stage 2: natural conversation windows.
     progress("scoring")
