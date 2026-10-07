@@ -180,5 +180,70 @@ class ChannelExtractionTests(unittest.TestCase):
         self.assertEqual(ffprobe_channels(str(self.capture)), 2)
 
 
+from fake_moss_tones import OWNER_TEXT, REMOTE_TEXT  # noqa: E402  (fixtures dir is on sys.path, see top)
+
+
+def meeting_pipeline_config(root: Path) -> Path:
+    cfg = json.loads((ROOT / "config/pipeline.example.json").read_text())
+    cfg.update(moss_command=[sys.executable, str(ROOT / "tests/fixtures/fake_moss_tones.py")],
+               scan_vault_for_novelty=False, long_silence_seconds=999, memory_gate_min_words=1,
+               work_root=str(root / "work"))
+    path = root / "pipeline.json"
+    path.write_text(json.dumps(cfg))
+    return path
+
+
+class MeetingPipelineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        capture = make_capture(root / "capture.caf")
+        out = root / "run"
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")]))
+        proc = subprocess.run(
+            [sys.executable, "-m", "second_brain.adaptive.pipeline", "--audio", str(capture),
+             "--config", str(meeting_pipeline_config(root)), "--output-dir", str(out), "--meeting",
+             "--no-hermes"],
+            capture_output=True, text=True, env=env,
+        )
+        if proc.returncode:
+            raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+        cls.manifest = json.loads((out / "manifest.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def segments(self):
+        return [s for w in self.manifest["windows"] for s in w["final_segments"]]
+
+    def test_owner_speech_comes_from_the_mic_channel(self):
+        owner = [s for s in self.segments() if s.get("channel") == "L"]
+        self.assertEqual([(s["speaker"], s["text"]) for s in owner], [("owner", OWNER_TEXT)])
+        self.assertAlmostEqual(owner[0]["end"], 5.0, delta=0.2)
+
+    def test_remote_speech_is_diarized_on_the_remote_channel(self):
+        remote = [s for s in self.segments() if s.get("channel") == "R"]
+        self.assertEqual([(s["speaker"], s["text"]) for s in remote], [("r0000:S1", REMOTE_TEXT)])
+
+    def test_remote_bleed_into_the_mic_is_dropped_and_recorded(self):
+        meeting = self.manifest["meeting"]
+        self.assertEqual(meeting["owner_segments"], 1)
+        self.assertEqual(meeting["remote_segments"], 1)
+        self.assertEqual([s["text"] for s in meeting["bleed_dropped"]], [REMOTE_TEXT])
+        self.assertEqual(sum(s["text"] == REMOTE_TEXT for s in self.segments()), 1)
+
+    def test_meeting_windows_never_use_mono_refinement(self):
+        self.assertTrue(self.manifest["windows"])
+        self.assertEqual({w["asr_tier"] for w in self.manifest["windows"]}, {"moss"})
+        self.assertEqual({c["channel"] for c in self.manifest["coarse_chunks"]}, {"L", "R"})
+
+    def test_owner_is_not_offered_for_speaker_review(self):
+        labels = {o["label"] for o in self.manifest["speaker_observations"]}
+        self.assertEqual(labels, {"r0000:S1"})
+        self.assertEqual(self.manifest["speaker_observations"][0]["channel"], "R")
+
+
 if __name__ == "__main__":
     unittest.main()

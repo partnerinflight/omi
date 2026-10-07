@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from .adaptive.channels import downmix
 from .io import write_json
 
 # Clips shorter than this, or whose turn text has no words ("...", ""), cannot identify a
@@ -24,8 +25,11 @@ def useful_clip(clip):
 def candidates(manifest):
     groups = defaultdict(list)
     segments = []
+    channels = {}
     for window in manifest["windows"]:
         for index, source in enumerate(window.get("final_segments", window.get("moss_segments", []))):
+            if source.get("channel") == "L":
+                continue  # a meeting's mic is the owner (service owner_name), not someone to review
             s = dict(source)
             label = str(s.get("speaker", "S?"))
             if label.endswith("S?"):
@@ -37,6 +41,7 @@ def candidates(manifest):
                 continue
             s.update(start=start, end=end)
             segments.append(s)
+            channels[label] = s.get("channel")
     for s in segments:
         for index in range(min(5, math.ceil((s["end"] - s["start"]) / 12))):
             start = s["start"] + index * 12
@@ -59,7 +64,10 @@ def candidates(manifest):
         # Prefer clean and longer turns, retain several different utterances.
         unique = {(s["start"], s["end"]): s for s in clips}
         selected = sorted(unique.values(), key=lambda s: (not s["eligible"], -(s["end"] - s["start"])))[:5]
-        result.append(dict(label=label, clips=sorted(selected, key=lambda s: s["start"])))
+        observation = dict(label=label, clips=sorted(selected, key=lambda s: s["start"]))
+        if channels.get(label):
+            observation["channel"] = channels[label]
+        result.append(observation)
     return result
 
 
@@ -84,8 +92,7 @@ def prepare(manifest, audio: Path, directory: Path, cfg: dict):
                     str(audio),
                     "-t",
                     str(clip["end"] - clip["start"]),
-                    "-ac",
-                    "1",
+                    *downmix(obs.get("channel")),
                     "-ar",
                     "16000",
                     "-c:a",

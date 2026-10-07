@@ -1049,6 +1049,53 @@ def transcribe_spans(audio, spans, cfg, coarse_dir, prefix="c", channel=None):
     return segments, chunks
 
 
+def merge_spans(spans):
+    merged = []
+    for st, en in sorted(spans):
+        if merged and st <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], en))
+        else:
+            merged.append((st, en))
+    return merged
+
+
+def transcribe_meeting(audio, total, cfg, coarse_dir, manifest):
+    """Meeting capture: L = owner's mic, R = meeting app. Each channel is transcribed on its own.
+    A mic segment is the owner's only where the mic is >= 6 dB louder than the remote channel in the
+    speech band; other mic segments are remote audio bleeding into the mic and are dropped (kept in
+    the manifest as `bleed_dropped`)."""
+    from second_brain.adaptive.channels import mic_dominates, stereo_frames
+
+    if ffprobe_channels(audio) != 2:
+        raise ValueError("Meeting capture must be stereo (L = mic, R = meeting app)")
+    spans, active, silences = {}, [], {}
+    for channel in ("L", "R"):
+        silences[channel] = detect_long_silences(audio, cfg["silence_noise_db"], cfg["long_silence_seconds"], channel)
+        channel_active = complement_silences(total, silences[channel])
+        active += channel_active
+        spans[channel] = split_spans(channel_active, cfg["coarse_max_seconds"])
+    manifest["long_silences"] = silences
+    manifest["active_duration_seconds"] = sum(en - st for st, en in merge_spans(active))
+    progress("transcribing")
+    print("=== Stage 1: MOSS per meeting channel ===", flush=True)
+    mic, mic_chunks = transcribe_spans(audio, spans["L"], cfg, coarse_dir, "l", "L")
+    remote, remote_chunks = transcribe_spans(audio, spans["R"], cfg, coarse_dir, "r", "R")
+    manifest["coarse_chunks"] = mic_chunks + remote_chunks
+    left, right = stereo_frames(audio, COMMAND_TIMEOUT)
+    owner, bleed = [], []
+    for seg in mic:
+        seg["speaker"] = "owner"
+        (owner if mic_dominates(left, right, seg["start"], seg["end"]) else bleed).append(seg)
+    manifest["meeting"] = {
+        "channels": {"L": "mic", "R": "remote"},
+        "owner_segments": len(owner),
+        "remote_segments": len(remote),
+        "bleed_dropped": bleed,
+        "refinement": "disabled: 7B refines a mono mix, which loses mic/remote attribution",
+    }
+    return owner + remote
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio", required=True)
@@ -1057,6 +1104,7 @@ def main():
     ap.add_argument("--no-hermes", action="store_true")
     ap.add_argument("--output-dir")
     ap.add_argument("--progress-file")
+    ap.add_argument("--meeting", action="store_true", help="stereo meeting capture: L mic (owner), R remote")
     args = ap.parse_args()
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
@@ -1093,21 +1141,22 @@ def main():
     # conservative, not aggressive VAD.
     progress("segmentation")
     print("=== Stage 0: long-silence segmentation ===", flush=True)
-    silences = detect_long_silences(audio, cfg["silence_noise_db"], cfg["long_silence_seconds"])
-    active_spans = complement_silences(total_duration, silences)
-    coarse_spans = split_spans(active_spans, cfg["coarse_max_seconds"])
-    manifest["active_duration_seconds"] = sum(en - st for st, en in active_spans)
-    manifest["long_silences"] = silences
-    print(
-        f"Audio {total_duration/3600:.2f}h -> {manifest['active_duration_seconds']/3600:.2f}h "
-        f"outside long silences -> {len(coarse_spans)} MOSS chunks",
-        flush=True,
-    )
-
-    # Stage 1: MOSS everything meaningful.
-    progress("transcribing")
-    print("=== Stage 1: MOSS first pass ===", flush=True)
-    all_segments, manifest["coarse_chunks"] = transcribe_spans(audio, coarse_spans, cfg, coarse_dir)
+    if args.meeting:
+        all_segments = transcribe_meeting(audio, total_duration, cfg, coarse_dir, manifest)
+    else:
+        silences = detect_long_silences(audio, cfg["silence_noise_db"], cfg["long_silence_seconds"])
+        active_spans = complement_silences(total_duration, silences)
+        coarse_spans = split_spans(active_spans, cfg["coarse_max_seconds"])
+        manifest["active_duration_seconds"] = sum(en - st for st, en in active_spans)
+        manifest["long_silences"] = silences
+        print(
+            f"Audio {total_duration/3600:.2f}h -> {manifest['active_duration_seconds']/3600:.2f}h "
+            f"outside long silences -> {len(coarse_spans)} MOSS chunks",
+            flush=True,
+        )
+        progress("transcribing")
+        print("=== Stage 1: MOSS first pass ===", flush=True)
+        all_segments, manifest["coarse_chunks"] = transcribe_spans(audio, coarse_spans, cfg, coarse_dir)
 
     all_segments.sort(key=lambda s: (s["start"], s["end"]))
     (run_dir / "moss_all_segments.json").write_text(
@@ -1185,7 +1234,8 @@ def main():
 
         tier = (
             "vibe7"
-            if should_escalate_to_vibe7(cfg, importance, uncertainty, heuristic, preliminary_memory_gate)
+            if not args.meeting
+            and should_escalate_to_vibe7(cfg, importance, uncertainty, heuristic, preliminary_memory_gate)
             else "moss"
         )
         hotwords = derive_hotwords(cfg, text, vault_ctx, hotword_catalog)
