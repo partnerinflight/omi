@@ -5,6 +5,7 @@ import re
 import sqlite3
 from pathlib import Path
 from second_brain.clarifications import Clarifications
+from second_brain.router_markers import normalize, marker as event_marker
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--config', type=Path, required=True)
@@ -19,8 +20,8 @@ cfg = json.loads(a.config.read_text(encoding='utf-8-sig'))
 vault, data = Path(cfg['vault_path']), Path(cfg['data_dir'])
 note = (vault / a.note).resolve()
 note.relative_to(vault.resolve())
-marker = f' <!-- router:{a.event} -->'
-lines = [line for line in note.read_text(encoding='utf-8').splitlines() if line.startswith('- ') and line.endswith(marker)]
+marker = ' ' + event_marker(a.event)
+lines = [normalize(line) for line in note.read_text(encoding='utf-8').splitlines() if line.startswith('- ') and normalize(line).endswith(marker)]
 if len(lines) != 1:
     p.error('Expected exactly one matching router entry')
 db = sqlite3.connect(f'file:{(data / "router.sqlite3").as_posix()}?mode=ro', uri=True)

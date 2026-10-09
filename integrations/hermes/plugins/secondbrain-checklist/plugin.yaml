@@ -1,0 +1,26 @@
+name: secondbrain-checklist
+version: 0.3.0
+description: Tappable, idempotent SecondBrain reminder completion for Telegram
+manifest_version: 2
+api_version: 1
+license: MIT
+tags: [telegram, reminders, secondbrain]
+provides_tools:
+  - secondbrain_checklist
+config_schema:
+  vault:
+    type: str
+    default: ""
+    description: Absolute path to the SecondBrain vault (required)
+  chat_id:
+    type: str
+    default: ""
+    description: Telegram chat ID allowed for checklist delivery and callbacks (required)
+  owner_user_id:
+    type: str
+    default: ""
+    description: Telegram user ID allowed to press checklist buttons (required)
+  timezone:
+    type: str
+    default: America/Los_Angeles
+    description: Timezone used to validate snooze dates

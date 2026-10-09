@@ -69,6 +69,10 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   paused microphone rail and acoustic wake are off, red flashes 200 ms every
   3 seconds. Pause is not persistent across reboot. Other warning/setup/upload
   LED priorities still apply; manual pause overrides awake indications.
+  Firmware `.19` restores setup/active-transfer priority over manual pause and
+  includes BLE storage transfers in the solid-green/blinking-blue indication.
+  Paused red blinking returns when the transfer ends; the microphone stays paused.
+  This change is prepared, not yet deployed.
 - Button, built `.15`: release at 10–15 s (2 pulses at 10 s) powers off; release at
   20 s or more (3 pulses at 20 s) enters setup (Wi-Fi build only; BLE-only has no
   setup). Short clicks and 5–10 s / 15–20 s releases do nothing.
@@ -262,8 +266,13 @@ Implementation: `hermes_score()` in [pipeline.py](src/second_brain/adaptive/pipe
   its ledger, so replays cost no calls. Transcription never waits for routing.
   `no_hermes` disables it. Notes published before enabling are not backfilled.
   `router_queue/` remains a local audit artifact.
+- Router quality and reminders: see [router quality](docs/router-quality.md).
+  The extraction usefulness threshold applies to all categories, including Daily;
+  ordinary studying/practice and vague intentions are omitted regardless of speaker.
+  The prepared Hermes reminder skill is not automatically installed or scheduled.
 - Router bullets show readable content only; source IDs and confidence remain in
-  `System/Router/Ledger`, and hidden event markers preserve replay deduplication.
+  `System/Router/Ledger`, and Obsidian-native hidden comments preserve replay deduplication
+  (raw source mode still displays them; legacy HTML markers remain readable).
   Decision extraction excludes fictional/media dialogue, routine transactions,
   incidental logistics, and suggestions that were never adopted. This narrows
   router extraction; the adaptive v3 conversation gate is unchanged.
@@ -305,6 +314,10 @@ Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brai
   rows contribute; clearing/correcting them recomputes automatic assignments.
 - SQLite identities survive restarts. Configure the encoder before processing;
   completed jobs are not automatically re-encoded when it becomes available.
+- A leading `[AudioBook]` identity tag (case-insensitive) vetoes the entire window
+  after speaker matching, before publication freezes it. Neither conversation nor
+  meeting notes nor downstream routing include these windows. Private transcripts
+  remain; existing notes/frozen retries and the v3 scoring policy are unchanged.
 - Vault output: `Omi/Conversations/<job-id>-<window-id>.md`, with source hash,
   recording time, audio link, offsets, engine, speaker provenance, transcript,
   and gate reason. Deterministic, atomic creation; identical replay is a no-op,
@@ -469,3 +482,69 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   Preserve durability boundaries, v3 gates, edited notes, and third-party licenses.
   Add tests at real failure boundaries. Never present mocked model tests or a
   cross-compiled executable as proof of physical/Windows/model performance.
+
+
+### Canonical ToDos integration (2026-10-08)
+
+The Hermes checklist update introduces `ToDos/Tasks.md` as the editable native
+Obsidian checklist. Router outputs remain intake in `Projects/_Tasks.md` and
+`Decisions/`. The reminder skill selects meaningful owner commitments for import,
+preserving explicit due metadata. Telegram Done/Reopen and manual Obsidian checks
+share this canonical state; reminder JSON is a cache plus delivery ledger.
+Plugin deployment and gateway reload must precede migration. Source-note edits
+are never overwritten by reimport; deleted imported tasks are not recreated.
+
+Plugin 0.3.0 sends one Telegram message per selected task, with that
+task's Done/Reopen button immediately below it. Each task slot is bound to its own
+message receipt, including partial-delivery handling without automatic resends.
+Interactive task questions must receive a normal final acknowledgement; silence
+markers are reserved for the scheduled morning job. The prior tool description
+incorrectly encouraged silence after any successful send and could trigger Hermes'
+"silence marker for a message that needed a reply" error. This fix is scoped to the
+SecondBrain plugin/skill; Hermes core is not modified.
+
+Deployment and migration verified on 2026-10-08: plugin 0.3.0 passed all 28
+staged and installed tests, source-hash verification, and Hermes plugin doctor.
+After the owner restarted the system gateway, PID 1160990 replaced 1137900;
+the live tool exposes sync and the Telegram callback handler is wired.
+`ToDos/Tasks.md` now contains 26 tasks (24 open, 2 completed), retaining eight
+source due annotations without inventing dates. A routine schoolwork follow-up
+was excluded, with its import tombstone retained; the skill explicitly excludes
+routine homework/schoolwork supervision. Repeat sync added no duplicates.
+Hashes of every original Decisions note and Projects/_Tasks.md were unchanged.
+
+Plugin backup: ~/.hermes/backups/per-task-button-20261008T143810-0400.
+Pre-migration state backup: ~/.hermes/backups/secondbrain-canonical-todos-20261008T171602-0400.
+Syncthing reported idle, one connected peer at 100%, no needed files or bytes,
+and no ToDos conflicts. Exactly one existing morning job (71736297cea1) remains
+enabled, using the reminder skill and its 06:00 America/Los_Angeles gate.
+No Telegram test messages or real task-status test changes were made during
+migration. A fresh user question is required to see the per-task message layout;
+existing messages retain their old layout, and pre-migration buttons fail closed
+because the canonical task source changed. Actual phone rendering and the next
+scheduled morning delivery remain unverified; configuration and server-side
+migration are verified. Hermes core was not modified.
+
+
+### Regular ToDos housekeeping (2026-10-08)
+
+The existing hourly morning gate now runs `integrations/hermes/scripts/scrub-todos.py`
+on every tick, using the plugin's `maintenance.py` and the same state writer lock
+as Telegram callbacks. It moves checked task blocks into a final `## Completed`
+section and reopened tasks back into `## Tasks`, preserving IDs, task text, due
+annotations, indented notes/subtasks, and free prose. It does not infer completion
+from age. New imports and checkbox changes are reorganized at the next hourly tick.
+The gate still wakes the reminder agent only at 06:00 America/Los_Angeles; other
+hours remain quiet. Missing/ambiguous documents, sync conflicts, and failures do
+not produce a successful cleanup result. No additional schedule or gateway restart
+is required because the existing gate executes the helper afresh each time.
+
+Deployment verified: all 37 staged and installed plugin tests passed, all 15
+reviewed source hashes matched, and plugin doctor passed. The first live cleanup
+moved 3 completed tasks beneath 23 open tasks; a second cleanup made no changes.
+Task inventory, free notes, all intake hashes, and the state-cache hash were
+unchanged. The actual runner returned wakeAgent=false outside the morning hour.
+Job 71736297cea1 retained its schedule/destination; only its prompt was corrected
+to use canonical ToDos and sync before selecting reminders. Gateway PID1160990
+remained running; no messages were sent. Private rollback backup:
+~/.hermes/backups/todos-housekeeping-20261008T181605-0400.

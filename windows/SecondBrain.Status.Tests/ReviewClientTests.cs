@@ -65,9 +65,10 @@ static class ReviewClientTests
 
         Check.Equal("Type a name or choose an existing person.", ReviewClient.ValidateName("   "), "blank name");
         Check.Equal("Type a name or choose an existing person.", ReviewClient.ValidateName(null), "missing name");
-        foreach (var ok in new[] { "Alice", " Bob ", "Mary-Jane O'Neil", new string('a', 80) })
+        foreach (var ok in new[] { "Alice", " Bob ", "Mary-Jane O'Neil", new string('a', 80), "[AudioBook] - Narrator", "[audiobook] Narrator" })
             Check.Equal<string?>(null, ReviewClient.ValidateName(ok), $"valid name '{ok}'");
-        foreach (var bad in new[] { new string('a', 81), "A[b]", "a<b>", "a|b", "back\\slash", "tab\tname" })
-            Check.Equal("Use a name of 1–80 characters without control characters or markup brackets.", ReviewClient.ValidateName(bad), $"invalid name '{bad}'");
+        foreach (var bad in new[] { new string('a', 81), "A[b]", "a<b>", "a|b", "back\\slash", "tab\tname",
+                                   "[AudioBook]", "[AudioBook] - ", "[Other] Narrator", "Alice [AudioBook]", "[AudioBook] [[Narrator]]" })
+            Check.Equal("Use a name of 1–80 characters without control characters or markup brackets, except a leading [AudioBook] tag.", ReviewClient.ValidateName(bad), $"invalid name '{bad}'");
     }
 }

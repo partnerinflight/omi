@@ -328,8 +328,8 @@ class MeetingNoteTests(unittest.TestCase):
 
     def test_one_note_with_highlights_first_and_every_window(self):
         written = self.publish()
-        self.assertEqual(written, [f"Omi/Meetings/{'f' * 64}.md"])
-        text = (self.vault / written[0]).read_text()
+        self.assertEqual([Path(p) for p in written], [Path("Omi/Meetings") / f"{'f' * 64}.md"])
+        text = (self.vault / written[0]).read_text(encoding="utf-8")
         self.assertIn('type: "omi-meeting"', text)
         self.assertIn('app: "us.zoom.xos"', text)
         self.assertIn('started_at: "2025-10-06T14:30:00Z"', text)

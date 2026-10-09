@@ -59,6 +59,12 @@ to a request directory. The service owns the speaker database and applies
 idempotent commands; this adds no network listener. Confirmed references alone
 drive voice matching, with model fingerprint separation and conservative
 multi-clip agreement. Publication freezes identity attribution for replay.
+Identities whose names start with `[AudioBook]` (case-insensitive) veto their
+entire conversation window after matching, before this freeze: both publication
+flags are false and `speaker_filter` records the reason and labels. Meeting
+publication also honors the veto. Private transcripts remain; unrelated windows
+retain their original memory-gate decisions. Existing notes and frozen manifests
+are not changed by later tagging.
 See `docs/speakers.md` for access, enrollment, correction and timing limits.
 
 ## Verification boundaries

@@ -21,12 +21,12 @@ Read in order:
 ## Handoff provenance
 
 Prepared on `feature/wifi-local-upload`, based on commit `593243808f` plus the
-working-tree documentation and code reviewed on this date. The tree contains
-uncommitted speaker, router, clarification, firmware, and Hermes work belonging
-to other work. This planning commit does not include that work. On the Mac,
-inspect actual files before relying on those integrations: some referenced
-behavior may not yet exist in the committed checkout. Coordinate its separate
-commit/transfer; do not recreate it from these notes or overwrite it.
+working-tree documentation and code reviewed on this date. The initial planning
+commit excluded the pending speaker, router, clarification, firmware and Hermes
+work. The owner subsequently requested that work be committed on the same branch;
+pull the updated branch on the Mac to obtain it together with these plans.
+Deployment and live validation status still differ by component; consult their
+guides rather than assuming that a committed change is installed.
 
 Relevant current boundaries:
 
@@ -39,8 +39,8 @@ Relevant current boundaries:
   human correction currently targets an unchanged managed vault entry with backup.
 - `src/second_brain/router.py`: route queue and source-derived event IDs; it is
   not an editable mobile knowledge database. The v3 memory gate remains authoritative.
-- `integrations/hermes/plugins/secondbrain-checklist/README.md` (currently
-  uncommitted): canonical `ToDos/Tasks.md`, completion/snooze state, Telegram
+- `integrations/hermes/plugins/secondbrain-checklist/README.md`:
+  canonical `ToDos/Tasks.md`, completion/snooze state, Telegram
   callbacks and reminder jobs require a coordinated authority change.
 
 ## Start here on the Mac

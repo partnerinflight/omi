@@ -216,8 +216,10 @@ class Speakers:
         if not isinstance(value, str):
             raise ValueError("Enter a name")
         name = value.strip()
-        if not 1 <= len(name) <= 80 or any(ord(c) < 32 for c in name) or any(c in name for c in "[]<>\\|"):
-            raise ValueError("Use a name of 1–80 characters without control characters or markup brackets")
+        # Allow only this recognized leading tag, not arbitrary markup in names.
+        plain = name[len("[AudioBook]"):].strip() if name.casefold().startswith("[audiobook]") else name
+        if not 1 <= len(name) <= 80 or not plain.lstrip("- ") or any(ord(c) < 32 for c in name) or any(c in plain for c in "[]<>\\|"):
+            raise ValueError("Use a name of 1–80 characters without control characters or markup brackets, except a leading [AudioBook] tag")
         return name
 
     def command(self, request):
@@ -377,4 +379,14 @@ class Speakers:
                     }
             window["final_transcript"] = "\n".join(rows)
             window["speaker_identities"] = identities
+            excluded = [label for label, identity in identities.items()
+                        if identity.get("id") and identity["name"].casefold().startswith("[audiobook]")]
+            if excluded:
+                # Veto the whole window: removing turns alone leaves scores and
+                # extracted context contaminated by the narrator's words.
+                # The publication manifest freezes this decision along with names.
+                window["speaker_filter"] = {"reason": "audiobook_speaker", "labels": excluded}
+                window["memory_keep"] = False
+                window["route_to_knowledge_router"] = False
+                window["memory_reason"] = "Excluded: identified [AudioBook] speaker"
         return result

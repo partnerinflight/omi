@@ -121,7 +121,8 @@ class RouteTests(unittest.TestCase):
                 self.assertNotIn("Source:", note)
                 self.assertNotIn("confidence", note)
                 self.assertNotIn("  \n", note)
-                self.assertIn("<!-- router:", note)
+                self.assertIn("%% router:", note)
+                self.assertNotIn("<!-- router:", note)
         self.assertEqual(hermes.calls, ["extract", "collapse"], "no existing knowledge: no reconciliation call")
 
     def test_batch_duplicates_collapse_to_one_item(self):

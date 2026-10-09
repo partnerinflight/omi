@@ -46,6 +46,9 @@ motor before powering the mic; the 500 ms startup discard
 (`CONFIG_OMI_MIC_START_DISCARD_MS`) still applies. Manual pause runs through the
 microphone owner thread: it drains an end marker, disables acoustic wake and powers down
 the mic rail; while paused, red pulses 200 ms every 3 s and sound cannot resume it.
+Setup and active Wi-Fi/BLE storage transfers override this red pulse; transfers show
+solid green with blinking blue. When they finish or stop, paused red feedback returns
+without resuming the microphone. Charging or a BLE connection alone does not override pause.
 Resume failures stay paused. Acoustic wake vibrates for 80 ms only after a successful mic
 start and at least `CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS` (5 min) of acoustic sleep.
 Short taps still send the BLE tap/double-tap notifications. `test_wifi_config_c.py` and

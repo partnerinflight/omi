@@ -59,8 +59,11 @@ public sealed class ReviewClient(string directory)
     {
         string trimmed = (name ?? "").Trim();
         if (trimmed.Length == 0) return "Type a name or choose an existing person.";
-        if (trimmed.Length > 80 || trimmed.Any(c => c < ' ') || trimmed.IndexOfAny(['[', ']', '<', '>', '\\', '|']) >= 0)
-            return "Use a name of 1–80 characters without control characters or markup brackets.";
+        var plain = trimmed.StartsWith("[AudioBook]", StringComparison.OrdinalIgnoreCase)
+            ? trimmed["[AudioBook]".Length..].Trim() : trimmed;
+        if (trimmed.Length > 80 || plain.TrimStart('-', ' ').Length == 0 || trimmed.Any(c => c < ' ')
+            || plain.IndexOfAny(['[', ']', '<', '>', '\\', '|']) >= 0)
+            return "Use a name of 1–80 characters without control characters or markup brackets, except a leading [AudioBook] tag.";
         return null;
     }
 }

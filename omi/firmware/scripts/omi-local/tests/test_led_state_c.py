@@ -20,7 +20,7 @@ class LedStateTests(unittest.TestCase):
 #define CONFIG_OMI_ENABLE_HAPTIC 1
 #define BATTERY_FULL_THRESHOLD_PERCENT 100
 static bool is_off,is_charging,is_connected,blink_toggle,storage_full_notified;
-static bool setup,upload,full,clock_valid=true,recording,silent;
+static bool setup,upload,ble_transfer,full,clock_valid=true,recording,silent;
 static bool red,green,blue;
 static bool manual_pause,pause_flash;
 static uint8_t battery_percentage;
@@ -31,6 +31,7 @@ void set_led_blue(bool v){blue=v;}
 void led_off(void){red=green=blue=false;}
 bool wifi_upload_provisioning(void){return setup;}
 bool wifi_upload_active(void){return upload;}
+bool storage_transfer_active(void){return ble_transfer;}
 bool sd_ring_is_full(void){return full;}
 bool rtc_is_valid(void){return clock_valid;}
 bool mic_is_running(void){return recording;}
@@ -55,7 +56,20 @@ int main(void){
  set_led_state();assert(!red && blue && buzzes==1);full=false;
  clock_valid=false;blink_toggle=true;set_led_state();assert(red && green && !blue);clock_valid=true;
  silent=false;recording=false;battery_percentage=100;set_led_state();assert(green && !red && !blue);
- manual_pause=true;upload=true;setup=true;full=true;clock_valid=false;
+ manual_pause=true;full=true;clock_valid=false;
+ // Each transport overrides both pause-flash phases, even after CHG drops.
+ for(int charging=0;charging<2;charging++)for(int transport=0;transport<2;transport++)
+ for(int flash=0;flash<2;flash++){
+  is_charging=charging;pause_flash=flash;
+  upload=transport==0;ble_transfer=transport==1;blink_toggle=true;
+  set_led_state();assert(green && blue && !red && manual_pause);
+  set_led_state();assert(green && !blue && !red && manual_pause);
+  is_off=true;set_led_state();assert(!red && !green && !blue);is_off=false;
+  upload=ble_transfer=false;
+  set_led_state();assert(red==pause_flash && !green && !blue && manual_pause);
+ }
+ setup=true;blink_toggle=true;set_led_state();assert(blue && !red && !green);
+ setup=false;
  pause_flash=true;set_led_state();assert(red && !green && !blue);
  pause_flash=false;set_led_state();assert(!red && !green && !blue);
  is_off=true;pause_flash=true;set_led_state();assert(!red && !green && !blue);

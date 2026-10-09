@@ -130,6 +130,34 @@ after a correction; the app's catalog always reflects current mappings. A saved
 publication manifest freezes names for crash recovery so late naming cannot
 overwrite an existing note or turn a retry into a conflict.
 
+## Exclude audiobook narrators
+
+Assign a narrator the name **`[AudioBook] - SpeakerName`** in Speakers, or rename
+an existing person on the People page. The leading `[AudioBook]` tag is
+case-insensitive. Confirm usable voice clips as usual; future confident voice
+matches inherit the tagged identity.
+
+Before publication, any conversation window containing a tagged identity is
+excluded from vault notes and downstream knowledge-router extraction, even if
+the memory gate would keep it. The entire window is excluded, including other
+speakers in that window; unrelated windows from the same recording are kept
+according to the usual policy. Meeting notes also omit these windows; a capture
+with only excluded windows produces no note. This is a publication veto, not a
+change to the adaptive v3 scoring rules.
+
+Private transcripts and speaker identities remain available for audit. The frozen
+`publication-manifest.json` records `speaker_filter` with reason
+`audiobook_speaker` and the affected labels. Audio follows the usual retention
+policy. ASR and initial scoring still run before speaker matching, so this does
+not save transcription work or prevent configured Hermes scoring requests.
+
+Unknown or ambiguous narrators are not excluded by this tag. Matching requires
+the local encoder and usable confirmed reference clips; a tag alone cannot
+recognize a voice. A narrator's voice is excluded whenever recognized, even
+outside an audiobook. Naming, renaming, or removing the tag affects publications
+whose manifest has not yet been frozen; existing notes and frozen retries remain
+unchanged. This does not clean up audiobook material already in the vault.
+
 ## Local storage and access
 
 - `ProgramData\SecondBrain\data\speakers.sqlite3`: private identities,

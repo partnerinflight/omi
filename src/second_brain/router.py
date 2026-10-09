@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from .io import atomic_write, write_json
 from .clarifications import NOTE_LOCK
+from .router_markers import MARKER, marker as event_marker
 
 MANAGED_HEADER = "## Router Inbox"
 ENTITY_FOLDERS = {"person": "People", "project": "Projects", "topic": "Topics"}
@@ -57,6 +58,21 @@ Use exactly this schema:
 }
 
 Rules:
+- Apply the usefulness threshold to EVERY category, including daily_summary and tasks.
+  A retained conversation is not permission to capture every statement in it.
+  Keep only information that changes a future action, records a consequential outcome,
+  or supplies durable context worth retrieving weeks later. Empty arrays are preferred
+  over a diary of ordinary conversation. Naming the speaker does not make an item useful.
+- Omit routine studying, homework, piano practice, chores, temporary tidying, casual
+  complaints about classes, shopping wishes, and vague intentions to make progress.
+  "Speaker 1 had substantial studying to do and needed to practice piano" is noise;
+  it stays omitted even if Speaker 1 is identified. Do not request clarification for it.
+  By contrast, an adopted recurring lesson schedule or a concrete release test plan
+  with deliverables can matter. Judge the consequences, not isolated keywords.
+- Tasks require an adopted, specific, meaningful commitment, not "I need to" chatter.
+  daily_summary is for consequential events/outcomes only, not summaries of what was
+  discussed, reminders of ordinary chores, or duplicate copies of another category.
+  Do not rescue rejected content by moving it into facts, ideas, or daily_summary.
 - Decisions must be explicit real-world choices with lasting consequences for the owner,
   their projects, relationships, or meaningful commitments. A choice is not useful merely
   because someone accepted, chose, agreed, or decided something.
@@ -298,7 +314,7 @@ def read_managed_items(path: Path) -> list[str]:
             body = line[2:].strip()
             if " — " in body:
                 body = body.split(" — ", 1)[1]
-            body = re.sub(r"\s*<!-- router:[a-f0-9]+ -->\s*$", "", body).rstrip()
+            body = MARKER.sub("", body).rstrip()
             # Compare meaning, not the reconciliation annotation.
             body = re.sub(r"^\[(?:REFINEMENT|CONFLICT)(?: of|S with)?:.*?\]\s*", "", body)
             if body:
@@ -325,9 +341,9 @@ def append_item(path: Path, bullet: str, eid: str) -> bool:
 
 def _append_item(path: Path, bullet: str, eid: str) -> bool:
     bullet = re.sub(r"\s+", " ", bullet.replace("&#x20;", " ").replace("\\\n", " ")).strip()
-    marker = f"<!-- router:{eid} -->"
+    marker = event_marker(eid)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    if marker in existing:
+    if eid in MARKER.findall(existing):
         return False
     if not existing and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.stem):
         existing = f"# {path.stem}\n\n"

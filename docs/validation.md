@@ -84,3 +84,28 @@ keeps the supervisor pipe open through upload/processing, then checks graceful
 stop. These are verified fixes, not evidence that every reported user timeout
 has the same cause. Full model downloads/inference on the user's Windows box,
 interactive tray playback, real voice accuracy and Hermes remain unverified.
+
+## Pending-work branch landing (2026-10-09)
+
+The audiobook speaker veto, router usefulness/marker changes, Hermes checklist
+integration and firmware `.19` LED change were reviewed for a branch commit.
+Local Windows validation:
+
+- `python scripts/test.py`: 176 pipeline tests passed; receiver suite ran 137
+  tests successfully with 38 platform/compiler-dependent skips.
+- Five relevant native LED/manual-pause/disconnect tests passed separately using
+  installed Clang as the `cc` compiler. The test bodies and production C were unchanged.
+- `windows/build.ps1`: status/review tests, service/tray publish and both Python
+  wheels passed. No service install/restart was performed.
+- Existing `.19` archive hash matches the firmware validation log; both OTA
+  signatures reverified. No fresh sysbuild or hardware flash was performed here.
+
+The meeting publication test now compares native paths and reads UTF-8 explicitly,
+fixing two Windows-only test assumptions. Linux CI now includes the staged Hermes
+plugin tests using fake Telegram transport. Local execution of that suite is
+unavailable: Windows lacks POSIX `fcntl`, and the local Docker engine did not
+become available. Real Plugin Doctor validation requires the Hermes environment;
+the standalone CI suite explicitly skips only that absent-host check. Earlier
+deployment evidence remains dated evidence, not a fresh remote validation.
+No live Telegram messages, model-quality evaluations, physical LED checks or
+Windows SCM smoke test were performed in this landing task.

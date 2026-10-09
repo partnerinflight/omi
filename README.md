@@ -30,6 +30,8 @@ heartbeat is shown as stopped rather than falsely reporting idle.
 
 The **Speakers** page lets you play snippets, replace anonymous labels with names,
 and build local voice profiles for future recordings.
+Name narrators `[AudioBook] - SpeakerName` to exclude conversation windows with
+their confirmed or voice-matched identity from future vault publication and routing.
 See [speaker review and setup](docs/speakers.md) for model setup and correction controls.
 
 ## Repository
@@ -138,7 +140,8 @@ local mailbox. It cannot read the pairing key or stop the service.
 - `meetings_enabled` (false): process Mac meeting captures from `incoming/meetings/` into one note
   each under `meetings_vault_folder` (default `Omi/Meetings`). The capture's microphone channel is
   attributed to `owner_name`; the meeting app's channel is diarized and voice-matched like Omi
-  speakers. Meetings are never dropped by the memory gate, and meeting audio is retained.
+  speakers. Meetings are never dropped by the memory gate; `[AudioBook]` speaker
+  exclusions still apply. Meeting audio is retained.
   Captures uploaded before enabling are processed on the next scan.
   When an Omi recording overlaps a finished capture, the Omi segments the meeting already holds
   are dropped from its note; other speech the Omi heard (someone in the room) is kept. Room speech
