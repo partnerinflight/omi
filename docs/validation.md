@@ -109,3 +109,9 @@ the standalone CI suite explicitly skips only that absent-host check. Earlier
 deployment evidence remains dated evidence, not a fresh remote validation.
 No live Telegram messages, model-quality evaluations, physical LED checks or
 Windows SCM smoke test were performed in this landing task.
+
+The first Linux CI run passed the 176 pipeline tests but exposed an existing
+native VOX harness collision: `-I` made firmware `features.h` shadow glibc's
+system header. The harness now uses `-iquote` for project headers; production
+firmware is unchanged. A follow-up CI run validates this correction and the
+previously blocked plugin suite.
