@@ -167,6 +167,18 @@ local mailbox. It cannot read the pairing key or stop the service.
   expensive model run. Notes are published atomically without replacing edits.
 - A conflicting human-edited note causes a visible failure and remains intact.
   Resolve that conflict before retrying; the service never overwrites it.
+- **Shadow export to the mobile server** (`bridge_url`, off by default). When set,
+  the service sends completed conversations (only published windows, excerpts up to
+  4000 characters), router extractions, people and speaker assignments to the
+  selfhosted server over outbound HTTPS every `bridge_seconds` (60). No audio, clips,
+  voice embeddings or filtered transcripts leave the machine, and nothing listens for
+  inbound connections. Create the token on the server with
+  `python -m sb_server add-producer "Home PC"`, save it to `bridge_token_file` (an
+  absolute path readable only by the service account, separate from the upload
+  secret), and restart the service. A server outage only delays export: each cycle
+  compares local state with what the server acknowledged (`data\bridge.sqlite3`) and
+  resends what is missing. The vault and tray stay authoritative; see
+  `docs/mobile/`.
 
 Administrator commands:
 

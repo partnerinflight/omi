@@ -20,5 +20,8 @@
   "job_timeout_seconds": 14400,
   "skip_vibe7": false,
   "no_hermes": false,
-  "ffmpeg_dir": "C:\\ffmpeg\\bin"
+  "ffmpeg_dir": "C:\\ffmpeg\\bin",
+  "bridge_url": "",
+  "bridge_token_file": "C:\\ProgramData\\SecondBrain\\config\\bridge-token.txt",
+  "bridge_seconds": 60
 }

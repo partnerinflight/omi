@@ -224,3 +224,91 @@ def apply_one(conn, device_id: uuid.UUID, op: Operation) -> dict:
 def operations(body: OperationBatch, device_id: Device, conn: Db):
     # Each operation commits on its own: a conflict never discards the others' results.
     return {"results": [apply_one(conn, device_id, op) for op in body.operations]}
+
+
+# --- Worker bridge (milestone 2, shadow import) ------------------------------------------------
+# The Windows service connects out to these routes; the server never connects to Windows.
+
+MAX_RECORD_BYTES = 64_000
+
+
+def producer(conn: Db, authorization: Annotated[str | None, Header()] = None) -> uuid.UUID:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(401, "missing_token")
+    row = conn.execute("SELECT id FROM producers WHERE token_hash = %s AND revoked_at IS NULL",
+                       (auth.digest(token),)).fetchone()
+    if not row:
+        raise HTTPException(401, "invalid_token")
+    return row["id"]
+
+
+Producer = Annotated[uuid.UUID, Depends(producer)]
+
+
+class WorkerRecord(BaseModel):
+    kind: Literal["source", "item", "person", "observation"]
+    id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")
+    hash: str = Field(min_length=1, max_length=128)
+    data: dict | None = None  # None is a tombstone
+
+    @field_validator("data")
+    @classmethod
+    def small(cls, v):
+        if v is not None and len(json.dumps(v)) > MAX_RECORD_BYTES:
+            raise ValueError("record too large")
+        return v
+
+
+class WorkerEvents(BaseModel):
+    records: list[WorkerRecord] = Field(max_length=MAX_BATCH)
+    status: dict = Field(default_factory=dict)
+
+    @field_validator("status")
+    @classmethod
+    def counts_only(cls, v):
+        if len(json.dumps(v)) > 4_000:
+            raise ValueError("status too large")
+        return v
+
+
+@app.post("/v1/worker/events")
+def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
+    # Idempotent by (producer, kind, id, hash): a replayed record is "unchanged". The worker
+    # marks a record exported only after this commit returns.
+    with conn.transaction():
+        stored = 0
+        for r in body.records:
+            stored += conn.execute(
+                """INSERT INTO worker_records (producer_id, kind, id, hash, data, deleted_at)
+                   VALUES (%s, %s, %s, %s, %s, CASE WHEN %s THEN now() END)
+                   ON CONFLICT (producer_id, kind, id) DO UPDATE
+                   SET hash = EXCLUDED.hash, data = COALESCE(EXCLUDED.data, worker_records.data),
+                       deleted_at = EXCLUDED.deleted_at, updated_at = now()
+                   WHERE worker_records.hash <> EXCLUDED.hash""",
+                (producer_id, r.kind, r.id, r.hash, Jsonb(r.data) if r.data is not None else None, r.data is None),
+            ).rowcount
+        conn.execute("UPDATE producers SET last_seen_at = now(), status = %s WHERE id = %s",
+                     (Jsonb(body.status), producer_id))
+    return {"accepted": len(body.records), "stored": stored}
+
+
+@app.get("/v1/pipeline")
+def pipeline(_: Device, conn: Db):
+    """What the phone can inspect during shadow import: worker freshness and record counts."""
+    producers = conn.execute(
+        "SELECT name, last_seen_at, status FROM producers WHERE revoked_at IS NULL ORDER BY name").fetchall()
+    counts = conn.execute(
+        "SELECT kind, count(*) AS n FROM worker_records WHERE deleted_at IS NULL GROUP BY kind").fetchall()
+    return {"workers": [{"name": p["name"], "status": p["status"],
+                         "last_seen_at": p["last_seen_at"].isoformat() if p["last_seen_at"] else None} for p in producers],
+            "counts": {c["kind"]: c["n"] for c in counts}}
+
+
+@app.get("/v1/pipeline/records")
+def pipeline_records(_: Device, conn: Db, kind: Literal["source", "item", "person", "observation"],
+                     limit: int = Query(50, ge=1, le=MAX_PAGE)):
+    rows = conn.execute(
+        """SELECT id, data, updated_at FROM worker_records WHERE kind = %s AND deleted_at IS NULL
+           ORDER BY updated_at DESC, id LIMIT %s""", (kind, limit)).fetchall()
+    return {"records": [{"id": r["id"], "data": r["data"], "updated_at": r["updated_at"].isoformat()} for r in rows]}

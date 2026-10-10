@@ -170,6 +170,12 @@ async function scenarios(url: string) {
   await a.edit(bread, { action: 'set_state', payload: { state: 'completed' } });
   assert.equal((await a.sync.sync(true)).state, 'synced');
 
+  // Concurrent callers with an expired token share one refresh instead of revoking the device.
+  await a.tokens.set({ ...(await a.tokens.get())!, access_token: 'expired' });
+  const [summary, after] = await Promise.all([a.sync.pipeline(), a.sync.sync(true)]);
+  assert.deepEqual([after.state, summary.workers.length], ['synced', 0]);
+  assert.equal((await a.sync.sync(true)).state, 'synced');
+
   // A's cursor is from the old epoch too: 410, bootstrap, and both phones agree.
   await b.sync.sync(true);
   assert.equal((await a.sync.sync(true)).state, 'synced');

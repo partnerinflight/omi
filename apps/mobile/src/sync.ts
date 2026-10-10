@@ -52,12 +52,18 @@ export function serverUrlProblem(url: string, allowHttpLocalhost = false): strin
   return 'Use an https:// address with no path.';
 }
 
+export type Pipeline = {
+  workers: { name: string; last_seen_at: string | null; status: { jobs?: Record<string, number>; routes_pending?: number } | null }[];
+  counts: Partial<Record<'source' | 'item' | 'person' | 'observation', number>>;
+};
+
 export function createSync(db: Db, tokens: TokenStore, opts: Options) {
   const http = opts.fetch ?? fetch;
   const now = opts.now ?? Date.now;
   const random = opts.random ?? Math.random;
   let running: Promise<SyncStatus> | null = null;
   let again = false;
+  let refreshes: Promise<unknown> = Promise.resolve();
 
   async function request(url: string, init: RequestInit = {}) {
     const abort = new AbortController();
@@ -86,13 +92,25 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
     await tokens.set({ access_token: next.access_token, refresh_token: next.refresh_token });
   }
 
+  // Serialized: two callers refreshing with the same token would look like theft and revoke
+  // the device. A caller whose token was already replaced just retries with the new one.
+  function refreshAfter(url: string, rejected: string) {
+    const next = refreshes.then(async () => {
+      const current = await tokens.get();
+      if (!current) throw new AuthRequired('no credentials');
+      if (current.access_token === rejected) await refresh(url, current);
+    });
+    refreshes = next.catch(() => {});
+    return next;
+  }
+
   async function api(path: string, init: RequestInit = {}, retried = false): Promise<Response> {
     const url = await serverUrl();
     const current = await tokens.get();
     if (!current) throw new AuthRequired('no credentials');
     const res = await request(url + path, { ...init, headers: { Authorization: `Bearer ${current.access_token}` } });
     if (res.status === 401 && !retried) {
-      await refresh(url, current);
+      await refreshAfter(url, current.access_token);
       return api(path, init, true);
     }
     if (res.status === 401) throw new AuthRequired('access rejected');
@@ -224,6 +242,13 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
 
   return {
     status,
+
+    // Read-only shadow import from the Windows worker; online only, nothing cached.
+    async pipeline(): Promise<Pipeline> {
+      const res = await api('/v1/pipeline');
+      if (!res.ok) throw new HttpError(res.status);
+      return res.json();
+    },
 
     // Single flight. A trigger during a run (say, an edit made mid-pull) causes one
     // more run afterwards, so the edit is not left waiting for the next timer tick.

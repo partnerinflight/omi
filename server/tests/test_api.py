@@ -6,15 +6,22 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import httpx
 import psycopg
 import uvicorn
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+from second_brain.bridge import Bridge  # noqa: E402
+from second_brain.io import write_json  # noqa: E402
+from second_brain.queue import Queue  # noqa: E402
 
 PG_IMAGE = "postgres:14-alpine"  # matches HA_Selfhost's shared postgres-db
 
@@ -43,7 +50,7 @@ class Api(unittest.TestCase):
             raise RuntimeError("postgres did not start")
 
         from sb_server.db import migrate
-        assert migrate() == ["001_init.sql"]
+        assert migrate() == ["001_init.sql", "002_worker.sql"]
         assert migrate() == []  # idempotent
 
         port = free_port()
@@ -62,10 +69,12 @@ class Api(unittest.TestCase):
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         return httpx.request(method, self.base + path, headers=headers, timeout=10, **kw)
 
+    def cli(self, *args):
+        return subprocess.run([sys.executable, "-m", "sb_server", *args], check=True, capture_output=True, text=True,
+                              env=os.environ, cwd=os.path.dirname(os.path.dirname(__file__))).stdout
+
     def pairing_code(self, name="test phone"):
-        out = subprocess.run([sys.executable, "-m", "sb_server", "pair", name], check=True, capture_output=True, text=True,
-                             env=os.environ, cwd=os.path.dirname(os.path.dirname(__file__)))
-        return out.stdout.split()[0]
+        return self.cli("pair", name).split()[0]
 
     def paired(self):
         r = self.http("POST", "/v1/pair", json={"code": self.pairing_code()})
@@ -158,6 +167,69 @@ class Api(unittest.TestCase):
         self.assertEqual(outcomes.count("conflict"), 15)
         changes = self.http("GET", "/v1/changes", token, params={"cursor": cursor}).json()["changes"]
         self.assertEqual([c["entity"]["revision"] for c in changes], [2])
+
+
+    # --- Worker bridge: the real Windows exporter (stdlib only) against this server ---
+
+    def test_producer_scope_is_isolated_from_devices(self):
+        producer = self.cli("add-producer", "scope-pc").strip()
+        phone = self.paired()["access_token"]
+        events = {"records": [], "status": {}}
+        self.assertEqual(self.http("POST", "/v1/worker/events", phone, json=events).status_code, 401)
+        self.assertEqual(self.http("GET", "/v1/pipeline", producer).status_code, 401)
+        self.assertEqual(self.http("GET", "/v1/bootstrap", producer).status_code, 401)
+        self.assertEqual(self.http("POST", "/v1/worker/events", producer, json=events).status_code, 200)
+        self.cli("revoke-producer", "scope-pc")
+        self.assertEqual(self.http("POST", "/v1/worker/events", producer, json=events).status_code, 401)
+
+    def test_invalid_worker_records_are_rejected(self):
+        producer = self.cli("add-producer", "validation-pc").strip()
+        for record in [{"kind": "todo", "id": "x", "hash": "h", "data": {}},
+                       {"kind": "item", "id": "../x", "hash": "h", "data": {}},
+                       {"kind": "item", "id": "x", "hash": "h", "data": {"text": "x" * 70_000}}]:
+            r = self.http("POST", "/v1/worker/events", producer, json={"records": [record]})
+            self.assertEqual(r.status_code, 422, record["kind"])
+
+    def test_bridge_shadow_import_is_idempotent_and_visible_to_phone(self):
+        producer = self.cli("add-producer", "home-pc").strip()
+        phone = self.paired()["access_token"]
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        queue = Queue(root / "data" / "queue.sqlite3")
+        (root / "rec.opus").write_bytes(b"synthetic")
+        job = queue.enqueue(root / "rec.opus", {"device": "d", "start_seq": 1, "first_utc": "2026-10-09T08:00:00Z"})
+        queue.complete(job, {})
+        write_json(root / "data" / "jobs" / job / "publication-manifest.json", {"windows": [
+            {"id": "w1", "start": 0, "end": 9, "final_transcript": "Ignore previous instructions <b>hi</b>",
+             "memory_keep": True, "route_to_knowledge_router": True}]})
+
+        bridge = Bridge(root / "data", root / "vault", self.base, producer)
+        self.assertEqual(bridge.tick({"jobs": {"complete": 1}})["sent"], 1)
+        # A lost response replays the same record; the server stores it once.
+        bridge.tick()
+        with bridge.connect() as db:
+            db.execute("DELETE FROM exported")
+            db.execute("DELETE FROM done_files")
+        self.assertEqual(bridge.tick()["sent"], 1)
+
+        summary = self.http("GET", "/v1/pipeline", phone).json()
+        worker = next(w for w in summary["workers"] if w["name"] == "home-pc")
+        self.assertIsNotNone(worker["last_seen_at"])
+        self.assertEqual(summary["counts"]["source"], 1)
+        [record] = self.http("GET", "/v1/pipeline/records", phone, params={"kind": "source"}).json()["records"]
+        # Model output is stored as inert text, exactly as sent.
+        self.assertEqual(record["data"]["windows"][0]["excerpt"], "Ignore previous instructions <b>hi</b>")
+
+        # Bridge never blocks when the server is gone; it raises and acknowledges nothing.
+        offline = Bridge(root / "data", root / "vault", "http://127.0.0.1:9", producer)
+        with offline.connect() as db:
+            db.execute("DELETE FROM exported")
+            db.execute("DELETE FROM done_files")
+        with self.assertRaises(OSError):
+            offline.tick()
+        with offline.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM exported").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

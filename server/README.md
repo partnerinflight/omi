@@ -1,4 +1,4 @@
-# Second Brain sync API (milestone 1: todos)
+# Second Brain sync API (milestones 1–2: todos, worker shadow import)
 
 FastAPI + Postgres. Implements the todo slice of
 [architecture-and-sync.md](../docs/mobile/architecture-and-sync.md): device
@@ -11,6 +11,7 @@ uv sync
 uv run python -m unittest discover -s tests -t .   # needs Docker; starts postgres:14-alpine
 SB_DATABASE_URL=postgresql://... uv run python -m sb_server serve
 SB_DATABASE_URL=postgresql://... uv run python -m sb_server pair "Test phone"
+SB_DATABASE_URL=postgresql://... uv run python -m sb_server add-producer "Home PC"   # token for the Windows bridge
 ```
 
 | Route | Notes |
@@ -21,6 +22,11 @@ SB_DATABASE_URL=postgresql://... uv run python -m sb_server pair "Test phone"
 | `GET /v1/bootstrap` | all live todos plus a cursor, from one snapshot |
 | `GET /v1/changes?cursor=&limit=` | ordered entity snapshots; 410 after `new-epoch` |
 | `POST /v1/operations` | ≤100 ops `create`/`set_title`/`set_state`; each commits alone |
+| `POST /v1/worker/events` | producer token only; ≤100 `source`/`item`/`person`/`observation` records, deduplicated by id and hash; `data: null` is a tombstone; also records worker freshness |
+| `GET /v1/pipeline`, `GET /v1/pipeline/records?kind=` | device token only; worker freshness, counts and latest records (read-only shadow) |
 
-Not yet: OpenAPI-generated client types, memories/people/speakers, worker
-routes, clips, tombstone retention/compaction, multi-owner scoping.
+Worker records are untrusted model output stored as inert JSON. Device and producer
+tokens are separate tables, so neither can call the other's routes.
+
+Not yet: OpenAPI-generated client types, editable memories/people/speakers, worker
+commands, clips, tombstone retention/compaction, multi-owner scoping.

@@ -1,7 +1,9 @@
 # Proposed architecture and sync contract
 
 Design 2026-10-09. The todo slice (pair, auth, bootstrap, changes, operations)
-is implemented in [`server/`](../../server/README.md) as of 2026-10-10; other routes do not exist yet.
+is implemented in [`server/`](../../server/README.md) as of 2026-10-10, as is the milestone 2
+shadow import (`POST /v1/worker/events`, read-only `GET /v1/pipeline[/records]`).
+Other routes do not exist yet.
 
 ## Topology and authority
 
@@ -136,6 +138,11 @@ and bounded retriable 5xx. Per-operation conflicts in a batch are explicit resul
    future access but cannot remotely erase data from an offline device.
 
 ## Windows adapter and recovery
+
+Implemented for milestone 2 as `second_brain.bridge`: instead of a separate spool, each cycle
+reconciles completed jobs, publication manifests, router ledgers and the speaker
+database against the records the server acknowledged (`data/bridge.sqlite3`), so
+the immutable local files are the spool. Clips and worker commands are milestone 3.
 
 Add a durable outbound spool under private ProgramData; use HTTPS initiated by
 the service, never inbound internet access to Windows. Configure an absolute

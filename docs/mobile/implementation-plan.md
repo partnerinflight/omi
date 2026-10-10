@@ -42,6 +42,12 @@ two devices; stale edits show a resolvable conflict. No vault/Windows dependency
 
 ### 2. Read-only pipeline bridge
 
+Status 2026-10-10: implemented and tested with synthetic manifests (`tests/test_bridge.py`,
+`server/tests/test_api.py`); phone shows worker freshness and counts. Not done: review
+clip transfer (moved to milestone 3 with the clip lifecycle), the authorized small
+real-dataset run, and any Windows service/live check. Item export includes extractions
+the router's reconciliation dropped as duplicates.
+
 - Add opt-in outbound producer configuration and credentials without modifying
   receiver pairing, ACK timing, recording closure or v3 scoring/gating behavior.
 - Export durable source, extracted item and speaker-observation events, with
