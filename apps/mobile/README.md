@@ -1,12 +1,19 @@
-# Second Brain mobile (milestone 0 spike)
+# Second Brain mobile
 
-Expo SDK 57 / React Native 0.86 / TypeScript. Proves the native boundaries in
-[implementation plan](../../docs/mobile/implementation-plan.md) milestone 0 with
-synthetic data. There is no server yet, so every edit stays "Queued".
+Expo SDK 57 / React Native 0.86 / TypeScript. Milestone 0 spike plus the
+milestone 1 todo sync engine ([implementation plan](../../docs/mobile/implementation-plan.md)).
+
+- `src/db.ts`: `server_todos` holds acknowledged server state, `outbox` holds
+  unacknowledged edits; the list is server state with the outbox replayed on top.
+- `src/sync.ts`: pushes the oldest operation per entity (a conflict blocks later
+  edits to that todo until resolved), then pulls ordered changes; 410 → bootstrap.
+  Triggered on open/resume, after edits, every 30 s with backoff, and pull-to-refresh.
+  Tokens live in the Keychain (`src/tokenStore.ts`).
 
 ```sh
 npm install
 npm test && npm run typecheck && npx expo-doctor
+npm run test:sync           # two simulated phones against ../../server + Postgres (Docker, uv)
 npx expo run:ios            # simulator
 npx expo run:ios --device   # physical iPhone (needs a signing team in Xcode)
 ```
@@ -32,7 +39,7 @@ installed anyway: run `npx expo start --dev-client` and launch it from the simul
 
 - [ ] Airplane mode: add, complete, reopen, dismiss todos; force-quit; relaunch; all persist and show Queued
 - [ ] Clip plays with ringer switch on silent; pauses on incoming call/Siri; resumes by tap; unplugging headphones pauses
-- [ ] Keychain token survives relaunch; delete removes it
+- [ ] Pair with a code from `python -m sb_server pair`; tokens survive relaunch; sign out clears them
 - [ ] VoiceOver reads headers, checkbox state, Queued count; all buttons reachable
 - [ ] Largest Dynamic Type size: no clipped text; dark mode legible
 - [ ] `npx expo run:android` builds (Android path feasibility)

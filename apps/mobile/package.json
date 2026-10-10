@@ -24,7 +24,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "node --experimental-strip-types --no-warnings tests/db.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:sync": "node --experimental-strip-types --no-warnings tests/sync.test.ts"
   },
   "private": true,
   "engines": {

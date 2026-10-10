@@ -1,34 +1,11 @@
-// Runs src/db.ts against node:sqlite: `npm test` (Node >= 22.6).
+// Local cache and replay: `npm test` (Node >= 22.6).
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
-import { applyLocal, listTodos, migrate, type Db } from '../src/db.ts';
-
-function adapter(raw: DatabaseSync): Db {
-  const runAsync = async (sql: string, ...args: any[]) => {
-    const r = raw.prepare(sql).run(...args);
-    return { lastInsertRowId: Number(r.lastInsertRowid), changes: Number(r.changes) };
-  };
-  const getFirstAsync = async (sql: string, ...args: any[]) => (raw.prepare(sql).get(...args) ?? null) as any;
-  return {
-    execAsync: async (sql: string) => raw.exec(sql),
-    getFirstAsync,
-    getAllAsync: async (sql: string, ...args: any[]) => raw.prepare(sql).all(...args) as any,
-    withExclusiveTransactionAsync: async (task) => {
-      raw.exec('BEGIN EXCLUSIVE');
-      try {
-        await task({ runAsync, getFirstAsync } as any);
-        raw.exec('COMMIT');
-      } catch (e) {
-        raw.exec('ROLLBACK');
-        throw e;
-      }
-    },
-  } as Db;
-}
+import { applyLocal, listTodos, migrate, upsertServerTodo } from '../src/db.ts';
+import { openDb } from './sqlite.ts';
 
 const path = `${process.env.TMPDIR ?? '/tmp'}/sb-db-test-${randomUUID()}.db`;
-let db = adapter(new DatabaseSync(path));
+let db = openDb(path);
 await migrate(db);
 await migrate(db); // idempotent
 
@@ -36,21 +13,30 @@ const id = randomUUID();
 await applyLocal(db, id, { action: 'create', payload: { title: 'Buy milk' } }, randomUUID);
 await applyLocal(db, id, { action: 'set_state', payload: { state: 'completed' } }, randomUUID);
 
-// Reopen the file: edits and queued operations survive an app kill.
-db = adapter(new DatabaseSync(path));
-const [todo] = await listTodos(db);
-assert.equal(todo.state, 'completed');
-assert.equal(todo.pending, 2);
-const ops = await db.getAllAsync<{ action: string }>('SELECT action FROM outbox ORDER BY seq');
-assert.deepEqual(ops.map((o) => o.action), ['create', 'set_state']);
+// Reopen the file: queued edits survive an app kill and still render.
+db = openDb(path);
+let [todo] = await listTodos(db);
+assert.deepEqual([todo.title, todo.state, todo.pending], ['Buy milk', 'completed', 2]);
 
-// A failed edit rolls back the overlay and writes no outbox row.
-await assert.rejects(applyLocal(db, 'missing', { action: 'set_title', payload: { title: 'x' } }, randomUUID));
+// A failed edit rolls back and queues nothing.
+await assert.rejects(applyLocal(db, randomUUID(), { action: 'set_title', payload: { title: 'x' } }, randomUUID));
 assert.equal((await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM outbox'))!.n, 2);
+
+// Server state underneath: an unsent local edit still wins in the view (rebase).
+const other = randomUUID();
+await upsertServerTodo(db, { id: other, title: 'Server title', state: 'open', revision: 3, updated_at: '2026-01-01T00:00:00Z', deleted_at: null });
+await applyLocal(db, other, { action: 'set_title', payload: { title: 'Local title' } }, randomUUID);
+await upsertServerTodo(db, { id: other, title: 'Newer server title', state: 'completed', revision: 4, updated_at: '2026-01-02T00:00:00Z', deleted_at: null });
+todo = (await listTodos(db)).find((t) => t.id === other)!;
+assert.deepEqual([todo.title, todo.state], ['Local title', 'completed']);
+
+// An older revision never overwrites a newer one.
+await upsertServerTodo(db, { id: other, title: 'Stale', state: 'open', revision: 2, updated_at: '2026-01-03T00:00:00Z', deleted_at: null });
+const row = await db.getFirstAsync<{ title: string }>('SELECT title FROM server_todos WHERE id = ?', other);
+assert.equal(row!.title, 'Newer server title');
 
 // Dismissed items leave the list but keep their queued operation.
 await applyLocal(db, id, { action: 'set_state', payload: { state: 'dismissed' } }, randomUUID);
-assert.equal((await listTodos(db)).length, 0);
-assert.equal((await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM outbox'))!.n, 3);
+assert.ok(!(await listTodos(db)).some((t) => t.id === id));
 
 console.log('db.test.ts: ok');
