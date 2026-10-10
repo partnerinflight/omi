@@ -1,6 +1,7 @@
 # Mobile-first Second Brain: Mac handoff
 
-Date: 2026-10-09. Status: proposed design, no app/server implemented or deployed.
+Date: 2026-10-09. Status (2026-10-10): milestone 0 spike in `apps/mobile/`, todo
+slice of the API in `server/`; nothing deployed.
 
 The owner's new direction is an iOS-first, cross-platform app connected to an
 owner-hosted server. It becomes the primary place to manage todos, identify

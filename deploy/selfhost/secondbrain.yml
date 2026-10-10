@@ -1,0 +1,43 @@
+# Second Brain sync API for HA_Selfhost. Copy to HA_Selfhost/compose/ and follow README.md.
+# The phone authenticates natively (device tokens), so the whole host uses
+# chain-no-auth like lific's /mcp: Google forward auth cannot run inside the app.
+services:
+  secondbrain:
+    profiles: ["apps", "all"]
+    image: ha-secondbrain:${SECONDBRAIN_SERVER_COMMIT:?pin the reviewed omi commit}
+    build:
+      context: https://github.com/partnerinflight/omi.git#${SECONDBRAIN_SERVER_COMMIT}:server
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    pids_limit: 256
+    stop_grace_period: 30s
+    networks: [proxy_secondbrain, secondbrain_db]
+    # No host port: all external traffic passes through Traefik/TLS.
+    environment:
+      SB_DATABASE_URL: postgresql://secondbrain:${SECONDBRAIN_DB_PASSWORD:?Set in Infisical}@postgres-db:5432/secondbrain
+      SB_FORWARDED_ALLOW_IPS: "*"  # only Traefik can reach this container
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+    logging:
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+      - "traefik.enable=true"
+      - "traefik.docker.network=${HA_COMPOSE_PROJECT_NAME}_proxy_secondbrain"
+      - "traefik.http.routers.secondbrain-rtr.rule=Host(`brain.${DOMAINNAME_CLOUD_SERVER}`)"
+      - "traefik.http.routers.secondbrain-rtr.entrypoints=websecure"
+      - "traefik.http.routers.secondbrain-rtr.tls=true"
+      - "traefik.http.routers.secondbrain-rtr.middlewares=chain-no-auth@file"
+      - "traefik.http.routers.secondbrain-rtr.service=secondbrain-svc"
+      - "traefik.http.services.secondbrain-svc.loadbalancer.server.port=8000"
+      - "traefik.http.services.secondbrain-svc.loadbalancer.healthcheck.path=/v1/health"
+      - "traefik.http.services.secondbrain-svc.loadbalancer.healthcheck.interval=30s"
+      - "traefik.http.services.secondbrain-svc.loadbalancer.healthcheck.timeout=5s"

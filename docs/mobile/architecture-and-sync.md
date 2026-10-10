@@ -1,6 +1,7 @@
 # Proposed architecture and sync contract
 
-Design only, 2026-10-09. No network API below exists yet.
+Design 2026-10-09. The todo slice (pair, auth, bootstrap, changes, operations)
+is implemented in [`server/`](../../server/README.md) as of 2026-10-10; other routes do not exist yet.
 
 ## Topology and authority
 
