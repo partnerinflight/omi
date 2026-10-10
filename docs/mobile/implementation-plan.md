@@ -7,8 +7,8 @@ Planning only, 2026-10-09. Follow the current branch rule; do not merge/push mai
 ### 0. Validate the mobile foundation on Mac
 
 - Reconcile handoff provenance and inspect uncommitted integration availability.
-- Try the intended Snow UI if its official source becomes reachable. Otherwise
-  prototype the recommended Expo stack; pin toolchain/dependencies after proof.
+- Snow UI and Tauri were evaluated and rejected on 2026-10-10 (see the framework
+  decision). Prototype the Expo stack; pin toolchain/dependencies after proof.
 - Use synthetic todos, people, excerpts and short audio. Build with local Xcode,
   then install a development build on a physical iPhone.
 - Prove airplane-mode CRUD and app-kill persistence, clip playback/interruption,

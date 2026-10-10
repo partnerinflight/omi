@@ -72,25 +72,26 @@ automatic synchronization; the explicit sync contract is in the architecture pla
 | React Native + Expo | Shared iOS/Android code and local native builds; native modules still need device validation | Recommended provisional default |
 | Flutter | Official iOS/Android and desktop support; adds Dart and a separate UI ecosystem | Strong fallback if prototype or developer preference favors it |
 | SwiftUI | Direct Apple integration; separate Android UI needed later | Choose only if cross-platform priority changes |
-| Snow UI at supplied URL | Exact project, platform support, license and maintenance could not be verified | Evaluate before adoption; not a selected dependency |
+| Tauri 2 (mobile) | iOS UI is a WKWebView with a Rust core; mobile less mature than desktop; audio session, Keychain and SQLite need plugins or Swift glue | Rejected: web UI without React Native's native controls or modules |
+| Snow UI (`snow-ui-rs`) | Pure-Rust 0.0.1 (Apache-2.0); README reports working desktop/web only; no audio, SQLite, secure-storage or accessibility support | Rejected for MVP; recheck once an iOS backend ships |
 
-### Snow UI investigation
+### Rust UI investigation (updated 2026-10-10)
 
-`https://snow-ui.dev/` could not be opened by the web tool on 2026-10-09; a local
-HTTP attempt failed DNS resolution, and exact-domain searches returned no results.
-That is a research limitation, not evidence the framework cannot work. Search
-also found [Holakirr Snow UI](https://github.com/holakirr/snow-ui), a React/Tailwind
-component library, and [SnowUI by ByeWind](https://snowui.byewind.com/), a design
-kit. Neither has been established as the project behind the supplied URL.
-Do not confuse a web component/design kit with a native mobile runtime.
+The supplied URL resolves to [Snow UI](https://snow-ui.dev/)
+([repo](https://github.com/snow-ui-rs/snow-ui)), a pure-Rust declarative UI
+framework on Tokio, Apache-2.0. On 2026-10-10: crate 0.0.1, repo created
+2026-01-06, 3 contributors, 26 stars. Its README states "It works, initially,
+on desktop and web"; iOS/Android are listed targets but not demonstrated.
+Widgets are Board, Card, Row, Text, Button, TextInput, Switch and Form. It has no
+audio playback/session, SQLite, Keychain or VoiceOver/Dynamic Type support, so it
+cannot run the milestone 0 spike. Revisit only after a working iOS backend ships.
 
-Before selecting the intended Snow project on Mac: locate its official repo and
-license, inspect supported platforms/release history, and build a minimal iPhone
-app. Demonstrate SQLite, secure token storage, authenticated clip playback,
-offline operation replay, accessibility and Android feasibility. If it is a web
-library, using it on iOS introduces a WebView/native-bridge choice, which requires
-its own evaluation. Allow one focused prototype session; a failed or unavailable
-candidate should not block implementation of the framework-independent server.
+Tauri 2 mobile renders the UI in WKWebView with Rust commands behind it. Mobile is
+less mature than desktop, and the required native boundaries would need plugins
+or custom Swift. Other Rust UIs either self-render (weak accessibility) or are
+also WebViews (Dioxus mobile). Rust brings no shared-code benefit here: the
+server is Python and heavy inference stays on Windows. Decision: proceed with
+the Expo stack in milestone 0.
 
 ### Primary references checked 2026-10-09
 
