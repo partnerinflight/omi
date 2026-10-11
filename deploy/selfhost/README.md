@@ -54,8 +54,16 @@ there is no volume.
    ./ha compose exec postgresdb psql -U secondbrain -d postgres -h 127.0.0.1 -c "SELECT 1"
    ```
    Other apps' databases are not changed: revoking `PUBLIC` privileges there could break them.
-4. `./ha validate`, then `./ha compose --profile apps up -d secondbrain`. The container
-   migrates on start. Check `https://brain.<domain>/v1/health` from the phone on cellular,
+   DNS needs no change: the `*.<domain>` wildcard and Traefik's wildcard certificate
+   already cover `brain.<domain>` (checked 2026-10-10: it answers 404 from Traefik).
+4. `./ha validate`. A plain `up -d secondbrain` would recreate Traefik and postgres-db
+   (their networks changed), briefly interrupting every site. Instead create only this
+   service, attach the live containers to its networks, then start it:
+   `./ha compose --profile apps up --no-start --no-deps secondbrain`,
+   `docker network connect ha_secondbrain_db postgres-db`,
+   `docker network connect ha_proxy_secondbrain traefik`,
+   `./ha compose --profile apps start secondbrain`. The compose files list the networks,
+   so the next routine recreate matches. The container migrates on start. Check `https://brain.<domain>/v1/health` from the phone on cellular,
    not just from the LAN.
 5. Pair a phone: `./ha compose exec secondbrain python -m sb_server pair "My iPhone"`, then
    enter the code in the app within 10 minutes. `sb_server devices` lists every phone,
