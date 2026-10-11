@@ -137,14 +137,15 @@ class StateStore:
             raise
 
 
-def index_tasks(vault: Path, *, intake: bool = False) -> dict[str, list[Task]]:
+def index_tasks(vault: Path, *, intake: bool = False, todos: TodoFile | None = None) -> dict[str, list[Task]]:
     try:
         vault = vault.resolve(strict=True)
     except OSError as exc:
         raise ChecklistError("Configured vault is inaccessible") from exc
-    todo = TodoFile(vault)
-    if not intake and todo.read() is not None:
-        return {eid: [Task(eid, row["text"], "ToDos/Tasks.md")] for eid, row in todo.rows().items()}
+    todo = todos or TodoFile(vault)
+    if not intake and (text := todo.read()) is not None:
+        source = getattr(todo, "SOURCE", "ToDos/Tasks.md")
+        return {eid: [Task(eid, row["text"], source)] for eid, row in todo.rows(text).items()}
     decisions_dir = vault / "Decisions"
     tasks_path = vault / "Projects" / "_Tasks.md"
     _resolved_inside(vault, decisions_dir, "Decisions directory")
@@ -183,13 +184,13 @@ def index_tasks(vault: Path, *, intake: bool = False) -> dict[str, list[Task]]:
     return result
 
 
-def resolve_tasks(vault: Path, router_ids: Iterable[str], *, intake: bool = False) -> list[Task]:
+def resolve_tasks(vault: Path, router_ids: Iterable[str], *, intake: bool = False, todos: TodoFile | None = None) -> list[Task]:
     ids = list(router_ids)
     if any(not isinstance(item, str) or not item for item in ids):
         raise ChecklistError("Every router ID must be a non-empty string")
     if len(set(ids)) != len(ids):
         raise ChecklistError("Duplicate selected router IDs are not allowed")
-    indexed = index_tasks(vault, intake=intake)
+    indexed = index_tasks(vault, intake=intake, todos=todos)
     selected: list[Task] = []
     for router_id in ids:
         matches = indexed.get(router_id, [])
@@ -242,6 +243,7 @@ class ChecklistService:
         timezone_name: str,
         sender: Any,
         markup_factory: Callable[[list[list[dict[str, str]]]], Any] = lambda rows: rows,
+        todos: TodoFile | None = None,
     ):
         self.vault = Path(vault).expanduser().resolve()
         self.chat_id = int(chat_id)
@@ -250,7 +252,7 @@ class ChecklistService:
         self.sender = sender
         self.markup_factory = markup_factory
         self.store = StateStore(self.vault)
-        self.todos = TodoFile(self.vault)
+        self.todos = todos or TodoFile(self.vault)  # ServerTodos after cutover
 
     def _read_state(self):
         state = self.store.read()
@@ -266,7 +268,7 @@ class ChecklistService:
             tasks = resolve_tasks(self.vault, router_ids, intake=True) if router_ids else []
             added = self.todos.promote(tasks, state)
             self.store.write(state)
-            return {"success": True, "added": added, "path": "ToDos/Tasks.md",
+            return {"success": True, "added": added, "path": getattr(self.todos, "SOURCE", "ToDos/Tasks.md"),
                     "tasks": [{"router_id": eid, **{k: row[k] for k in ("text", "status", "until")}}
                               for eid, row in self.todos.rows().items()]}
 
@@ -277,7 +279,7 @@ class ChecklistService:
         return ledger
 
     def change(self, *, action: str, router_id: str, until: str | None = None) -> dict[str, Any]:
-        task = resolve_tasks(self.vault, [router_id])[0]
+        task = resolve_tasks(self.vault, [router_id], todos=self.todos)[0]
         statuses = {"done": "done", "dismiss": "dismissed", "snooze": "snoozed", "reopen": "open"}
         if action not in statuses:
             raise ChecklistError("Unsupported reminder action")
@@ -292,7 +294,7 @@ class ChecklistService:
             snooze_until = parsed.isoformat()
         with self.store.locked():
             # Revalidate while holding the writer lock; routed intake stays read-only.
-            task = resolve_tasks(self.vault, [router_id])[0]
+            task = resolve_tasks(self.vault, [router_id], todos=self.todos)[0]
             state = self._read_state()
             previous = _status_for(state, router_id)
             item = dict(state["items"].get(router_id, {}))
@@ -313,7 +315,7 @@ class ChecklistService:
     async def display(self, *, router_ids: list[str], request_id: str) -> dict[str, Any]:
         if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 160:
             raise ChecklistError("A non-empty caller request_id of at most 160 characters is required")
-        selected = resolve_tasks(self.vault, router_ids)
+        selected = resolve_tasks(self.vault, router_ids, todos=self.todos)
         if not selected:
             return {"success": True, "sent": False, "confirmed": False, "status": "empty", "reply_instruction": "For a direct user question, say no open tasks are due today. Never use [SILENT] for an interactive question."}
         token = secrets.token_urlsafe(12)
@@ -331,7 +333,7 @@ class ChecklistService:
                     "message_ids": existing.get("message_ids", {}),
                     "reply_instruction": "For a direct user question give a normal acknowledgement if confirmed, otherwise explain the incomplete delivery. Never use [SILENT] for an interactive question or retry this reservation.",
                 }
-            selected = resolve_tasks(self.vault, router_ids)
+            selected = resolve_tasks(self.vault, router_ids, todos=self.todos)
             today = datetime.now(self.timezone).date()
             tasks = []
             for task in selected:
@@ -432,7 +434,7 @@ class ChecklistService:
             if bound_message is None or int(bound_message) != int(message_id):
                 return CallbackResult(False, "Invalid or stale checklist button")
             router_id = ids[slot]
-            task = resolve_tasks(self.vault, [router_id])[0]
+            task = resolve_tasks(self.vault, [router_id], todos=self.todos)[0]
             snapshots = delivery.get("snapshots", [])
             if slot >= len(snapshots) or snapshots[slot] != {"text": task.text, "source": task.source}:
                 return CallbackResult(False, "Task source changed; review it before updating")

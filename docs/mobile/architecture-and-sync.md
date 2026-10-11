@@ -211,6 +211,15 @@ historic notes. Server acceptance is independent of archive-export completion.
 New clarification answers update canonical structured text and schedule a guarded
 vault projection; existing legacy clarifications require an explicit ID mapping.
 
+Implemented (milestone 5, untried on real data): imported todos keep their router id as
+`legacy_id`, and their server id is `uuid5(LEGACY_NS, legacy_id)`, so the mapping needs no
+table and repeat imports are no-ops. `authority.todos` is `legacy` (import allowed, app
+edits of imported todos rejected) or `server` (import refused). Hermes plugin 0.4.0 reads
+and writes through the API when `server_url` is set; buttons from before cutover fail
+its source check. The bridge projects Tasks.md in the plugin's own format (managed
+frontmatter, which also stops housekeeping), archives the pre-cutover file, and on
+rollback hands the file back once without the frontmatter.
+
 After todo cutover, `ToDos/Tasks.md` is a projection. Hermes/Telegram must use the
 same API and scoped desired-state commands, or task-mutating callbacks/jobs must
 be disabled. Invalidate old buttons; do not leave the Markdown housekeeping writer

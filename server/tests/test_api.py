@@ -54,7 +54,8 @@ class Api(unittest.TestCase):
             raise RuntimeError("postgres did not start")
 
         from sb_server.db import migrate
-        assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql", "004_memories.sql"]
+        assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql", "004_memories.sql",
+                         "005_todo_authority.sql"]
         assert migrate() == []  # idempotent
 
         port = free_port()
@@ -413,6 +414,122 @@ class Api(unittest.TestCase):
         self.assertIn(f"Prefers oat milk, not soy %% memory:{fact_id} %%", note)
         self.assertNotIn("subscription", note)
         self.assertFalse((root / "vault" / "Mobile/Ideas.md").exists())
+
+
+    # --- Milestone 5: todo migration, cutover, Hermes server mode, rollback ---
+
+    def test_todo_migration_cutover_and_rollback(self):
+        import asyncio
+        import importlib.util
+        from datetime import date as day, timedelta
+        root = Path(__file__).resolve().parents[2] / "integrations/hermes/plugins/secondbrain-checklist"
+        spec = importlib.util.spec_from_file_location("sbr_m5", root / "__init__.py", submodule_search_locations=[str(root)])
+        plugin = importlib.util.module_from_spec(spec)
+        sys.modules["sbr_m5"] = plugin
+        spec.loader.exec_module(plugin)
+        from sbr_m5 import migrate as legacy
+        from sbr_m5.checklist import ChecklistService
+        from sbr_m5.server_todos import ServerTodos
+        from sbr_m5.maintenance import scrub
+        from sbr_m5.todos import TodoFile
+        from sbr_m5.transport import SendReceipt
+
+        class Sender:
+            calls = []
+
+            def preflight(self):
+                pass
+
+            async def send(self, **kw):
+                self.calls.append(kw)
+                return SendReceipt(chat_id=kw["chat_id"], message_id=500 + len(self.calls))
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        vault = Path(tmp.name) / "vault"
+        (vault / "Decisions").mkdir(parents=True)
+        (vault / "Projects").mkdir()
+        (vault / "Decisions/one.md").write_text("- Call the clinic %% router:evt-a %%\n- Later intake %% router:evt-c %%\n")
+        (vault / "Projects/_Tasks.md").write_text("")
+        sender = Sender()
+        hermes = lambda todos=None: ChecklistService(vault=str(vault), chat_id=-1001, owner_user_id=42,  # noqa: E731
+                                                     timezone_name="America/Los_Angeles", sender=sender, todos=todos)
+        hermes().sync(["evt-a"])
+        tasks = vault / "ToDos/Tasks.md"
+        tasks.write_text(tasks.read_text() + "  bring the referral\n- [x] Old done %% router:m1 %%\n\nMy own prose.\n")
+        old_button = asyncio.run(hermes().display(router_ids=["evt-a"], request_id="before"))
+        self.assertTrue(old_button["confirmed"])
+
+        producer, phone = self.cli("add-producer", "migration-pc").strip(), self.paired()["access_token"]
+        dry = legacy.inventory(vault)
+        self.assertEqual((dry["report"]["tasks"], dry["report"]["prose_lines_not_imported"]), (2, 3))  # incl. the 2 header lines
+        first = legacy.apply(vault, self.base, producer, "todos-test")["result"]
+        self.assertEqual(first, {"created": 2, "updated": 0, "unchanged": 0})
+        self.assertEqual(legacy.apply(vault, self.base, producer, "todos-test")["result"]["unchanged"], 2)  # repeat: no effect
+        todos = {t["legacy_id"]: t for t in self.http("GET", "/v1/bootstrap", phone).json()["todos"] if t["legacy_id"]}
+        clinic = todos["evt-a"]
+        self.assertEqual((clinic["notes"], todos["m1"]["state"]), ("  bring the referral", "completed"))
+        # Before cutover the app cannot change imported todos; Tasks.md still owns them.
+        self.assertEqual(self.op(phone, clinic["id"], "set_state", {"state": "completed"}, base=1)["error"], "legacy_authority")
+        hermes().change(action="done", router_id="evt-a")  # a legacy edit before the final delta
+        self.assertEqual(legacy.apply(vault, self.base, producer, "todos-test")["result"]["updated"], 1)
+        hermes().change(action="reopen", router_id="evt-a")
+        legacy.apply(vault, self.base, producer, "todos-test")  # final delta, under the writer lock
+
+        (Path(tmp.name) / "data").mkdir()
+        bridge = Bridge(Path(tmp.name) / "data", vault, self.base, producer)
+        self.assertEqual(bridge.project_todos(), "legacy")  # nothing is written before cutover
+        self.cli("authority", "cutover")
+        self.assertEqual(self.http("POST", "/v1/migration/todos", producer, json={
+            "migration_id": "late", "source_hash": "0" * 64, "todos": []}).status_code, 409)  # stale old writer refused
+
+        integration = self.cli("add-integration", "hermes").strip()
+        server_mode = lambda: hermes(ServerTodos(vault, self.base, integration))  # noqa: E731
+        # Buttons sent before cutover are refused rather than editing the wrong store.
+        data = old_button and sender.calls[0]["reply_markup"][0][0]["callback_data"]
+        self.assertFalse(server_mode().callback(data=data, user_id=42, chat_id=-1001, message_id=501).ok)
+        sent = asyncio.run(server_mode().display(router_ids=["evt-a"], request_id="after"))
+        self.assertTrue(sent["confirmed"])
+        data = sender.calls[-1]["reply_markup"][0][0]["callback_data"]
+        self.assertTrue(server_mode().callback(data=data, user_id=42, chat_id=-1001, message_id=500 + len(sender.calls)).ok)
+        bootstrap = lambda: {t["legacy_id"] or t["id"]: t for t in self.http("GET", "/v1/bootstrap", phone).json()["todos"]}  # noqa: E731
+        self.assertEqual(bootstrap()["evt-a"]["state"], "completed")  # Telegram Done went to the server
+        until = (day.today() + timedelta(days=3)).isoformat()
+        server_mode().change(action="snooze", router_id="m1", until=until)
+        self.assertEqual(bootstrap()["m1"]["snoozed_until"], until)
+        self.assertEqual(server_mode().sync(["evt-c"])["added"], 1)  # intake promotion creates a server todo
+        self.assertEqual(server_mode().sync(["evt-c"])["added"], 0)
+        made = uuid.uuid4()
+        self.op(phone, made, "create", {"title": "Made on the phone"})
+
+        # Tasks.md changed after the final import: nothing is overwritten until it is re-imported.
+        original = tasks.read_bytes()
+        tasks.write_bytes(original + b"- [ ] Typed after the import\n")
+        self.assertEqual(bridge.project_todos(), "conflict")
+        self.assertIn(b"Typed after the import", tasks.read_bytes())
+        self.assertFalse((vault / "ToDos/Tasks (before app cutover).md").exists())  # only the imported bytes are archived
+        tasks.write_bytes(original)
+
+        # The vault projection: the original file, prose and all, is kept; Hermes' format is written.
+        self.assertEqual(bridge.project_todos(), "projected")
+        self.assertIn("My own prose.", (vault / "ToDos/Tasks (before app cutover).md").read_text())
+        projected = tasks.read_text()
+        self.assertIn("managed_by: second-brain-app", projected)
+        self.assertIn(f"- [ ] Old done %% snoozed-until:{until} %% %% router:m1 %%", projected)
+        self.assertIn(f"Made on the phone %% router:{made} %%", projected)
+        self.assertEqual(scrub(vault)["changed"], False)  # housekeeping stays off
+
+        # Rollback: stop app writers, hand the file back, and Hermes in file mode sees every app change.
+        self.cli("authority", "rollback")
+        self.assertEqual(bridge.project_todos(), "handed_back")
+        self.assertNotIn("managed_by", tasks.read_text())
+        rows = TodoFile(vault).rows()
+        self.assertEqual((rows["evt-a"]["status"], rows["m1"]["status"], rows[str(made)]["text"]),
+                         ("done", "snoozed", "Made on the phone"))
+        self.assertEqual(bridge.project_todos(), "legacy")  # handed back once, then left alone
+        again = legacy.apply(vault, self.base, producer, "todos-test")["result"]
+        self.assertEqual((again["created"], again["updated"]), (0, 0))  # nothing duplicated, nothing lost
+        self.assertEqual(sum(t["title"] == "Made on the phone" for t in bootstrap().values()), 1)
 
 
 if __name__ == "__main__":

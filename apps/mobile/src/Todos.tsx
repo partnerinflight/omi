@@ -12,6 +12,7 @@ const ERRORS: Record<string, string> = {
   not_found: 'No longer exists on the server.',
   invalid_title: 'The server rejected this title.',
   invalid_state: 'The server rejected this change.',
+  legacy_authority: 'Still managed in Obsidian and Telegram until the migration completes.',
 };
 
 export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; onEdit: () => void }) {

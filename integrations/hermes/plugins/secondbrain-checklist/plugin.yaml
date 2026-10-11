@@ -1,5 +1,5 @@
 name: secondbrain-checklist
-version: 0.3.0
+version: 0.4.0
 description: Tappable, idempotent SecondBrain reminder completion for Telegram
 manifest_version: 2
 api_version: 1
@@ -24,3 +24,11 @@ config_schema:
     type: str
     default: America/Los_Angeles
     description: Timezone used to validate snooze dates
+  server_url:
+    type: str
+    default: ""
+    description: After todo cutover only. https URL of the Second Brain server; tasks then live there
+  server_token_file:
+    type: str
+    default: ""
+    description: After todo cutover only. Absolute path to a token from `sb_server add-integration`

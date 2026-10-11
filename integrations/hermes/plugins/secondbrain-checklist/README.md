@@ -54,6 +54,16 @@ Cron subprocess behavior
 
 Every tool-driven delivery creates a short-lived PTB Bot solely for send_message using the inherited TELEGRAM_BOT_TOKEN. This avoids sharing a live gateway Bot across event loops or worker threads. Callback edits stay on the gateway loop through the received query. The plugin never calls getUpdates, runs polling, or creates a second consumer.
 
+Server mode (0.4.0, after the Second Brain todo cutover)
+
+Setting `server_url` (https) and `server_token_file` (absolute path to a token from
+`sb_server add-integration`) makes the server the task store: sync, display, buttons and
+text actions read and change todos through its API, keyed by the same router ids. Tasks
+made in the app appear with their server id. Delivery reservations stay in state.json.
+Leave both empty before cutover. `migrate.py` / `scripts/migrate-todos.py` inventory and
+import ToDos/Tasks.md; see `docs/mobile/implementation-plan.md` (milestone 5) for the order.
+Housekeeping (`scrub`) skips the managed projection.
+
 Tests
 
 Run without enabling the plugin or sending network traffic:

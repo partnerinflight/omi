@@ -4,14 +4,17 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pathlib import Path
+
 from .checklist import ChecklistError, ChecklistService
+from .server_todos import ServerTodos
 from .transport import TelegramSender
 from .todos import TodoError
 
 _TOOL_SCHEMA = {
     "name": "secondbrain_checklist",
     "description": (
-        "Sync selected meaningful intake IDs into ToDos/Tasks.md (sync with [] also lists all tasks and adopts manual checkboxes). Markdown checkboxes are authoritative. Display selected existing SecondBrain router IDs as a Telegram checklist, or record "
+        "Sync selected meaningful intake IDs into ToDos/Tasks.md (sync with [] also lists all tasks and adopts manual checkboxes). Markdown checkboxes are authoritative until cutover; afterwards the Second Brain app is. Display selected existing SecondBrain router IDs as a Telegram checklist, or record "
         "done, dismiss, snooze, or reopen through the same locked state writer. For display, "
         "supply a caller-controlled idempotency request_id; a daily cron should use its local date. "
         "After confirmed delivery, direct user questions MUST receive a normal acknowledgement, never [SILENT]. Only scheduled cron briefings may use [SILENT] after confirmed=true or an explicitly empty selection. Never invent router IDs."
@@ -56,6 +59,9 @@ def register(ctx):
     chat_id = ctx.get_config("chat_id", default="")
     owner_user_id = ctx.get_config("owner_user_id", default="")
     timezone_name = ctx.get_config("timezone", default="America/Los_Angeles")
+    # Set both only after the server's todo authority is switched (milestone 5 cutover).
+    server_url = str(ctx.get_config("server_url", default="") or "").strip()
+    server_token_file = str(ctx.get_config("server_token_file", default="") or "").strip()
     service = None
     config_error = None
     if not all(str(value).strip() for value in (vault, chat_id, owner_user_id)):
@@ -65,6 +71,12 @@ def register(ctx):
         )
     else:
         try:
+            todos = None
+            if server_url or server_token_file:
+                if not (server_url.startswith("https://") and Path(server_token_file).is_absolute()):
+                    raise ValueError("server mode needs an https server_url and an absolute server_token_file")
+                todos = ServerTodos(Path(str(vault)).expanduser().resolve(), server_url,
+                                    Path(server_token_file).read_text(encoding="utf-8").strip())
             service = ChecklistService(
                 vault=str(vault),
                 chat_id=int(chat_id),
@@ -72,8 +84,9 @@ def register(ctx):
                 timezone_name=str(timezone_name),
                 sender=sender,
                 markup_factory=_markup,
+                todos=todos,
             )
-        except (TypeError, ValueError, ChecklistError) as exc:
+        except (TypeError, ValueError, OSError, ChecklistError) as exc:
             config_error = f"secondbrain-checklist configuration is invalid: {exc}"
 
     async def tool_handler(args: dict[str, Any], **_: Any) -> str:

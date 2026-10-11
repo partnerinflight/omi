@@ -3,8 +3,9 @@
 Date: 2026-10-09. Status (2026-10-10): milestone 0 spike and todo sync engine in
 `apps/mobile/`, todo slice of the API in `server/`, milestone 2 shadow export
 , milestone 3 speaker/clarification commands and milestone 4 memories with the
-`Mobile/` vault projection (`src/second_brain/bridge.py`, `/v1/worker/*`), tested
-with synthetic data only; nothing deployed.
+`Mobile/` vault projection, and milestone 5 todo migration/cutover tooling
+(`src/second_brain/bridge.py`, `/v1/worker/*`, `/v1/migration/todos`, Hermes plugin
+0.4.0 server mode), tested with synthetic data only; nothing deployed or migrated.
 
 The owner's new direction is an iOS-first, cross-platform app connected to an
 owner-hosted server. It becomes the primary place to manage todos, identify

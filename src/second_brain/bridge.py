@@ -295,6 +295,43 @@ class Bridge:
                 db.execute("INSERT OR REPLACE INTO projected VALUES(?,?)", (relative, new))
         return True
 
+    def project_todos(self) -> str:
+        """After cutover, ToDos/Tasks.md is a projection of server todos in the format the Hermes
+        plugin reads (so a rollback finds every app change, with its id). The first write moves
+        the hand-kept file, prose included, to "Tasks (before app cutover).md" if it still has
+        the bytes the final import read. A hand edit afterwards stops the projection (the app
+        version goes beside it). After a rollback the file is handed back once, without the
+        managed header, and left alone."""
+        found = self.send("GET", "/v1/worker/todos")
+        relative = "ToDos/Tasks.md"
+        target = self.vault / relative
+        with self.connect() as db:
+            last = db.execute("SELECT hash FROM projected WHERE path=?", (relative,)).fetchone()
+        last = last[0] if last else None
+        if any(target.parent.glob("Tasks.sync-conflict-*.md")):
+            return "conflict"  # Syncthing has two versions; a person must pick one first
+        if found["authority"] != "server":
+            if last is None:
+                return "legacy"
+            handed = self.write_projection(relative, render_todos(found["todos"], managed=False), last)
+            if handed:
+                with self.connect() as db:
+                    db.execute("DELETE FROM projected WHERE path=?", (relative,))
+            return "handed_back" if handed else "conflict"
+        if last is None:
+            try:
+                current = target.read_bytes()
+            except FileNotFoundError:
+                current = None
+            if current is not None:
+                if hashlib.sha256(current).hexdigest() != found["source_hash"]:
+                    return "conflict"  # changed after the final import; re-run the import first
+                archive = target.with_name("Tasks (before app cutover).md")
+                if not archive.exists():
+                    atomic_write(archive, current)
+            last = found["source_hash"]
+        return "projected" if self.write_projection(relative, render_todos(found["todos"]), last) else "conflict"
+
     # --- Review clips -------------------------------------------------------------------------
 
     def upload_clips(self, records: dict, exported: dict) -> int:
@@ -376,6 +413,33 @@ def render(title: str, memories: list[dict]) -> bytes:
         when = (m.get("observed_at") or "unknown")[:10]
         text = " ".join(m["text"].split())
         lines.append(f"- {when} — {text} {MARKER_PREFIX}{m['id']} %%")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def render_todos(todos: list[dict], managed: bool = True) -> bytes:
+    """The Hermes plugin's ToDos format (integrations/hermes/.../todos.py): one row per todo with
+    its %% router:ID %% marker, [x] done, [-] dismissed, snooze before the marker, notes indented."""
+    def row(t):
+        check = {"completed": "x", "dismissed": "-"}.get(t["state"], " ")
+        snooze = f" %% snoozed-until:{t['snoozed_until']} %%" if t.get("snoozed_until") and t["state"] == "open" else ""
+        title = " ".join(t["title"].split()).replace("%%", "%").replace("<!--", "<!-")
+        lines = [f"- [{check}] {title}{snooze} %% router:{t.get('legacy_id') or t['id']} %%"]
+        for note in (t.get("notes") or "").splitlines():
+            lines.append(note if note.startswith((" ", "\t")) else "  " + note)
+        return lines
+    live = [t for t in todos if not t.get("deleted_at")]
+    head = ["---", "managed_by: second-brain-app", "---"] if managed else []
+    lines = head + ["# ToDos", "",
+                    "Managed by the Second Brain app; check items there or in Telegram. Edits here are not synced."
+                    if managed else "Check items here or use Done in Telegram. Due dates are included only when known.",
+                    "", "## Tasks", ""]
+    for t in live:
+        if t["state"] != "completed":
+            lines += row(t)
+    lines += ["", "## Completed", ""]
+    for t in live:
+        if t["state"] == "completed":
+            lines += row(t)
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 

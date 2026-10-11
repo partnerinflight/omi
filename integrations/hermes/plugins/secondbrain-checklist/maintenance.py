@@ -102,6 +102,9 @@ def scrub(vault):
         before = todos.read()
         if before is None:
             raise ValueError("ToDos/Tasks.md is missing")
+        if before.startswith("---\nmanaged_by: second-brain-app\n"):
+            # After cutover the file is a projection; reordering it would read as a hand edit.
+            return {"success": True, "changed": False, "skipped": "managed by the Second Brain app"}
         # Reject malformed/duplicate identifiers before touching the document.
         todos.rows(before)
         after, counts = organize(before)

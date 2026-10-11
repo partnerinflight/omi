@@ -100,6 +100,37 @@ versions, and offline search returns cached records without querying the vault.
 
 ### 5. Controlled authority migration
 
+Status 2026-10-10: todo migration tooling built and tested with synthetic data only
+(`integrations/hermes/plugins/secondbrain-checklist/tests/test_migrate.py`,
+`server/tests/test_api.py::test_todo_migration_cutover_and_rollback`). Nothing has been
+run against the real vault, Hermes host or server. Steps 3–4 (memories, people,
+clarifications) need no separate import: milestones 2–4 already import them from ledgers
+and the speaker/clarification stores. Not done: due-date parsing (due text stays verbatim
+in the title, as in Tasks.md), nested-task hierarchy (imported flat, reported), the pilot.
+
+Cutover runbook (each step needs the owner's go-ahead; the server must be deployed first):
+
+1. Back up the vault, `System/Reminders/state.json` and the server database (`./ha backup`).
+2. Dry run on the Hermes host:
+   `python integrations/hermes/scripts/migrate-todos.py --vault <vault>`. Resolve any refusal
+   (duplicate ids, Syncthing conflict) and review the report: unmarked rows (run a plugin
+   `sync` with `[]` first), prose lines, nested tasks, tombstones, cache differences.
+3. Import: add `--apply --server https://<host> --token-file <producer token> --migration-id
+   todos-<date>`. Repeat it; every todo must report `unchanged`. Compare counts with the
+   dry run and spot-check rows in the app (they are read-only there: `legacy_authority`).
+4. Freeze: stop the Hermes gateway (no Telegram buttons, no morning job), run the import
+   once more (final delta), then `python -m sb_server authority cutover`.
+5. Create `python -m sb_server add-integration hermes`, store the token privately on the
+   Hermes host, set plugin settings `server_url` and `server_token_file`, deploy plugin
+   0.4.0 and start the gateway. Buttons sent before cutover now answer "Task source
+   changed". Within a minute the Windows bridge archives the old file as
+   `ToDos/Tasks (before app cutover).md` and writes the managed projection.
+6. Rollback: stop the gateway, `python -m sb_server authority rollback`, wait for the bridge
+   to report the hand-back (it rewrites Tasks.md once in the plugin's own format with every
+   app change and id), clear `server_url`/`server_token_file`, start the gateway. If the
+   bridge reports a conflict instead, keep the app read-only and reconcile by hand; never
+   restore an old Tasks.md over it.
+
 Deploy only as a later explicitly scheduled task, after host details and backups
 are known. Use an explicit migration ID and checkpoints; a restart resumes rather
 than creating another import. First run is dry-run inventory and discrepancy report.

@@ -5,6 +5,7 @@ import uuid
 from typing import Annotated, Literal
 
 import re
+from datetime import date
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from psycopg.types.json import Jsonb
@@ -103,8 +104,17 @@ def revoke(device_id: Device, conn: Db):
     conn.execute("UPDATE devices SET revoked_at = now() WHERE id = %s", (device_id,))
 
 
+LEGACY_NS = uuid.UUID("5b0c8d1e-3f7a-4d2b-9c61-0e4a7b2f9d13")  # fixed forever: maps legacy ids to todo ids
+
+
+def legacy_todo_id(legacy_id: str) -> uuid.UUID:
+    return uuid.uuid5(LEGACY_NS, legacy_id)
+
+
 def todo_json(row) -> dict:
     return {"id": str(row["id"]), "title": row["title"], "state": row["state"], "revision": row["revision"],
+            "legacy_id": row["legacy_id"], "notes": row["notes"],
+            "snoozed_until": row["snoozed_until"].isoformat() if row["snoozed_until"] else None,
             "updated_at": row["updated_at"].isoformat(),
             "deleted_at": row["deleted_at"].isoformat() if row["deleted_at"] else None}
 
@@ -163,15 +173,33 @@ class OperationBatch(BaseModel):
     operations: list[Operation] = Field(max_length=MAX_BATCH)
 
 
+def valid_date(v) -> bool:
+    try:
+        return isinstance(v, str) and len(v) == 10 and bool(date.fromisoformat(v))
+    except ValueError:
+        return False
+
+
 def validate_payload(op: Operation) -> str | None:
     p = op.payload
     if op.action in ("create", "set_title"):
         title = p.get("title")
-        if set(p) != {"title"} or not isinstance(title, str) or not title.strip() or len(title) > 1000:
+        # A create may carry the legacy id of a promoted router task (Hermes intake sync).
+        allowed = ({"title"}, {"title", "legacy_id"}) if op.action == "create" else ({"title"},)
+        if set(p) not in allowed or not isinstance(title, str) or not title.strip() or len(title) > 1000:
             return "invalid_title"
-    elif set(p) != {"state"} or p.get("state") not in ("open", "completed", "dismissed"):
+        if "legacy_id" in p and not (isinstance(p["legacy_id"], str) and RECORD_ID.match(p["legacy_id"])
+                                     and op.entity_id == str(legacy_todo_id(p["legacy_id"]))):
+            return "invalid_legacy_id"
+    elif set(p) not in ({"state"}, {"state", "snoozed_until"}) or p.get("state") not in ("open", "completed", "dismissed"):
         return "invalid_state"
+    elif p.get("snoozed_until") is not None and not (p["state"] == "open" and valid_date(p["snoozed_until"])):
+        return "invalid_snooze"
     return None
+
+
+def todo_authority(conn) -> dict:
+    return conn.execute("SELECT * FROM authority WHERE domain = 'todos'").fetchone()
 
 
 RECORD_ID = re.compile(r"^[A-Za-z0-9:_-]{1,128}$")
@@ -334,23 +362,29 @@ def apply_one(conn, device_id: uuid.UUID, op: Operation) -> dict:
 
         if error := validate_payload(op):
             return done("rejected", todo_json(current) if current else None, error)
+        legacy = (current and current["legacy_id"]) or "legacy_id" in op.payload
+        if legacy and todo_authority(conn)["mode"] != "server":
+            # Imported todos stay owned by ToDos/Tasks.md and Hermes until cutover.
+            return done("rejected", todo_json(current) if current else None, "legacy_authority")
         if op.action == "create":
             if current:
                 return done("conflict", todo_json(current), "already_exists")
             if op.base_revision != 0:
                 return done("rejected", None, "create_base_revision_must_be_0")
-            row = conn.execute("INSERT INTO todos (id, title, state, revision) VALUES (%s, %s, 'open', 1) RETURNING *",
-                               (op.entity_id, op.payload["title"].strip())).fetchone()
+            row = conn.execute("INSERT INTO todos (id, title, state, revision, legacy_id) VALUES (%s, %s, 'open', 1, %s) RETURNING *",
+                               (op.entity_id, op.payload["title"].strip(), op.payload.get("legacy_id"))).fetchone()
         else:
             if not current or current["deleted_at"]:
                 return done("rejected", None, "not_found")
             if current["revision"] != op.base_revision:
                 return done("conflict", todo_json(current), "stale_revision")
-            column = "title" if op.action == "set_title" else "state"
-            value = op.payload[column].strip() if column == "title" else op.payload[column]
+            if op.action == "set_title":
+                sql, values = "title = %s", (op.payload["title"].strip(),)
+            else:  # any state change replaces the snooze; completing or reopening clears it
+                sql, values = "state = %s, snoozed_until = %s", (op.payload["state"], op.payload.get("snoozed_until"))
             row = conn.execute(
-                f"UPDATE todos SET {column} = %s, revision = revision + 1, updated_at = now() WHERE id = %s RETURNING *",
-                (value, op.entity_id),
+                f"UPDATE todos SET {sql}, revision = revision + 1, updated_at = now() WHERE id = %s RETURNING *",
+                (*values, op.entity_id),
             ).fetchone()
 
         entity = todo_json(row)
@@ -532,3 +566,80 @@ def worker_memories(_: Producer, conn: Db):
     ponytail: the full set every cycle; add a since-cursor once there are thousands."""
     rows = conn.execute("SELECT * FROM memories WHERE state = 'confirmed' AND deleted_at IS NULL ORDER BY id").fetchall()
     return {"memories": [memory_json(r) for r in rows]}
+
+
+
+# --- Milestone 5: todo migration and authority -------------------------------------------------
+
+class LegacyTodo(BaseModel):
+    legacy_id: str = Field(pattern=r"^[A-Za-z0-9:_-]{1,128}$")
+    title: str = Field(min_length=1, max_length=1000)
+    state: Literal["open", "completed", "dismissed"]
+    snoozed_until: str | None = None
+    notes: str | None = Field(None, max_length=20_000)
+    deleted: bool = False  # imported once, since removed from Tasks.md: a tombstone, never recreated
+
+    @field_validator("snoozed_until")
+    @classmethod
+    def a_date(cls, v):
+        if v is not None and not valid_date(v):
+            raise ValueError("snoozed_until must be YYYY-MM-DD")
+        return v
+
+
+class TodoImport(BaseModel):
+    migration_id: str = Field(pattern=r"^[A-Za-z0-9:_-]{1,64}$")
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    todos: list[LegacyTodo] = Field(max_length=5000)
+
+
+@app.post("/v1/migration/todos")
+def import_todos(body: TodoImport, _: Producer, conn: Db):
+    """Idempotent: each legacy todo maps to one fixed id, unchanged rows are left alone, so a
+    restart or a repeat import has no effect. Allowed only while Tasks.md is authoritative."""
+    with conn.transaction():
+        meta = conn.execute("SELECT epoch, seq FROM meta FOR UPDATE").fetchone()
+        if conn.execute("SELECT mode FROM authority WHERE domain = 'todos' FOR UPDATE").fetchone()["mode"] != "legacy":
+            raise HTTPException(409, "authority_switched")
+        if len({t.legacy_id for t in body.todos}) != len(body.todos):
+            raise HTTPException(422, "duplicate_legacy_id")
+        counts = {"created": 0, "updated": 0, "unchanged": 0}
+        for t in body.todos:
+            todo_id = legacy_todo_id(t.legacy_id)
+            # A todo made in the app carries its own id as its marker after a rollback: same todo.
+            try:
+                own = uuid.UUID(t.legacy_id)
+            except ValueError:
+                own = None
+            if own and conn.execute("SELECT 1 FROM todos WHERE id = %s AND legacy_id IS NULL", (own,)).fetchone():
+                todo_id = own
+            snooze = t.snoozed_until if t.state == "open" else None
+            current = conn.execute("SELECT * FROM todos WHERE id = %s FOR UPDATE", (todo_id,)).fetchone()
+            wanted = (t.title.strip(), t.state, snooze, t.notes, t.deleted)
+            if current and (current["title"], current["state"],
+                            current["snoozed_until"].isoformat() if current["snoozed_until"] else None,
+                            current["notes"], current["deleted_at"] is not None) == wanted:
+                counts["unchanged"] += 1
+                continue
+            row = conn.execute(
+                """INSERT INTO todos (id, legacy_id, title, state, snoozed_until, notes, revision, deleted_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, 1, CASE WHEN %s THEN now() END)
+                   ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, state = EXCLUDED.state,
+                     snoozed_until = EXCLUDED.snoozed_until, notes = EXCLUDED.notes, revision = todos.revision + 1,
+                     updated_at = now(), deleted_at = CASE WHEN %s THEN COALESCE(todos.deleted_at, now()) END
+                   RETURNING *""",
+                (todo_id, t.legacy_id, *wanted[:4], t.deleted, t.deleted)).fetchone()
+            counts["updated" if current else "created"] += 1
+            log_change(conn, meta, "todo", todo_json(row))
+        conn.execute("UPDATE authority SET source_hash = %s, migration_id = %s WHERE domain = 'todos'",
+                     (body.source_hash, body.migration_id))
+    return counts
+
+
+@app.get("/v1/worker/todos")
+def worker_todos(_: Producer, conn: Db):
+    """Everything the Tasks.md projection needs, including tombstones so they stay out of it."""
+    authority = todo_authority(conn)
+    rows = conn.execute("SELECT * FROM todos ORDER BY created_at, id").fetchall()
+    return {"authority": authority["mode"], "source_hash": authority["source_hash"],
+            "todos": [todo_json(r) for r in rows]}

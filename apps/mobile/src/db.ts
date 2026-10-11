@@ -13,6 +13,7 @@ export type ServerTodo = {
   revision: number;
   updated_at: string;
   deleted_at: string | null;
+  snoozed_until?: string | null; // set in Telegram; any state change here clears it
 };
 
 export type Todo = {
