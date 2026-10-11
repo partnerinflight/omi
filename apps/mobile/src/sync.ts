@@ -21,6 +21,7 @@ export type SyncStatus = {
   problems: number;
   lastSuccessAt: string | null;
   error: string | null;
+  restoreLost: number; // memory edits a server restore discarded; shown until acknowledged
 };
 
 type Options = {
@@ -64,6 +65,7 @@ async function upsertEntity(txn: Parameters<typeof upsertServerTodo>[0], type: s
 export type Pipeline = {
   workers: { name: string; last_seen_at: string | null; status: { jobs?: Record<string, number>; routes_pending?: number; export_conflicts?: number } | null }[];
   counts: Partial<Record<'source' | 'item' | 'person' | 'observation', number>>;
+  oldest_pending_command_at: string | null;
 };
 
 export function createSync(db: Db, tokens: TokenStore, opts: Options) {
@@ -129,6 +131,43 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
     return res;
   }
 
+  // A restored server lacks whatever it accepted after its backup. This phone still holds those
+  // acknowledged values, so it queues them again ahead of its unsent edits instead of dropping
+  // them; other phones and the usual conflict rules then apply. Memories the server no longer
+  // has at all come back from the Windows worker as new proposals, so edits to those are
+  // reported (restore_lost) rather than silently lost.
+  async function recoverLostEdits(txn: Parameters<typeof upsertServerTodo>[0], snapshot: { todos: ServerTodo[]; memories: ServerMemory[] }) {
+    const ops: { type: string; id: string; action: string; payload: object }[] = [];
+    const todos = new Map(snapshot.todos.map((t) => [t.id, t]));
+    // ponytail: title and state only; a snooze set after the backup (Telegram-only) is not recovered.
+    for (const local of await txn.getAllAsync<ServerTodo>('SELECT * FROM server_todos WHERE deleted_at IS NULL')) {
+      const server = todos.get(local.id);
+      if (server && server.revision >= local.revision) continue;
+      if (!server) ops.push({ type: 'todo', id: local.id, action: 'create', payload: { title: local.title } });
+      else if (server.title !== local.title) ops.push({ type: 'todo', id: local.id, action: 'set_title', payload: { title: local.title } });
+      if ((server?.state ?? 'open') !== local.state) ops.push({ type: 'todo', id: local.id, action: 'set_state', payload: { state: local.state } });
+    }
+    const memories = new Map(snapshot.memories.map((m) => [m.id, m]));
+    let lost = 0;
+    for (const row of await txn.getAllAsync<{ data: string }>('SELECT data FROM server_memories')) {
+      const local = JSON.parse(row.data) as ServerMemory;
+      const server = memories.get(local.id);
+      if (local.revision <= 1 || (server && server.revision >= local.revision)) continue;
+      if (!server) { lost += 1; continue; }
+      if (server.text !== local.text) ops.push({ type: 'memory', id: local.id, action: 'set_text', payload: { text: local.text } });
+      if (server.state !== local.state) ops.push({ type: 'memory', id: local.id, action: 'set_state', payload: { state: local.state } });
+    }
+    // Negative seqs sort before every queued edit, which was made on top of these values.
+    const first = (await txn.getFirstAsync<{ s: number | null }>('SELECT MIN(seq) AS s FROM outbox'))?.s ?? 1;
+    for (const [i, op] of ops.entries()) {
+      await txn.runAsync(
+        'INSERT INTO outbox (seq, operation_id, entity_type, entity_id, action, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        Math.min(first, 1) - ops.length + i - 1, opts.newId(), op.type, op.id, op.action, JSON.stringify(op.payload), new Date(now()).toISOString(),
+      );
+    }
+    if (lost) await setMeta(txn, 'restore_lost', lost);
+  }
+
   async function push() {
     for (;;) {
       // The oldest operation per entity, unless it is stuck: later edits wait behind it.
@@ -162,7 +201,12 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       await db.withExclusiveTransactionAsync(async (txn) => {
         for (const r of results) {
           if (r.entity) await upsertEntity(txn, types.get(r.operation_id)!, r.entity);
-          if (r.outcome === 'applied') {
+          const sent = ops.find((op) => op.operation_id === r.operation_id)!;
+          // Operations set desired values, so a conflict where the server already holds exactly
+          // those values is no conflict (two phones replaying the same edits after a restore).
+          const same = r.outcome === 'conflict' && r.entity && sent.entity_type !== 'command'
+            && Object.entries(JSON.parse(sent.payload)).every(([k, v]) => k === 'legacy_id' || r.entity[k] === v);
+          if (r.outcome === 'applied' || same) {
             await txn.runAsync('DELETE FROM outbox WHERE operation_id = ?', r.operation_id);
           } else {
             await txn.runAsync('UPDATE outbox SET status = ?, error = ?, server_entity = ? WHERE operation_id = ?',
@@ -173,12 +217,13 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
     }
   }
 
-  async function bootstrap() {
+  async function bootstrap(restored = false) {
     const res = await api('/v1/bootstrap');
     if (!res.ok) throw new HttpError(res.status);
     const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[]; commands: ServerCommand[]; memories: ServerMemory[] };
     // Replaces only acknowledged state, atomically; the outbox is untouched.
     await db.withExclusiveTransactionAsync(async (txn) => {
+      if (restored) await recoverLostEdits(txn, snapshot);
       await txn.runAsync('DELETE FROM server_todos');
       await txn.runAsync('DELETE FROM server_commands');
       await txn.runAsync('DELETE FROM server_memories');
@@ -192,11 +237,12 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
   async function pull() {
     for (;;) {
       const cursor = await getMeta(db, 'cursor');
-      if (!cursor) return bootstrap();
+      if (!cursor) return bootstrap().then(() => false);
       const res = await api(`/v1/changes?cursor=${encodeURIComponent(cursor)}&limit=${PULL_PAGE}`);
       if (res.status === 410) {
         await setMeta(db, 'cursor', null); // server restored or epoch changed
-        return bootstrap();
+        await bootstrap(true);
+        return true;
       }
       if (!res.ok) throw new HttpError(res.status);
       const page = (await res.json()) as { cursor: string; has_more: boolean; changes: { entity_type: string; entity: any }[] };
@@ -204,7 +250,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
         for (const c of page.changes) await upsertEntity(txn, c.entity_type, c.entity);
         await setMeta(txn, 'cursor', page.cursor);
       });
-      if (!page.has_more) return;
+      if (!page.has_more) return false;
     }
   }
 
@@ -219,6 +265,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       problems: counts?.problems ?? 0,
       lastSuccessAt: await getMeta(db, 'last_success_at'),
       error: await getMeta(db, 'last_error'),
+      restoreLost: Number(await getMeta(db, 'restore_lost') ?? 0),
     };
   }
 
@@ -235,7 +282,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
     if (!force && now() < nextAttempt) return status(); // still backing off
     try {
       await push();
-      await pull();
+      if (await pull()) await push(); // a restore re-queued acknowledged edits: send them now
       await setMeta(db, 'failures', 0);
       await setMeta(db, 'next_attempt_at', null);
       await setMeta(db, 'last_success_at', new Date(now()).toISOString());
@@ -332,6 +379,10 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
          WHERE seq = ? AND status = 'conflict' AND action != 'create'`,
         opts.newId(), seq,
       );
+    },
+
+    async acknowledgeRestore() {
+      await setMeta(db, 'restore_lost', null);
     },
 
     // Without discard, refuses while edits are queued so the UI can warn first.

@@ -29,6 +29,7 @@ class FakeServer(ThreadingHTTPServer):
         self.records, self.requests, self.mode = {}, [], "ok"  # ok | down | lose_response
         self.commands, self.results, self.clips, self.lose_next_result = [], {}, {}, False
         self.memories = []
+        self.epoch = "e1"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -80,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
         for r in body["records"]:
             s.records[(r["kind"], r["id"])] = r
         # 500 after storing: committed, but the worker never hears it
-        self.reply(500 if s.mode == "lose_response" else 200, {"accepted": len(body["records"])})
+        self.reply(500 if s.mode == "lose_response" else 200, {"accepted": len(body["records"]), "epoch": s.epoch})
 
 
 class BridgeTests(unittest.TestCase):
@@ -187,6 +188,18 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(changed[("observation", obs_id)]["data"]["provenance"], "cleared")
         self.bridge.tick()
         self.assertEqual(self.server.requests[-1]["records"], [])  # tombstone sent once
+
+    def test_restored_server_gets_everything_again(self):
+        self.bridge.tick()
+        first = {(r["kind"], r["id"]) for r in self.sent()}
+        self.server.records.clear()  # the backup predates everything
+        self.server.epoch = "e2"
+        self.server.requests.clear()
+        self.bridge.tick()
+        self.assertEqual(set(self.server.records), first)
+        self.server.requests.clear()
+        self.bridge.tick()
+        self.assertEqual(self.sent(), [])  # once, not every cycle
 
     def test_unreadable_vault_never_deletes_evidence(self):
         self.bridge.tick()

@@ -170,6 +170,29 @@ both states for repair. Test this rollback with synthetic data before real migra
 
 ### 6. Selfhost release and optional notifications
 
+Status 2026-10-10: everything that can be proven off the real host is done; deployment and
+signing wait for the owner (`deploy/selfhost/README.md`).
+- Done: hardened image (arm64 and amd64) and backup/restore drill at the deployment boundary
+  (`apps/mobile/tests/restore.test.ts`: crash restart, HA's `pg_dumpall`, fresh postgres,
+  `new-epoch`, two phones). The drill found that a restore silently dropped edits the server
+  had accepted after the backup: phones now re-send what they hold, the Windows bridge
+  resends on an epoch change, conflicts where the server already has the wanted value are
+  treated as applied, and memory edits that cannot be recovered are reported. Oldest
+  pending speaker command is shown with worker freshness. Release build for a physical
+  iPhone compiles (unsigned).
+- Waiting for the owner: deploy (push branch, HA_Selfhost edits, Infisical secrets), TLS and
+  cellular reachability check, iPhone signing and distribution (below), real-device checklist.
+- Notifications: not added. Telegram already delivers todo reminders and must remain the
+  only delivery path (step 7 above), and sync never depends on push. Revisit only if the
+  pilot shows a need; local notifications would be the first choice, APNs last.
+
+iPhone distribution: team SHWEFJ6M9Y is signed into Xcode with only a Developer ID (Mac)
+certificate. A device build needs an Apple Development or Distribution certificate, the
+bundle ID `dev.secondbrain.mobile` registered, and either the iPhone's UDID registered
+(development/ad hoc) or an App Store Connect app record for TestFlight internal testing
+(no review for internal testers; builds expire after 90 days). Recommended: TestFlight.
+Xcode can create all of it with `-allowProvisioningUpdates`; that changes the Apple account.
+
 - Validate target CPU/OS, persistent volume ownership, trusted TLS endpoint,
   network reachability from iPhone, secret provisioning and automatic restarts.
 - Verify full backup/restore including server epoch reset and offline phone replay.

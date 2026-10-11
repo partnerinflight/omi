@@ -35,6 +35,14 @@ installed anyway: run `npx expo start --dev-client` and launch it from the simul
 - Dark mode and accessibility-XXXL text render without clipping.
 - Not yet exercised: tapping through todo/clip/Keychain flows, VoiceOver, physical device.
 
+## Release checks (2026-10-10)
+
+`npm run test:restore` (Docker) runs the server image hardened as in deploy/selfhost, crashes
+it, backs up with `pg_dumpall`, restores into a fresh Postgres, runs `new-epoch` and checks
+that two phones lose nothing. An unsigned Release build for `generic/platform=iOS` succeeds
+(`xcodebuild ... CODE_SIGNING_ALLOWED=NO build`). Signing and distribution: see
+docs/mobile/implementation-plan.md, milestone 6.
+
 ## Device checklist (record results, device and iOS version here)
 
 - [ ] Airplane mode: add, complete, reopen, dismiss todos; force-quit; relaunch; all persist and show Queued

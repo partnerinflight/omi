@@ -56,6 +56,7 @@ class Bridge:
                     PRIMARY KEY (kind, id));
                 CREATE TABLE IF NOT EXISTS done_files (name TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS projected (path TEXT PRIMARY KEY, hash TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             """)
 
     @contextmanager
@@ -388,7 +389,17 @@ class Bridge:
         sent = 0
         for start in range(0, max(len(pending), 1), BATCH):
             batch = pending[start:start + BATCH]
-            self.post([r for r, _ in batch], status or {})
+            epoch = self.post([r for r, _ in batch], status or {}).get("epoch")
+            with self.connect() as db:
+                known = db.execute("SELECT value FROM meta WHERE key='epoch'").fetchone()
+                if epoch and known and known[0] != epoch:
+                    # Restored from a backup: what it acknowledged since may be gone. Forget every
+                    # acknowledgment (the server deduplicates) and start over once.
+                    db.executescript("DELETE FROM exported; DELETE FROM done_files;")
+                if epoch:
+                    db.execute("INSERT OR REPLACE INTO meta VALUES('epoch',?)", (epoch,))
+            if epoch and known and known[0] != epoch:
+                return self.tick(status)
             with self.connect() as db:
                 db.executemany("INSERT OR REPLACE INTO exported VALUES(?,?,?)",
                                [(r["kind"], r["id"], r["hash"]) for r, _ in batch])

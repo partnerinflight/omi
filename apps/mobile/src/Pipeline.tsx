@@ -39,6 +39,11 @@ export function Pipeline({ sync, version }: { sync: Sync; version: number }) {
           </Text>
         );
       })}
+      {summary.oldest_pending_command_at && (
+        <Text style={{ color: Date.now() - Date.parse(summary.oldest_pending_command_at) > STALE_MS ? t.badge : t.muted }}>
+          Speaker changes waiting for Windows since {new Date(summary.oldest_pending_command_at).toLocaleString()}
+        </Text>
+      )}
       <Text style={{ color: t.muted }}>
         {c.source ?? 0} conversations · {c.item ?? 0} extracted items · {c.person ?? 0} people · {c.observation ?? 0} speakers
       </Text>

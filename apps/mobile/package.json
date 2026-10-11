@@ -25,7 +25,8 @@
     "web": "expo start --web",
     "test": "node --experimental-strip-types --no-warnings tests/db.test.ts",
     "typecheck": "tsc --noEmit",
-    "test:sync": "node --experimental-strip-types --no-warnings tests/sync.test.ts"
+    "test:sync": "node --experimental-strip-types --no-warnings tests/sync.test.ts",
+    "test:restore": "node --experimental-strip-types --no-warnings tests/restore.test.ts"
   },
   "private": true,
   "engines": {

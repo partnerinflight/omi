@@ -469,7 +469,8 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
         conn.execute("DELETE FROM clips WHERE created_at < now() - interval '30 days'")
         conn.execute("UPDATE producers SET last_seen_at = now(), status = %s WHERE id = %s",
                      (Jsonb(body.status), producer_id))
-    return {"accepted": len(body.records), "stored": stored}
+    # The epoch changes when the database is restored: the worker then resends everything.
+    return {"accepted": len(body.records), "stored": stored, "epoch": str(meta["epoch"])}
 
 
 @app.get("/v1/pipeline")
@@ -479,9 +480,11 @@ def pipeline(_: Device, conn: Db):
         "SELECT name, last_seen_at, status FROM producers WHERE revoked_at IS NULL ORDER BY name").fetchall()
     counts = conn.execute(
         "SELECT kind, count(*) AS n FROM worker_records WHERE deleted_at IS NULL GROUP BY kind").fetchall()
+    oldest = conn.execute("SELECT min(created_at) AS t FROM commands WHERE state = 'pending_worker'").fetchone()["t"]
     return {"workers": [{"name": p["name"], "status": p["status"],
                          "last_seen_at": p["last_seen_at"].isoformat() if p["last_seen_at"] else None} for p in producers],
-            "counts": {c["kind"]: c["n"] for c in counts}}
+            "counts": {c["kind"]: c["n"] for c in counts},
+            "oldest_pending_command_at": oldest.isoformat() if oldest else None}
 
 
 @app.get("/v1/pipeline/records")

@@ -37,6 +37,10 @@ tokens are separate tables, so neither can call the other's routes.
 | `POST /v1/migration/todos` | producer token; idempotent import of `ToDos/Tasks.md` (`integrations/hermes/scripts/migrate-todos.py`); 409 after cutover |
 | `GET /v1/worker/todos` | producer token; authority, last import hash and every todo, for the Tasks.md projection |
 
+After a database restore run `python -m sb_server new-epoch`: phones and the Windows bridge
+detect the epoch change and re-send what the backup is missing (drill: `apps/mobile`,
+`npm run test:restore`).
+
 `python -m sb_server authority [cutover|rollback]` shows or switches who owns imported todos;
 `add-integration NAME` prints a long-lived device token for Hermes. Runbook:
 [implementation-plan.md](../docs/mobile/implementation-plan.md#5-controlled-authority-migration).

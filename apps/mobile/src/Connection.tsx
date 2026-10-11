@@ -57,6 +57,15 @@ export function Connection({ sync, status, onChange }: { sync: Sync; status: Syn
       <Text style={{ color: t.text }} accessibilityLiveRegion="polite">{LABEL[status.state]}{queued}{problems}</Text>
       {status.state !== 'unpaired' && <Text style={{ color: t.muted }}>{last}</Text>}
       {status.error && <Text style={{ color: t.badge }}>{status.error}</Text>}
+      {status.restoreLost > 0 && (
+        <View style={{ gap: 4 }}>
+          <Text style={{ color: t.badge }}>
+            The server was restored from a backup. {status.restoreLost} memory edit{status.restoreLost === 1 ? ' was' : 's were'} made
+            after that backup and could not be recovered; those memories return to the inbox.
+          </Text>
+          <Button title="OK" color={t.accent} onPress={() => sync.acknowledgeRestore().then(onChange)} />
+        </View>
+      )}
       {needsPairing ? (
         <>
           <TextInput

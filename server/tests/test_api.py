@@ -217,6 +217,10 @@ class Api(unittest.TestCase):
             db.execute("DELETE FROM exported")
             db.execute("DELETE FROM done_files")
         self.assertEqual(bridge.tick()["sent"], 1)
+        # Restored server (new epoch): the worker resends everything once, then goes quiet.
+        self.cli("new-epoch")
+        self.assertEqual(bridge.tick()["sent"], 1)
+        self.assertEqual(bridge.tick()["sent"], 0)
 
         summary = self.http("GET", "/v1/pipeline", phone).json()
         worker = next(w for w in summary["workers"] if w["name"] == "home-pc")
@@ -279,6 +283,7 @@ class Api(unittest.TestCase):
         # Windows is offline: the server accepts and the phone sees it waiting for the worker.
         saved = self.command(phone, {"action": "assign", "observation": obs["id"], "name": "Alex", "base_hash": obs["hash"]})
         self.assertEqual((saved["outcome"], saved["entity"]["state"]), ("applied", "pending_worker"))
+        self.assertIsNotNone(self.http("GET", "/v1/pipeline", phone).json()["oldest_pending_command_at"])
         self.assertEqual(self.http("GET", "/v1/worker/commands", phone).status_code, 401)  # device cannot act as worker
 
         # The worker comes back, applies once, and the result reaches the phone through /v1/changes.
