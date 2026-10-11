@@ -4,7 +4,9 @@ import json
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+import re
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
@@ -118,7 +120,11 @@ def bootstrap(_: Device, conn: Db):
         conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         meta = conn.execute("SELECT epoch, seq FROM meta").fetchone()
         todos = conn.execute("SELECT * FROM todos WHERE deleted_at IS NULL ORDER BY id").fetchall()
-    return {"cursor": cursor(meta["epoch"], meta["seq"]), "todos": [todo_json(t) for t in todos]}
+        # ponytail: recent and unresolved commands only; the phone needs them for pending/failed badges.
+        commands = conn.execute("""SELECT * FROM commands WHERE state = 'pending_worker'
+                                   OR updated_at > now() - interval '30 days' ORDER BY position""").fetchall()
+    return {"cursor": cursor(meta["epoch"], meta["seq"]), "todos": [todo_json(t) for t in todos],
+            "commands": [command_json(c) for c in commands]}
 
 
 @app.get("/v1/changes")
@@ -138,7 +144,7 @@ def changes(_: Device, conn: Db, cursor_: Annotated[str, Query(alias="cursor")],
 
 class Operation(BaseModel):
     operation_id: uuid.UUID
-    entity_type: Literal["todo"]
+    entity_type: Literal["todo", "command"]
     entity_id: uuid.UUID
     base_revision: int = Field(ge=0)
     action: Literal["create", "set_title", "set_state"]
@@ -167,6 +173,54 @@ def validate_payload(op: Operation) -> str | None:
     return None
 
 
+RECORD_ID = re.compile(r"^[A-Za-z0-9:_-]{1,128}$")
+# action -> (required, optional) payload fields besides "action". Applied by the worker through
+# the same local commands as the tray (second_brain.speakers / clarifications).
+COMMANDS = {
+    "assign": ({"observation"}, {"person", "name", "base_hash"}),  # exactly one of person/name
+    "clear": ({"observation"}, {"base_hash"}),
+    "discard": ({"observation"}, {"base_hash"}),
+    "rename": ({"person", "name"}, {"base_hash"}),
+    "forget": ({"person"}, {"base_hash"}),
+    "clarify": ({"item", "answer"}, set()),
+    "clarify_dismiss": ({"item"}, set()),
+}
+
+
+def validate_command(p: dict) -> str | None:
+    spec = COMMANDS.get(p.get("action"))
+    if not spec:
+        return "invalid_action"
+    required, optional = spec
+    fields = set(p) - {"action"}
+    if not required <= fields or fields - required - optional:
+        return "invalid_payload"
+    if p["action"] == "assign" and ("person" in p) == ("name" in p):
+        return "invalid_payload"
+    for key in ("observation", "person", "item"):
+        if key in p and not (isinstance(p[key], str) and RECORD_ID.match(p[key])):
+            return "invalid_payload"
+    if "base_hash" in p and not (isinstance(p["base_hash"], str) and 0 < len(p["base_hash"]) <= 128):
+        return "invalid_payload"
+    for key, limit in (("name", 80), ("answer", 4000)):
+        v = p.get(key)
+        if key in p and not (isinstance(v, str) and 1 <= len(v.strip()) <= limit and not any(ord(c) < 32 for c in v)):
+            return f"invalid_{key}"
+    return None
+
+
+def command_json(row) -> dict:
+    return {"id": str(row["id"]), "payload": row["payload"], "state": row["state"], "error": row["error"],
+            "revision": row["revision"], "updated_at": row["updated_at"].isoformat(), "deleted_at": None}
+
+
+def log_change(conn, meta: dict, entity_type: str, entity: dict):
+    meta["seq"] += 1
+    conn.execute("UPDATE meta SET seq = %s", (meta["seq"],))
+    conn.execute("INSERT INTO change_log (seq, entity_type, entity_id, revision, data) VALUES (%s, %s, %s, %s, %s)",
+                 (meta["seq"], entity_type, entity["id"], entity["revision"], Jsonb(entity)))
+
+
 def payload_hash(op: Operation) -> str:
     body = op.model_dump(mode="json", exclude={"operation_id"})
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
@@ -183,13 +237,28 @@ def apply_one(conn, device_id: uuid.UUID, op: Operation) -> dict:
                 return prior["result"]
             return {"operation_id": str(op.operation_id), "outcome": "rejected", "error": "operation_id_reused", "entity": None}
 
-        current = conn.execute("SELECT * FROM todos WHERE id = %s FOR UPDATE", (op.entity_id,)).fetchone()
-
         def done(outcome, entity=None, error=None):
             result = {"operation_id": str(op.operation_id), "outcome": outcome, "error": error, "entity": entity}
             conn.execute("INSERT INTO receipts (operation_id, device_id, payload_hash, result) VALUES (%s, %s, %s, %s)",
                          (op.operation_id, device_id, h, Jsonb(result)))
             return result
+
+        if op.entity_type == "command":
+            existing = conn.execute("SELECT * FROM commands WHERE id = %s", (op.entity_id,)).fetchone()
+            if existing:
+                return done("conflict", command_json(existing), "already_exists")
+            if op.action != "create" or op.base_revision != 0:
+                return done("rejected", None, "invalid_command")
+            if error := validate_command(op.payload):
+                return done("rejected", None, error)
+            row = conn.execute("""INSERT INTO commands (id, device_id, payload, state, revision)
+                                  VALUES (%s, %s, %s, 'pending_worker', 1) RETURNING *""",
+                               (op.entity_id, device_id, Jsonb(op.payload))).fetchone()
+            entity = command_json(row)
+            log_change(conn, meta, "command", entity)
+            return done("applied", entity)
+
+        current = conn.execute("SELECT * FROM todos WHERE id = %s FOR UPDATE", (op.entity_id,)).fetchone()
 
         if error := validate_payload(op):
             return done("rejected", todo_json(current) if current else None, error)
@@ -213,10 +282,7 @@ def apply_one(conn, device_id: uuid.UUID, op: Operation) -> dict:
             ).fetchone()
 
         entity = todo_json(row)
-        seq = meta["seq"] + 1
-        conn.execute("UPDATE meta SET seq = %s", (seq,))
-        conn.execute("INSERT INTO change_log (seq, entity_type, entity_id, revision, data) VALUES (%s, 'todo', %s, %s, %s)",
-                     (seq, row["id"], row["revision"], Jsonb(entity)))
+        log_change(conn, meta, "todo", entity)
         return done("applied", entity)
 
 
@@ -247,7 +313,7 @@ Producer = Annotated[uuid.UUID, Depends(producer)]
 
 
 class WorkerRecord(BaseModel):
-    kind: Literal["source", "item", "person", "observation"]
+    kind: Literal["source", "item", "person", "observation", "clarification"]
     id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")
     hash: str = Field(min_length=1, max_length=128)
     data: dict | None = None  # None is a tombstone
@@ -288,6 +354,11 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
                    WHERE worker_records.hash <> EXCLUDED.hash""",
                 (producer_id, r.kind, r.id, r.hash, Jsonb(r.data) if r.data is not None else None, r.data is None),
             ).rowcount
+            # Clips exist only to name a speaker: drop them once confirmed, discarded or forgotten.
+            if r.kind == "observation" and (r.data is None or r.data.get("provenance") == "confirmed"
+                                            or not r.data.get("clips")):
+                conn.execute("DELETE FROM clips WHERE observation_id = %s", (r.id,))
+        conn.execute("DELETE FROM clips WHERE created_at < now() - interval '30 days'")
         conn.execute("UPDATE producers SET last_seen_at = now(), status = %s WHERE id = %s",
                      (Jsonb(body.status), producer_id))
     return {"accepted": len(body.records), "stored": stored}
@@ -306,9 +377,76 @@ def pipeline(_: Device, conn: Db):
 
 
 @app.get("/v1/pipeline/records")
-def pipeline_records(_: Device, conn: Db, kind: Literal["source", "item", "person", "observation"],
+def pipeline_records(_: Device, conn: Db, kind: Literal["source", "item", "person", "observation", "clarification"],
                      limit: int = Query(50, ge=1, le=MAX_PAGE)):
     rows = conn.execute(
-        """SELECT id, data, updated_at FROM worker_records WHERE kind = %s AND deleted_at IS NULL
+        """SELECT id, hash, data, updated_at FROM worker_records WHERE kind = %s AND deleted_at IS NULL
            ORDER BY updated_at DESC, id LIMIT %s""", (kind, limit)).fetchall()
-    return {"records": [{"id": r["id"], "data": r["data"], "updated_at": r["updated_at"].isoformat()} for r in rows]}
+    return {"records": [{"id": r["id"], "hash": r["hash"], "data": r["data"], "updated_at": r["updated_at"].isoformat()}
+                        for r in rows]}
+
+
+MAX_CLIP_BYTES = 2_000_000
+
+
+@app.put("/v1/worker/clips/{observation_id}/{n}", status_code=204)
+async def worker_clip(observation_id: str, n: int, request: Request, producer_id: Producer, conn: Db,
+                      x_content_sha256: Annotated[str, Header()]):
+    if not RECORD_ID.match(observation_id) or not 0 <= n < 100:
+        raise HTTPException(422, "invalid_clip")
+    if int(request.headers.get("content-length") or 0) > MAX_CLIP_BYTES:
+        raise HTTPException(413, "clip_too_large")
+    body = await request.body()
+    if len(body) > MAX_CLIP_BYTES:
+        raise HTTPException(413, "clip_too_large")
+    if hashlib.sha256(body).hexdigest() != x_content_sha256:
+        raise HTTPException(422, "hash_mismatch")  # partial or corrupted upload is never stored
+    # ponytail: sync DB call inside an async route; fine for one worker uploading small clips.
+    if not conn.execute("""SELECT 1 FROM worker_records WHERE producer_id = %s AND kind = 'observation' AND id = %s
+                           AND deleted_at IS NULL""", (producer_id, observation_id)).fetchone():
+        raise HTTPException(404, "unknown_observation")
+    conn.execute("""INSERT INTO clips (observation_id, n, sha256, bytes) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (observation_id, n) DO UPDATE SET sha256 = EXCLUDED.sha256, bytes = EXCLUDED.bytes,
+                    created_at = now()""", (observation_id, n, x_content_sha256, body))
+
+
+@app.get("/v1/clips/{observation_id}/{n}")
+def clip(observation_id: str, n: int, _: Device, conn: Db):
+    # ponytail: whole-file response, no range requests; clips are a few hundred KB.
+    row = conn.execute("SELECT sha256, bytes FROM clips WHERE observation_id = %s AND n = %s",
+                       (observation_id, n)).fetchone()
+    if not row:
+        raise HTTPException(410, "clip_unavailable")
+    return Response(bytes(row["bytes"]), media_type="audio/wav",
+                    headers={"ETag": f'"{row["sha256"]}"', "Cache-Control": "private, no-store"})
+
+
+@app.get("/v1/worker/commands")
+def worker_commands(_: Producer, conn: Db, limit: int = Query(20, ge=1, le=100)):
+    # ponytail: one producer applies every command (single voice-profile worker, per the design).
+    rows = conn.execute("SELECT id, payload FROM commands WHERE state = 'pending_worker' ORDER BY position LIMIT %s",
+                        (limit,)).fetchall()
+    return {"commands": [{"id": str(r["id"]), "payload": r["payload"]} for r in rows]}
+
+
+class CommandResult(BaseModel):
+    ok: bool
+    error: str | None = Field(None, max_length=500)
+
+
+@app.post("/v1/worker/commands/{command_id}/result")
+def worker_command_result(command_id: uuid.UUID, body: CommandResult, _: Producer, conn: Db):
+    with conn.transaction():
+        meta = conn.execute("SELECT epoch, seq FROM meta FOR UPDATE").fetchone()
+        row = conn.execute("SELECT * FROM commands WHERE id = %s FOR UPDATE", (command_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "unknown_command")
+        if row["state"] != "pending_worker":
+            return command_json(row)  # a retried result after a lost response; the first one stands
+        row = conn.execute("""UPDATE commands SET state = %s, error = %s, revision = revision + 1, updated_at = now()
+                              WHERE id = %s RETURNING *""",
+                           ("applied_worker" if body.ok else "failed_worker", None if body.ok else body.error or "failed",
+                            command_id)).fetchone()
+        entity = command_json(row)
+        log_change(conn, meta, "command", entity)
+        return entity

@@ -62,6 +62,13 @@ does not block Windows ingestion/publication; no full recording upload occurs.
 
 ### 3. Speaker and clarification round trip
 
+Status 2026-10-10: implemented and tested with synthetic data (`tests/test_bridge.py`,
+`server/tests/test_api.py`, `apps/mobile/tests/`). Deviation: tray writes stay local and
+phone commands use a `base_hash` precondition instead (see architecture doc). Not done:
+on-device clip playback check, offline caching of worker lists on the phone (online
+only; edits still queue offline), server-side person/observation revisions (precondition
+is the worker's export hash), and any Windows service/live check.
+
 - Implement server desired assignments and worker acknowledgment states, command
   ordering/preconditions, clip lifecycle and restart-safe local receipts.
 - Phone supports assign/create person, rename, clear, discard and forget; preserve

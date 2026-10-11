@@ -1,8 +1,9 @@
 """Outbound shadow export to the selfhosted server (docs/mobile/architecture-and-sync.md).
 
-Read-only over the pipeline's own durable state: completed jobs, frozen publication
-manifests, router ledgers and the speaker database. Nothing here is on the receive,
-ACK, scoring or publication path; a server outage only delays export.
+Export reads the pipeline's own durable state: completed jobs, frozen publication
+manifests, router ledgers, clarifications and the speaker database. Phone commands
+(milestone 3) are applied through the same local commands the tray uses. Nothing here
+is on the receive, ACK, scoring or publication path; a server outage only delays it.
 
 There is no separate spool: every tick reconciles current local state against the
 records the server has acknowledged (bridge.sqlite3), so a crash, a lost response or
@@ -17,12 +18,16 @@ from pathlib import Path
 import sqlite3
 import urllib.error
 import urllib.request
+import uuid
 
 from .router import event_id, safe_name
+from .speaker_audio import useful_clip
 
 BATCH = 100
 EXCERPT_CHARS = 4000  # minimal evidence; the vault note keeps the full transcript
 TIMEOUT_SECONDS = 30
+MAX_CLIP_BYTES = 2_000_000  # matches the server limit
+STALE = "Changed on Windows since you loaded it; refresh and try again."
 
 
 def digest(value) -> str:
@@ -37,8 +42,10 @@ def published_windows(manifest: dict, meeting: bool) -> list[dict]:
 
 
 class Bridge:
-    def __init__(self, data_dir: Path, vault: Path, url: str, token: str, opener=urllib.request.urlopen):
+    def __init__(self, data_dir: Path, vault: Path, url: str, token: str, opener=urllib.request.urlopen,
+                 review_dir: Path | None = None):
         self.data_dir, self.vault = data_dir, vault
+        self.review = review_dir or data_dir.parent / "review"  # Config.review_dir
         self.url, self.token, self.opener = url.rstrip("/"), token, opener
         self.path = data_dir / "bridge.sqlite3"
         with self.connect() as db:
@@ -136,40 +143,127 @@ class Bridge:
             out += records or [(f"ledger:{path.stem}", None, None, None)]
         return out
 
-    def speakers(self) -> list[tuple]:
-        """Mutable (assignments, renames, forgets), so read in full and diffed every tick.
-        No voice vectors and no clips leave the machine in this milestone."""
-        if not (self.data_dir / "speakers.sqlite3").exists():
+    def clarifications(self) -> list[tuple]:
+        """Clarification ids are router event ids, so they match the vault item they ask about."""
+        if not (self.data_dir / "clarifications.sqlite3").exists():
             return []
+        with self.read_only("clarifications.sqlite3") as db:
+            rows = db.execute("SELECT id,path,text,questions,context,state,answer FROM items").fetchall()
+        return [(None, "clarification", r["id"], {
+            "note": r["path"], "text": r["text"], "questions": json.loads(r["questions"]),
+            "context": r["context"][:EXCERPT_CHARS], "state": r["state"], "answer": r["answer"],
+        }) for r in rows]
+
+    def speaker_records(self) -> dict[tuple, dict]:
+        """Mutable (assignments, renames, forgets), so read in full and diffed every tick.
+        Voice vectors never leave the machine; clips go separately, only while unconfirmed."""
+        if not (self.data_dir / "speakers.sqlite3").exists():
+            return {}
         with self.read_only("speakers.sqlite3") as db:
             people = db.execute("SELECT id,name FROM people").fetchall()
             observations = db.execute(
                 "SELECT id,job,label,display,recorded,person,manual,score,embedding_status,published,importance,clips "
                 "FROM observations").fetchall()
-        out = [(None, "person", p["id"], {"name": p["name"]}) for p in people]
+        out = {("person", p["id"]): {"name": p["name"]} for p in people}
         for o in observations:
             provenance = ("confirmed" if o["manual"] else "inferred") if o["person"] else ("cleared" if o["manual"] else None)
-            out.append((None, "observation", o["id"], {
+            clips = json.loads(o["clips"])
+            out[("observation", o["id"])] = {
                 "source_id": o["job"], "label": o["label"], "display": o["display"], "recorded_at": o["recorded"],
                 "person_id": o["person"], "provenance": provenance,
                 "score": round(o["score"], 3) if o["score"] is not None else None,
                 "embedding_status": o["embedding_status"], "published": o["published"], "importance": o["importance"],
-                "clip_count": len(json.loads(o["clips"])),
-            }))
+                "clip_count": len(clips),
+                # Index n is the n in the clip file name (Speakers.ingest); same filter as the tray.
+                "clips": [n for n, c in enumerate(clips) if useful_clip(c)],
+            }
         return out
 
     # --- Send ------------------------------------------------------------------------------
 
-    def post(self, records: list[dict], status: dict) -> dict:
-        body = json.dumps({"records": records, "status": status}).encode()
-        request = urllib.request.Request(self.url + "/v1/worker/events", data=body, method="POST", headers={
-            "Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+    def send(self, method: str, path: str, value=None, body: bytes | None = None, headers: dict | None = None):
+        if value is not None:
+            body, headers = json.dumps(value).encode(), {"Content-Type": "application/json"}
+        request = urllib.request.Request(self.url + path, data=body, method=method, headers={
+            "Authorization": f"Bearer {self.token}", **(headers or {})})
         try:
             with self.opener(request, timeout=TIMEOUT_SECONDS) as response:
-                return json.loads(response.read())
+                raw = response.read()
+                return json.loads(raw) if raw else None
         except urllib.error.HTTPError as error:
             error.close()
             raise
+
+    def post(self, records: list[dict], status: dict) -> dict:
+        return self.send("POST", "/v1/worker/events", {"records": records, "status": status})
+
+    # --- Commands from the phone ------------------------------------------------------------
+
+    def apply_commands(self, speakers, clarifications, pages: int = 10) -> int:
+        """Apply pending phone commands in server order, one at a time. A transient error
+        (database busy, network) raises and stops here, so later commands never overtake it."""
+        applied = 0
+        for _ in range(pages):
+            commands = self.send("GET", "/v1/worker/commands")["commands"]
+            if not commands:
+                break
+            for command in commands:
+                result = self.apply(command, speakers, clarifications)
+                self.send("POST", f"/v1/worker/commands/{command['id']}/result", result)
+                applied += 1
+        return applied
+
+    def apply(self, command: dict, speakers, clarifications) -> dict:
+        p, key = command["payload"], str(uuid.UUID(command["id"]))
+        try:
+            if p["action"] in ("clarify", "clarify_dismiss"):
+                # Idempotent on replay: a resolved item with the same answer reports ok.
+                response = clarifications.command(
+                    {"id": key, "action": p["action"], "observation": p["item"], "name": p.get("answer")})
+            else:
+                with speakers.connect() as db:
+                    saved = db.execute("SELECT response FROM commands WHERE id=?", (key,)).fetchone()
+                if saved:  # applied before a crash or a lost result upload: report, never reapply
+                    response = json.loads(saved["response"])
+                else:
+                    # Optimistic concurrency against tray edits: the phone names the state it saw.
+                    target = ("person", p["person"]) if p["action"] in ("rename", "forget") else ("observation", p["observation"])
+                    current = self.speaker_records().get(target)
+                    if "base_hash" in p and (current is None or digest(current) != p["base_hash"]):
+                        response = {"ok": False, "error": STALE}
+                    else:
+                        response = speakers.command({"id": key, **{k: p[k] for k in ("action", "observation", "person", "name")
+                                                                   if k in p}})
+        except (ValueError, KeyError, TypeError):
+            response = {"ok": False, "error": "Invalid command"}
+        ok = response.get("ok") is True
+        return {"ok": ok, "error": None if ok else str(response.get("error") or "Failed")[:500]}
+
+    # --- Review clips -------------------------------------------------------------------------
+
+    def upload_clips(self, records: dict, exported: dict) -> int:
+        """Clips of speakers still waiting for a name. Re-sent only when the file changes; the
+        server verifies the hash and drops clips once the speaker is confirmed or discarded."""
+        sent = 0
+        for (kind, rid), data in records.items():
+            if kind != "observation" or data["provenance"] == "confirmed" or data["published"] == 0:
+                continue
+            for n in data["clips"]:
+                path = self.review / "clips" / f"{rid}-{n}.wav"
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue  # the phone shows it as unavailable
+                version = f"{stat.st_size}:{stat.st_mtime_ns}"
+                if exported.get(("clip", f"{rid}:{n}")) == version or stat.st_size > MAX_CLIP_BYTES:
+                    continue
+                audio = path.read_bytes()
+                self.send("PUT", f"/v1/worker/clips/{rid}/{n}", body=audio, headers={
+                    "Content-Type": "audio/wav", "X-Content-SHA256": hashlib.sha256(audio).hexdigest()})
+                with self.connect() as db:
+                    db.execute("INSERT OR REPLACE INTO exported VALUES('clip',?,?)", (f"{rid}:{n}", version))
+                sent += 1
+        return sent
 
     def tick(self, status: dict | None = None) -> dict:
         """Export everything not yet acknowledged. Raises on network/server failure; the
@@ -178,7 +272,9 @@ class Bridge:
             exported = {(k, i): h for k, i, h in db.execute("SELECT kind,id,hash FROM exported")}
             done = {r[0] for r in db.execute("SELECT name FROM done_files")}
         jobs = self.jobs()
-        found = self.sources(jobs, done) + self.items(jobs, done) + self.speakers()
+        speakers = self.speaker_records()
+        found = (self.sources(jobs, done) + self.items(jobs, done) + self.clarifications()
+                 + [(None, kind, rid, data) for (kind, rid), data in speakers.items()])
         live = {(kind, rid) for _, kind, rid, _ in found if kind}
         pending, files = [], {}
         for file, kind, rid, data in found:
@@ -209,7 +305,7 @@ class Bridge:
                 db.executemany("INSERT OR IGNORE INTO done_files VALUES(?)",
                                [(f,) for f, left in files.items() if left == 0])
             sent += len(batch)
-        return {"sent": sent}
+        return {"sent": sent, "clips": self.upload_clips(speakers, exported)}
 
 
 def load_token(path: Path) -> str:

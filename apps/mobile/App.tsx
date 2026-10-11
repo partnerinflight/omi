@@ -8,6 +8,7 @@ import { ClipCheck } from './src/ClipCheck';
 import { Connection } from './src/Connection';
 import { migrate, type Db } from './src/db';
 import { Pipeline } from './src/Pipeline';
+import { Speakers } from './src/Speakers';
 import { createSync, type SyncStatus } from './src/sync';
 import { useTheme } from './src/theme';
 import { keychainTokens } from './src/tokenStore';
@@ -61,6 +62,7 @@ function Main() {
         }} />}
       >
         <Section title="Todos"><Todos sync={sync} version={version} onEdit={() => run()} /></Section>
+        <Section title="Speakers and clarifications"><Speakers sync={sync} version={version} onEdit={() => run()} /></Section>
         <Section title="Windows pipeline (preview)"><Pipeline sync={sync} version={version} /></Section>
         <Section title="Connection"><Connection sync={sync} status={status} onChange={changed} /></Section>
         <Section title="Review clip playback"><ClipCheck /></Section>

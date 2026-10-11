@@ -22,6 +22,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from second_brain.bridge import Bridge  # noqa: E402
 from second_brain.io import write_json  # noqa: E402
 from second_brain.queue import Queue  # noqa: E402
+from second_brain.clarifications import Clarifications  # noqa: E402
+from second_brain.speakers import Speakers  # noqa: E402
+import json  # noqa: E402
+import wave  # noqa: E402
 
 PG_IMAGE = "postgres:14-alpine"  # matches HA_Selfhost's shared postgres-db
 
@@ -50,7 +54,7 @@ class Api(unittest.TestCase):
             raise RuntimeError("postgres did not start")
 
         from sb_server.db import migrate
-        assert migrate() == ["001_init.sql", "002_worker.sql"]
+        assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql"]
         assert migrate() == []  # idempotent
 
         port = free_port()
@@ -230,6 +234,109 @@ class Api(unittest.TestCase):
             offline.tick()
         with offline.connect() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM exported").fetchone()[0], 0)
+
+
+    # --- Milestone 3: phone commands applied by the worker ---
+
+    def command(self, token, payload, command_id=None):
+        op = {"operation_id": str(uuid.uuid4()), "entity_type": "command", "entity_id": str(command_id or uuid.uuid4()),
+              "base_revision": 0, "action": "create", "payload": payload}
+        r = self.http("POST", "/v1/operations", token, json={"operations": [op]})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["results"][0]
+
+    def worker(self, name):
+        producer = self.cli("add-producer", name).strip()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        speakers = Speakers(root / "data", root / "review")
+        clip = root / "data" / "jobs" / name / "0.wav"
+        clip.parent.mkdir(parents=True)
+        with wave.open(str(clip), "wb") as f:
+            f.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            f.writeframes(b"\1\0" * 48000)
+        speakers.ingest({"id": name, "metadata": json.dumps({"first_utc": "2026-10-09T08:00:00Z"})}, {
+            "windows": [], "speaker_embedding_status": "ready", "speaker_observations": [{"label": "c:S1", "model": "m",
+                "clips": [{"path": str(clip), "start": 0, "end": 3, "text": "t", "quality": "clean turn",
+                           "eligible": True, "embedding": [1, 0]}]}]})
+        bridge = Bridge(root / "data", root / "vault", self.base, producer, review_dir=root / "review")
+        return producer, bridge, speakers, Clarifications(root / "data", root / "review", root / "vault")
+
+    def test_speaker_command_round_trip_through_real_worker(self):
+        producer, bridge, speakers, clarifications = self.worker("speaker-pc")
+        phone = self.paired()["access_token"]
+        bridge.apply_commands(speakers, clarifications)  # drain commands other tests left in the shared database
+        bridge.tick()
+        [obs] = [r for r in self.http("GET", "/v1/pipeline/records", phone, params={"kind": "observation"}).json()["records"]
+                 if r["data"]["source_id"] == "speaker-pc"]
+        audio = self.http("GET", f"/v1/clips/{obs['id']}/0", phone)
+        self.assertEqual((audio.status_code, audio.headers["content-type"]), (200, "audio/wav"))
+        self.assertEqual(self.http("GET", f"/v1/clips/{obs['id']}/0", producer).status_code, 401)
+        cursor = self.http("GET", "/v1/bootstrap", phone).json()["cursor"]
+
+        # Windows is offline: the server accepts and the phone sees it waiting for the worker.
+        saved = self.command(phone, {"action": "assign", "observation": obs["id"], "name": "Alex", "base_hash": obs["hash"]})
+        self.assertEqual((saved["outcome"], saved["entity"]["state"]), ("applied", "pending_worker"))
+        self.assertEqual(self.http("GET", "/v1/worker/commands", phone).status_code, 401)  # device cannot act as worker
+
+        # The worker comes back, applies once, and the result reaches the phone through /v1/changes.
+        self.assertEqual(bridge.apply_commands(speakers, clarifications), 1)
+        self.assertEqual(bridge.apply_commands(speakers, clarifications), 0)
+        bridge.tick()
+        changes = self.http("GET", "/v1/changes", phone, params={"cursor": cursor}).json()["changes"]
+        self.assertEqual([c["entity"]["state"] for c in changes if c["entity_type"] == "command"],
+                         ["pending_worker", "applied_worker"])
+        records = self.http("GET", "/v1/pipeline/records", phone, params={"kind": "observation"}).json()["records"]
+        self.assertEqual(next(r for r in records if r["id"] == obs["id"])["data"]["provenance"], "confirmed")
+        self.assertEqual(self.http("GET", f"/v1/clips/{obs['id']}/0", phone).status_code, 410)  # dropped once named
+
+        # A retried result after a lost response does not change the outcome.
+        late = self.http("POST", f"/v1/worker/commands/{saved['entity']['id']}/result", producer,
+                         json={"ok": False, "error": "late"}).json()
+        self.assertEqual(late["state"], "applied_worker")
+
+        # Forget, then a job replay: the old reference is not restored.
+        person = next(r for r in self.http("GET", "/v1/pipeline/records", phone, params={"kind": "person"}).json()["records"]
+                      if r["data"]["name"] == "Alex")
+        self.command(phone, {"action": "forget", "person": person["id"], "base_hash": person["hash"]})
+        bridge.apply_commands(speakers, clarifications)
+        speakers.ingest({"id": "speaker-pc", "metadata": json.dumps({})}, {"speaker_observations": [{"label": "c:S1", "clips": []}]})
+        bridge.tick()
+        records = self.http("GET", "/v1/pipeline/records", phone, params={"kind": "observation"}).json()["records"]
+        self.assertEqual(next(r for r in records if r["id"] == obs["id"])["data"]["provenance"], "cleared")
+
+        # A stale precondition fails terminally and is visible as failed_worker.
+        stale = self.command(phone, {"action": "clear", "observation": obs["id"], "base_hash": obs["hash"]})
+        bridge.apply_commands(speakers, clarifications)
+        [entity] = [c["entity"] for c in self.http("GET", "/v1/changes", phone, params={"cursor": cursor}).json()["changes"]
+                    if c["entity"]["id"] == stale["entity"]["id"] and c["entity"]["revision"] == 2]
+        self.assertEqual(entity["state"], "failed_worker")
+
+    def test_invalid_commands_are_rejected_at_the_server(self):
+        phone = self.paired()["access_token"]
+        for payload in [{"action": "assign", "observation": "o1"},  # neither person nor name
+                        {"action": "assign", "observation": "o1", "person": "p", "name": "x"},
+                        {"action": "rename", "person": "p", "name": "\n"},
+                        {"action": "forget", "person": "../p"},
+                        {"action": "clarify", "item": "abc", "answer": "x" * 4001},
+                        {"action": "train_model"},
+                        {"action": "clear", "observation": "o1", "extra": 1}]:
+            result = self.command(phone, payload)
+            self.assertEqual(result["outcome"], "rejected", payload)
+        command_id = uuid.uuid4()
+        self.command(phone, {"action": "forget", "person": "p"}, command_id)
+        self.assertEqual(self.command(phone, {"action": "forget", "person": "p"}, command_id)["error"], "already_exists")
+
+    def test_clip_upload_validates_hash_and_owner(self):
+        producer, bridge, *_ = self.worker("clip-pc")
+        bridge.tick()
+        headers = {"Authorization": f"Bearer {producer}", "X-Content-SHA256": "0" * 64}
+        r = httpx.put(self.base + "/v1/worker/clips/unknown/0", content=b"x", headers=headers)
+        self.assertEqual(r.status_code, 422)  # hash mismatch is checked before anything is stored
+        import hashlib
+        headers["X-Content-SHA256"] = hashlib.sha256(b"x").hexdigest()
+        self.assertEqual(httpx.put(self.base + "/v1/worker/clips/unknown/0", content=b"x", headers=headers).status_code, 404)
 
 
 if __name__ == "__main__":

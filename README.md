@@ -170,9 +170,11 @@ local mailbox. It cannot read the pairing key or stop the service.
 - **Shadow export to the mobile server** (`bridge_url`, off by default). When set,
   the service sends completed conversations (only published windows, excerpts up to
   4000 characters), router extractions, people and speaker assignments to the
-  selfhosted server over outbound HTTPS every `bridge_seconds` (60). No audio, clips,
-  voice embeddings or filtered transcripts leave the machine, and nothing listens for
-  inbound connections. Create the token on the server with
+  selfhosted server over outbound HTTPS every `bridge_seconds` (60). It also fetches
+  speaker and clarification changes made on the phone and applies them like tray
+  changes (`docs/speakers.md`), and uploads review clips of speakers still waiting for
+  a name. No recordings, voice embeddings or filtered transcripts leave the machine,
+  and nothing listens for inbound connections. Create the token on the server with
   `python -m sb_server add-producer "Home PC"`, save it to `bridge_token_file` (an
   absolute path readable only by the service account, separate from the upload
   secret), and restart the service. A server outage only delays export: each cycle

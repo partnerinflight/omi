@@ -2,7 +2,7 @@
 // push the first queued operation per entity, then pull ordered changes.
 // Foreground only: callers trigger it on open/resume, after edits, on a timer
 // and on manual refresh. Background execution is never required for correctness.
-import { getMeta, setMeta, upsertServerTodo, type Db, type ServerTodo } from './db.ts';
+import { getMeta, setMeta, upsertServerCommand, upsertServerTodo, type Db, type ServerCommand, type ServerTodo } from './db.ts';
 
 export type Tokens = { access_token: string; refresh_token: string };
 
@@ -50,6 +50,13 @@ export function serverUrlProblem(url: string, allowHttpLocalhost = false): strin
   if (/^https:\/\/[^/\s]+$/.test(url)) return null;
   if (allowHttpLocalhost && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(url)) return null;
   return 'Use an https:// address with no path.';
+}
+
+export type WorkerRecord<T> = { id: string; hash: string; data: T; updated_at: string };
+
+async function upsertEntity(txn: Parameters<typeof upsertServerTodo>[0], type: string, entity: any) {
+  if (type === 'todo') await upsertServerTodo(txn, entity);
+  if (type === 'command') await upsertServerCommand(txn, entity);
 }
 
 export type Pipeline = {
@@ -146,11 +153,12 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
           entity_id: op.entity_id, base_revision: op.sent_base_revision, action: op.action, payload: JSON.parse(op.payload) })) }),
       });
       if (!res.ok) throw new HttpError(res.status);
-      const { results } = (await res.json()) as { results: { operation_id: string; outcome: string; error: string | null; entity: ServerTodo | null }[] };
+      const { results } = (await res.json()) as { results: { operation_id: string; outcome: string; error: string | null; entity: any }[] };
+      const types = new Map(ops.map((op) => [op.operation_id, op.entity_type]));
 
       await db.withExclusiveTransactionAsync(async (txn) => {
         for (const r of results) {
-          if (r.entity) await upsertServerTodo(txn, r.entity);
+          if (r.entity) await upsertEntity(txn, types.get(r.operation_id)!, r.entity);
           if (r.outcome === 'applied') {
             await txn.runAsync('DELETE FROM outbox WHERE operation_id = ?', r.operation_id);
           } else {
@@ -165,11 +173,13 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
   async function bootstrap() {
     const res = await api('/v1/bootstrap');
     if (!res.ok) throw new HttpError(res.status);
-    const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[] };
+    const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[]; commands: ServerCommand[] };
     // Replaces only acknowledged state, atomically; the outbox is untouched.
     await db.withExclusiveTransactionAsync(async (txn) => {
       await txn.runAsync('DELETE FROM server_todos');
+      await txn.runAsync('DELETE FROM server_commands');
       for (const t of snapshot.todos) await upsertServerTodo(txn, t);
+      for (const c of snapshot.commands) await upsertServerCommand(txn, c);
       await setMeta(txn, 'cursor', snapshot.cursor);
     });
   }
@@ -184,9 +194,9 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
         return bootstrap();
       }
       if (!res.ok) throw new HttpError(res.status);
-      const page = (await res.json()) as { cursor: string; has_more: boolean; changes: { entity_type: string; entity: ServerTodo }[] };
+      const page = (await res.json()) as { cursor: string; has_more: boolean; changes: { entity_type: string; entity: any }[] };
       await db.withExclusiveTransactionAsync(async (txn) => {
-        for (const c of page.changes) if (c.entity_type === 'todo') await upsertServerTodo(txn, c.entity);
+        for (const c of page.changes) await upsertEntity(txn, c.entity_type, c.entity);
         await setMeta(txn, 'cursor', page.cursor);
       });
       if (!page.has_more) return;
@@ -248,6 +258,22 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       const res = await api('/v1/pipeline');
       if (!res.ok) throw new HttpError(res.status);
       return res.json();
+    },
+
+    async records<T>(kind: 'person' | 'observation' | 'clarification'): Promise<WorkerRecord<T>[]> {
+      const res = await api(`/v1/pipeline/records?kind=${kind}&limit=500`);
+      if (!res.ok) throw new HttpError(res.status);
+      return (await res.json()).records;
+    },
+
+    // For the audio player, which fetches the clip itself: one authenticated call first
+    // so an expired access token is refreshed before the player uses it.
+    async clipSource(observation: string, n: number) {
+      await api('/v1/pipeline');
+      const url = await serverUrl();
+      const current = await tokens.get();
+      return { uri: `${url}/v1/clips/${encodeURIComponent(observation)}/${n}`,
+        headers: { Authorization: `Bearer ${current?.access_token ?? ''}` } };
     },
 
     // Single flight. A trigger during a run (say, an edit made mid-pull) causes one
@@ -314,7 +340,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
           .catch(() => undefined); // offline: revocation cannot reach the server, local data is still cleared
       }
       await tokens.clear();
-      await db.execAsync('DELETE FROM outbox; DELETE FROM server_todos; DELETE FROM sync_meta;');
+      await db.execAsync('DELETE FROM outbox; DELETE FROM server_todos; DELETE FROM server_commands; DELETE FROM sync_meta;');
       return { signedOut: true, pending: 0 };
     },
   };

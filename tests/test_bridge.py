@@ -1,6 +1,7 @@
 """Bridge export over real loopback HTTP against synthetic manifests, ledgers and speaker data.
 The real server contract is exercised in server/tests/test_worker.py."""
 
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -11,10 +12,12 @@ import unittest
 import uuid
 import wave
 
-from second_brain.bridge import Bridge
+from second_brain.bridge import STALE, Bridge
+from second_brain.clarifications import Clarifications
 from second_brain.io import write_json
 from second_brain.queue import Queue
 from second_brain.router import event_id, source_hash
+from second_brain.router_markers import marker
 from second_brain.speakers import Speakers
 
 TOKEN = "producer-token"
@@ -24,25 +27,55 @@ class FakeServer(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
         self.records, self.requests, self.mode = {}, [], "ok"  # ok | down | lose_response
+        self.commands, self.results, self.clips, self.lose_next_result = [], {}, {}, False
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def do_POST(self):
+    def reply(self, code, value=None):
+        self.send_response(code)
+        self.end_headers()
+        if value is not None:
+            self.wfile.write(json.dumps(value).encode())
+
+    def allowed(self):
         s = self.server
         if s.mode == "down" or self.headers["Authorization"] != f"Bearer {TOKEN}":
-            self.send_response(503 if s.mode == "down" else 401)
-            self.end_headers()
+            self.reply(503 if s.mode == "down" else 401)
+            return False
+        return True
+
+    def body(self):
+        return self.rfile.read(int(self.headers["Content-Length"] or 0))
+
+    def do_GET(self):  # /v1/worker/commands: pending ones, in order
+        if self.allowed():
+            self.reply(200, {"commands": [c for c in self.server.commands if c["id"] not in self.server.results]})
+
+    def do_PUT(self):  # /v1/worker/clips/{observation}/{n}
+        if self.allowed():
+            audio = self.body()
+            assert hashlib.sha256(audio).hexdigest() == self.headers["X-Content-SHA256"]
+            self.server.clips[self.path.rsplit("/", 2)[-2] + ":" + self.path.rsplit("/", 1)[-1]] = audio
+            self.reply(204)
+
+    def do_POST(self):
+        s = self.server
+        if not self.allowed():
             return
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        body = json.loads(self.body())
+        if self.path.endswith("/result"):
+            command = self.path.split("/")[-2]
+            s.results.setdefault(command, body)  # the first result stands, as on the real server
+            lost, s.lose_next_result = s.lose_next_result, False
+            return self.reply(500 if lost else 200, {})
         s.requests.append(body)
         for r in body["records"]:
             s.records[(r["kind"], r["id"])] = r
-        self.send_response(500 if s.mode == "lose_response" else 200)  # committed, but the worker never hears it
-        self.end_headers()
-        self.wfile.write(json.dumps({"accepted": len(body["records"])}).encode())
+        # 500 after storing: committed, but the worker never hears it
+        self.reply(500 if s.mode == "lose_response" else 200, {"accepted": len(body["records"])})
 
 
 class BridgeTests(unittest.TestCase):
@@ -56,7 +89,9 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.job = self.completed_job()
-        self.bridge = Bridge(self.data, self.vault, f"http://127.0.0.1:{self.server.server_port}", TOKEN)
+        self.bridge = Bridge(self.data, self.vault, f"http://127.0.0.1:{self.server.server_port}", TOKEN,
+                             review_dir=self.root / "review")
+        self.clarifications = Clarifications(self.data, self.root / "review", self.vault)
 
     def completed_job(self):
         queue = Queue(self.data / "queue.sqlite3")
@@ -107,7 +142,7 @@ class BridgeTests(unittest.TestCase):
         [obs] = [d for (k, _), d in by.items() if k == "observation"]
         self.assertEqual((obs["source_id"], obs["provenance"], obs["clip_count"]), (self.job, None, 1))
         payload = json.dumps(self.server.requests)
-        for private in ("private chatter", "secret clip words", '"embedding":', '"vectors"', "0.wav"):
+        for private in ("private chatter", "secret clip words", '"embedding":', '"vectors"', str(self.data)):
             self.assertNotIn(private, payload)
         self.assertEqual(self.server.requests[0]["status"], {"jobs": {"complete": 1}})
 
@@ -160,6 +195,85 @@ class BridgeTests(unittest.TestCase):
             bad.tick()
         self.bridge.tick()
         self.assertTrue(any(r["kind"] == "source" for r in self.server.requests[-1]["records"]))
+
+    # --- Milestone 3: phone commands and clips ---
+
+    def observation(self):
+        [(_, obs_id)] = [k for k in self.server.records if k[0] == "observation"]
+        return obs_id, self.server.records[("observation", obs_id)]
+
+    def command(self, **payload):
+        command = {"id": str(uuid.uuid4()), "payload": payload}
+        self.server.commands.append(command)
+        return command["id"]
+
+    def person_of(self, obs_id):
+        with self.speakers.connect() as db:
+            return db.execute("SELECT person,manual FROM observations WHERE id=?", (obs_id,)).fetchone()
+
+    def test_phone_assign_applies_once_after_lost_result(self):
+        self.bridge.tick()
+        obs_id, record = self.observation()
+        command = self.command(action="assign", observation=obs_id, name="Alex", base_hash=record["hash"])
+        self.server.lose_next_result = True  # applied locally, result never acknowledged
+        with self.assertRaises(Exception):
+            self.bridge.apply_commands(self.speakers, self.clarifications)
+        self.server.results.clear()  # the server never committed it
+        self.assertEqual(self.bridge.apply_commands(self.speakers, self.clarifications), 1)
+        self.assertEqual(self.server.results[command], {"ok": True, "error": None})
+        with self.speakers.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM people").fetchone()[0], 1)
+        self.assertEqual(self.person_of(obs_id)["manual"], 1)
+        self.bridge.tick()
+        self.assertEqual(self.server.records[("observation", obs_id)]["data"]["provenance"], "confirmed")
+
+    def test_tray_edit_makes_phone_command_stale(self):
+        self.bridge.tick()
+        obs_id, record = self.observation()
+        self.speakers.command({"id": str(uuid.uuid4()), "action": "assign", "observation": obs_id, "name": "Bob"})
+        command = self.command(action="assign", observation=obs_id, name="Alex", base_hash=record["hash"])
+        self.bridge.apply_commands(self.speakers, self.clarifications)
+        self.assertEqual(self.server.results[command], {"ok": False, "error": STALE})
+        with self.speakers.connect() as db:
+            self.assertEqual(db.execute("SELECT name FROM people").fetchall()[0][0], "Bob")
+
+    def test_invalid_command_fails_terminally_and_later_ones_still_apply(self):
+        self.bridge.tick()
+        obs_id, record = self.observation()
+        bad = self.command(action="assign", observation="missing", name="Alex")
+        good = self.command(action="discard", observation=obs_id, base_hash=record["hash"])
+        self.assertEqual(self.bridge.apply_commands(self.speakers, self.clarifications), 2)
+        self.assertFalse(self.server.results[bad]["ok"])
+        self.assertTrue(self.server.results[good]["ok"])
+        self.assertFalse(any((self.root / "review/clips").glob(f"{obs_id}-*.wav")))  # discard drops audio
+
+    def test_clips_upload_only_while_unconfirmed(self):
+        self.bridge.tick()
+        obs_id, _ = self.observation()
+        self.assertEqual(list(self.server.clips), [f"{obs_id}:0"])
+        self.assertEqual(self.server.clips[f"{obs_id}:0"], (self.root / "review/clips" / f"{obs_id}-0.wav").read_bytes())
+        self.server.clips.clear()
+        self.bridge.tick()
+        self.assertEqual(self.server.clips, {})  # unchanged file is not resent
+
+    def test_phone_clarification_updates_vault_note_once(self):
+        eid = "0123456789abcdef"
+        note = self.vault / "People/Alex.md"
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text(f"# Alex\n- Met Speaker 2 at lunch {marker(eid)}\n", encoding="utf-8")
+        self.clarifications.add(eid, note, "Met Speaker 2 at lunch", ["Who is Speaker 2?"], "lunch transcript")
+        self.bridge.tick()
+        self.assertEqual(self.server.records[("clarification", eid)]["data"]["questions"], ["Who is Speaker 2?"])
+        command = self.command(action="clarify", item=eid, answer="Met Sam at lunch")
+        self.server.lose_next_result = True
+        with self.assertRaises(Exception):
+            self.bridge.apply_commands(self.speakers, self.clarifications)
+        self.server.results.clear()
+        self.bridge.apply_commands(self.speakers, self.clarifications)  # replay after the note was written
+        self.assertTrue(self.server.results[command]["ok"])
+        self.assertEqual(note.read_text(encoding="utf-8"), f"# Alex\n- Met Sam at lunch {marker(eid)}\n")
+        self.bridge.tick()
+        self.assertEqual(self.server.records[("clarification", eid)]["data"]["state"], "resolved")
 
 
 class BridgeConfigTests(unittest.TestCase):

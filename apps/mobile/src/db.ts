@@ -73,6 +73,12 @@ export async function migrate(db: Db) {
       PRAGMA user_version = 2;
     `);
   }
+  if (version < 3) {
+    await db.execAsync(`
+      CREATE TABLE server_commands (id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL);
+      PRAGMA user_version = 3;
+    `);
+  }
 }
 
 export async function getMeta(db: Queries, key: string) {
@@ -95,6 +101,51 @@ export async function upsertServerTodo(db: Queries, t: ServerTodo) {
      WHERE excluded.revision > server_todos.revision`,
     t.id, t.title, t.state, t.revision, t.updated_at, t.deleted_at,
   );
+}
+
+// --- Speaker and clarification commands, applied later by the Windows worker ---
+
+export type CommandPayload =
+  | { action: 'assign'; observation: string; person?: string; name?: string; base_hash: string }
+  | { action: 'clear' | 'discard'; observation: string; base_hash: string }
+  | { action: 'rename'; person: string; name: string; base_hash: string }
+  | { action: 'forget'; person: string; base_hash: string }
+  | { action: 'clarify'; item: string; answer: string }
+  | { action: 'clarify_dismiss'; item: string };
+
+export type ServerCommand = { id: string; payload: CommandPayload; state: 'pending_worker' | 'applied_worker' | 'failed_worker';
+  error: string | null; revision: number; updated_at: string };
+
+// queued: not yet accepted by the server. rejected: the server refused it (outbox problem).
+export type Command = { id: string; payload: CommandPayload; state: ServerCommand['state'] | 'queued' | 'rejected'; error: string | null;
+  seq: number | null };
+
+export async function upsertServerCommand(db: Queries, c: ServerCommand) {
+  await db.runAsync(
+    `INSERT INTO server_commands (id, revision, data) VALUES (?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, data = excluded.data WHERE excluded.revision > server_commands.revision`,
+    c.id, c.revision, JSON.stringify(c),
+  );
+}
+
+export async function queueCommand(db: Db, payload: CommandPayload, newId: () => string) {
+  await db.runAsync(
+    'INSERT INTO outbox (operation_id, entity_type, entity_id, action, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    newId(), 'command', newId(), 'create', JSON.stringify(payload), new Date().toISOString(),
+  );
+}
+
+// Newest first. A command leaves the outbox once the server accepts it and continues as a server command.
+export async function listCommands(db: Db): Promise<Command[]> {
+  const queued = await db.getAllAsync<OutboxRow>("SELECT * FROM outbox WHERE entity_type = 'command' ORDER BY seq DESC");
+  const saved = await db.getAllAsync<{ data: string }>('SELECT data FROM server_commands');
+  return [
+    ...queued.map((o): Command => ({ id: o.entity_id, payload: JSON.parse(o.payload), seq: o.seq,
+      state: o.status === 'pending' ? 'queued' : 'rejected', error: o.error })),
+    ...saved.map((r) => JSON.parse(r.data) as ServerCommand)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .map((c): Command => ({ id: c.id, payload: c.payload, state: c.state, error: c.error, seq: null })),
+  ];
 }
 
 type OutboxRow = { seq: number; entity_id: string; action: Op['action']; payload: string; created_at: string;

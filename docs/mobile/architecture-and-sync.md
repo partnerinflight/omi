@@ -2,8 +2,10 @@
 
 Design 2026-10-09. The todo slice (pair, auth, bootstrap, changes, operations)
 is implemented in [`server/`](../../server/README.md) as of 2026-10-10, as is the milestone 2
-shadow import (`POST /v1/worker/events`, read-only `GET /v1/pipeline[/records]`).
-Other routes do not exist yet.
+shadow import (`POST /v1/worker/events`, read-only `GET /v1/pipeline[/records]`) and the
+milestone 3 command path (`command` entities through `/v1/operations`, `GET /v1/worker/commands`,
+`POST /v1/worker/commands/{id}/result`, `PUT /v1/worker/clips/...`, `GET /v1/clips/{obs}/{n}`).
+`GET /v1/sources/{id}` does not exist yet.
 
 ## Topology and authority
 
@@ -142,7 +144,13 @@ and bounded retriable 5xx. Per-operation conflicts in a batch are explicit resul
 Implemented for milestone 2 as `second_brain.bridge`: instead of a separate spool, each cycle
 reconciles completed jobs, publication manifests, router ledgers and the speaker
 database against the records the server acknowledged (`data/bridge.sqlite3`), so
-the immutable local files are the spool. Clips and worker commands are milestone 3.
+the immutable local files are the spool. Milestone 3 commands go through the existing
+`Speakers.command`/`Clarifications.command` keyed by the server command ID; the speaker
+command table is the restart-safe local receipt. Instead of moving tray writes onto the
+server path, each phone speaker command carries `base_hash` (the exported record it was
+made against) and fails terminally if the tray changed that record first, so the tray
+remains a local writer without silent overwrites. Clips live in Postgres (small WAVs),
+are deleted on confirm/discard/forget or after 30 days, and are served without ranges.
 
 Add a durable outbound spool under private ProgramData; use HTTPS initiated by
 the service, never inbound internet access to Windows. Configure an absolute

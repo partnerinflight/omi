@@ -348,7 +348,7 @@ class Runtime:
                 pass
 
     async def export(self):
-        """Shadow export to the server. Never raises: an unreachable or broken server must not
+        """Phone commands and shadow export to the server. Never raises: an unreachable or broken server must not
         stop the service (run() propagates task failures to SCM recovery)."""
         exporter = None
 
@@ -356,7 +356,10 @@ class Runtime:
             nonlocal exporter
             if exporter is None:
                 exporter = bridge.Bridge(self.cfg.data_dir, self.cfg.vault_path, self.cfg.bridge_url,
-                                         bridge.load_token(Path(self.cfg.bridge_token_file)))
+                                         bridge.load_token(Path(self.cfg.bridge_token_file)),
+                                         review_dir=self.cfg.review_dir)
+            # Phone commands first, so the export that follows already shows their effect.
+            exporter.apply_commands(self.speakers, self.clarifications)
             # Counts only: the server sees worker freshness and backlog, never content.
             return exporter.tick({"jobs": self.queue.snapshot()["counts"], "routes_pending": self.router.snapshot()["pending"]})
 

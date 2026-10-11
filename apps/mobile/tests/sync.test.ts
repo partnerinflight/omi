@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { applyLocal, listTodos, migrate, type Db } from '../src/db.ts';
+import { applyLocal, listCommands, listTodos, migrate, queueCommand, type Db } from '../src/db.ts';
 import { createSync, type Tokens, type TokenStore } from '../src/sync.ts';
 import { openDb } from './sqlite.ts';
 
@@ -175,6 +175,28 @@ async function scenarios(url: string) {
   const [summary, after] = await Promise.all([a.sync.pipeline(), a.sync.sync(true)]);
   assert.deepEqual([after.state, summary.workers.length], ['synced', 0]);
   assert.equal((await a.sync.sync(true)).state, 'synced');
+
+  // Speaker command: queued offline, accepted while Windows is away, applied by the worker,
+  // and both phones see the outcome. The worker side (real Bridge) is tested in server/tests.
+  const worker = admin('add-producer', 'test-pc').trim();
+  b.net.offline = true;
+  await queueCommand(b.db, { action: 'assign', observation: 'obs-1', name: 'Alex', base_hash: 'h1' }, randomUUID);
+  await queueCommand(b.db, { action: 'rename', person: 'p', name: 'x'.repeat(81), base_hash: 'h2' }, randomUUID);
+  assert.deepEqual((await b.sync.sync(true)).state, 'offline');
+  assert.deepEqual((await listCommands(b.db)).map((c) => c.state), ['queued', 'queued']);
+  b.net.offline = false;
+  s = await b.sync.sync(true);
+  assert.deepEqual([s.pending, s.problems], [1, 1]); // the oversized name is refused and kept for review
+  let commands = await listCommands(b.db);
+  assert.deepEqual(commands.map((c) => [c.payload.action, c.state]), [['rename', 'rejected'], ['assign', 'pending_worker']]);
+  await b.sync.resolve(commands[0].seq!, 'discard');
+  const pending = await (await fetch(`${url}/v1/worker/commands`, { headers: { Authorization: `Bearer ${worker}` } })).json();
+  assert.deepEqual(pending.commands.map((c: { id: string }) => c.id), [commands[1].id]);
+  await fetch(`${url}/v1/worker/commands/${commands[1].id}/result`, { method: 'POST',
+    headers: { Authorization: `Bearer ${worker}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true }) });
+  await b.sync.sync(true);
+  await a.sync.sync(true);
+  for (const p of [a, b]) assert.deepEqual((await listCommands(p.db)).map((c) => c.state), ['applied_worker']);
 
   // A's cursor is from the old epoch too: 410, bootstrap, and both phones agree.
   await b.sync.sync(true);

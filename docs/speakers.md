@@ -169,6 +169,17 @@ unchanged. This does not clean up audiobook material already in the vault.
   service validates assignment commands and owns all authoritative state.
 - `review\responses\`: read-only acknowledgments for the app.
 
+When the mobile bridge is enabled (`bridge_url`, see `README.md`), the phone can
+make the same changes (name, confirm, clear, discard, rename, forget, answer or
+dismiss a clarification). The service fetches them over its outbound connection and
+applies them through these same commands, in order, keyed by the server's command
+ID so a crash or lost acknowledgment never applies one twice. Each phone change
+names the speaker or person state it was made against; if the tray changed it
+first, the phone change fails as "changed on Windows" instead of overwriting it.
+Review clips of speakers still waiting for a name are uploaded so the phone can
+play them; the server drops them once the speaker is confirmed or discarded, or
+after 30 days. Voice embeddings never leave this machine.
+
 No listener, browser endpoint, cloud recognition service, or pairing-key access
 is added. Public tray status remains operational metadata only. The installer
 keeps the audio/identity review area separate from status readable by all users.
