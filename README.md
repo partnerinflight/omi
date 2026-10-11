@@ -173,8 +173,12 @@ local mailbox. It cannot read the pairing key or stop the service.
   selfhosted server over outbound HTTPS every `bridge_seconds` (60). It also fetches
   speaker and clarification changes made on the phone and applies them like tray
   changes (`docs/speakers.md`), and uploads review clips of speakers still waiting for
-  a name. No recordings, voice embeddings or filtered transcripts leave the machine,
-  and nothing listens for inbound connections. Create the token on the server with
+  a name. Memories you save in the app are written to managed notes under
+  `Mobile/` in the vault; existing notes are never changed. If you edit a `Mobile/`
+  note by hand, it is left alone and the app's version is saved beside it as
+  `<name> (conflict from app).md` until you delete your edited copy. No recordings,
+  voice embeddings or filtered transcripts leave the machine, and nothing listens
+  for inbound connections. Create the token on the server with
   `python -m sb_server add-producer "Home PC"`, save it to `bridge_token_file` (an
   absolute path readable only by the service account, separate from the upload
   secret), and restart the service. A server outage only delays export: each cycle

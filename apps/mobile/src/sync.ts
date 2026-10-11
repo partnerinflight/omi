@@ -2,7 +2,8 @@
 // push the first queued operation per entity, then pull ordered changes.
 // Foreground only: callers trigger it on open/resume, after edits, on a timer
 // and on manual refresh. Background execution is never required for correctness.
-import { getMeta, setMeta, upsertServerCommand, upsertServerTodo, type Db, type ServerCommand, type ServerTodo } from './db.ts';
+import { getMeta, setMeta, upsertServerCommand, upsertServerMemory, upsertServerTodo, type Db, type ServerCommand, type ServerMemory,
+  type ServerTodo } from './db.ts';
 
 export type Tokens = { access_token: string; refresh_token: string };
 
@@ -57,10 +58,11 @@ export type WorkerRecord<T> = { id: string; hash: string; data: T; updated_at: s
 async function upsertEntity(txn: Parameters<typeof upsertServerTodo>[0], type: string, entity: any) {
   if (type === 'todo') await upsertServerTodo(txn, entity);
   if (type === 'command') await upsertServerCommand(txn, entity);
+  if (type === 'memory') await upsertServerMemory(txn, entity);
 }
 
 export type Pipeline = {
-  workers: { name: string; last_seen_at: string | null; status: { jobs?: Record<string, number>; routes_pending?: number } | null }[];
+  workers: { name: string; last_seen_at: string | null; status: { jobs?: Record<string, number>; routes_pending?: number; export_conflicts?: number } | null }[];
   counts: Partial<Record<'source' | 'item' | 'person' | 'observation', number>>;
 };
 
@@ -141,7 +143,8 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       await db.withExclusiveTransactionAsync(async (txn) => {
         for (const op of ops) {
           if (op.sent_base_revision !== null) continue;
-          const row = await txn.getFirstAsync<{ revision: number }>('SELECT revision FROM server_todos WHERE id = ?', op.entity_id);
+          const table = op.entity_type === 'memory' ? 'server_memories' : 'server_todos'; // commands are creates
+          const row = await txn.getFirstAsync<{ revision: number }>(`SELECT revision FROM ${table} WHERE id = ?`, op.entity_id);
           op.sent_base_revision = op.action === 'create' ? 0 : row?.revision ?? 0;
           await txn.runAsync('UPDATE outbox SET sent_base_revision = ? WHERE seq = ?', op.sent_base_revision, op.seq);
         }
@@ -173,11 +176,13 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
   async function bootstrap() {
     const res = await api('/v1/bootstrap');
     if (!res.ok) throw new HttpError(res.status);
-    const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[]; commands: ServerCommand[] };
+    const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[]; commands: ServerCommand[]; memories: ServerMemory[] };
     // Replaces only acknowledged state, atomically; the outbox is untouched.
     await db.withExclusiveTransactionAsync(async (txn) => {
       await txn.runAsync('DELETE FROM server_todos');
       await txn.runAsync('DELETE FROM server_commands');
+      await txn.runAsync('DELETE FROM server_memories');
+      for (const m of snapshot.memories) await upsertServerMemory(txn, m);
       for (const t of snapshot.todos) await upsertServerTodo(txn, t);
       for (const c of snapshot.commands) await upsertServerCommand(txn, c);
       await setMeta(txn, 'cursor', snapshot.cursor);
@@ -340,7 +345,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
           .catch(() => undefined); // offline: revocation cannot reach the server, local data is still cleared
       }
       await tokens.clear();
-      await db.execAsync('DELETE FROM outbox; DELETE FROM server_todos; DELETE FROM server_commands; DELETE FROM sync_meta;');
+      await db.execAsync('DELETE FROM outbox; DELETE FROM server_todos; DELETE FROM server_commands; DELETE FROM server_memories; DELETE FROM sync_meta;');
       return { signedOut: true, pending: 0 };
     },
   };

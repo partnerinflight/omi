@@ -79,6 +79,12 @@ export async function migrate(db: Db) {
       PRAGMA user_version = 3;
     `);
   }
+  if (version < 4) {
+    await db.execAsync(`
+      CREATE TABLE server_memories (id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL);
+      PRAGMA user_version = 4;
+    `);
+  }
 }
 
 export async function getMeta(db: Queries, key: string) {
@@ -148,7 +154,69 @@ export async function listCommands(db: Db): Promise<Command[]> {
   ];
 }
 
-type OutboxRow = { seq: number; entity_id: string; action: Op['action']; payload: string; created_at: string;
+// --- Memories: created by the Windows extraction, curated here ---
+
+export type MemoryState = 'proposed' | 'confirmed' | 'archived';
+export type ServerMemory = {
+  id: string; kind: 'fact' | 'decision' | 'idea'; text: string; state: MemoryState; revision: number;
+  original_text: string; confidence: number | null; entity_type: string | null; entity_name: string | null;
+  observed_at: string | null; updated_at: string; deleted_at: string | null;
+  evidence: { source_id: string | null; note: string | null; recorded_at: string | null; excerpt?: string; start?: number; end?: number } | null;
+};
+export type Memory = ServerMemory & { pending: number; problem: (Omit<Problem, 'server'> & { server: ServerMemory | null }) | null };
+export type MemoryOp = { action: 'set_text'; payload: { text: string } } | { action: 'set_state'; payload: { state: MemoryState } };
+
+export async function upsertServerMemory(db: Queries, m: ServerMemory) {
+  await db.runAsync(
+    `INSERT INTO server_memories (id, revision, data) VALUES (?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, data = excluded.data WHERE excluded.revision > server_memories.revision`,
+    m.id, m.revision, JSON.stringify(m),
+  );
+}
+
+export async function applyMemory(db: Db, id: string, op: MemoryOp, newId: () => string) {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    if (!(await txn.getFirstAsync('SELECT 1 FROM server_memories WHERE id = ?', id))) throw new Error(`memory ${id} not found`);
+    await txn.runAsync(
+      'INSERT INTO outbox (operation_id, entity_type, entity_id, action, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      newId(), 'memory', id, op.action, JSON.stringify(op.payload), new Date().toISOString(),
+    );
+  });
+}
+
+// Local search over the cache with queued edits applied: never touches the network or the vault.
+// The query matches text, the original extraction, the person/project name and the date (so
+// "2026-10" or "Alex" filter by month or person).
+// ponytail: in-memory scan, fine for a few thousand memories; switch to FTS5 beyond that.
+export async function listMemories(db: Db, filter: { query?: string; state?: MemoryState } = {}): Promise<Memory[]> {
+  const rows = await db.getAllAsync<{ data: string }>('SELECT data FROM server_memories');
+  const ops = await db.getAllAsync<OutboxRow>("SELECT * FROM outbox WHERE entity_type = 'memory' ORDER BY seq");
+  const view = new Map<string, Memory>(rows.map((r) => {
+    const m = JSON.parse(r.data) as ServerMemory;
+    return [m.id, { ...m, pending: 0, problem: null }];
+  }));
+  for (const op of ops) {
+    const m = view.get(op.entity_id);
+    if (!m) continue;
+    const payload = JSON.parse(op.payload);
+    if (op.action === 'set_text') m.text = payload.text;
+    if (op.action === 'set_state') m.state = payload.state;
+    m.pending += 1;
+    if (op.status !== 'pending' && !m.problem) {
+      m.problem = { seq: op.seq, outcome: op.status, error: op.error ?? '', server: op.server_entity ? JSON.parse(op.server_entity) : null };
+    }
+  }
+  const words = (filter.query ?? '').toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  return [...view.values()]
+    .filter((m) => !m.deleted_at && (!filter.state || m.state === filter.state))
+    .filter((m) => {
+      const hay = [m.text, m.original_text, m.entity_name, m.observed_at, m.kind].join(' ').toLocaleLowerCase();
+      return words.every((w) => hay.includes(w));
+    })
+    .sort((a, b) => (b.observed_at ?? '').localeCompare(a.observed_at ?? '') || a.id.localeCompare(b.id));
+}
+
+type OutboxRow = { seq: number; entity_id: string; action: Op['action'] | MemoryOp['action']; payload: string; created_at: string;
   status: 'pending' | Problem['outcome']; error: string | null; server_entity: string | null };
 
 export async function listTodos(db: Db): Promise<Todo[]> {

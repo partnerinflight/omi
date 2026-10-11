@@ -123,8 +123,9 @@ def bootstrap(_: Device, conn: Db):
         # ponytail: recent and unresolved commands only; the phone needs them for pending/failed badges.
         commands = conn.execute("""SELECT * FROM commands WHERE state = 'pending_worker'
                                    OR updated_at > now() - interval '30 days' ORDER BY position""").fetchall()
+        memories = conn.execute("SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY id").fetchall()
     return {"cursor": cursor(meta["epoch"], meta["seq"]), "todos": [todo_json(t) for t in todos],
-            "commands": [command_json(c) for c in commands]}
+            "commands": [command_json(c) for c in commands], "memories": [memory_json(m) for m in memories]}
 
 
 @app.get("/v1/changes")
@@ -144,10 +145,10 @@ def changes(_: Device, conn: Db, cursor_: Annotated[str, Query(alias="cursor")],
 
 class Operation(BaseModel):
     operation_id: uuid.UUID
-    entity_type: Literal["todo", "command"]
-    entity_id: uuid.UUID
+    entity_type: Literal["todo", "command", "memory"]
+    entity_id: str = Field(pattern=r"^[A-Za-z0-9:_-]{1,128}$")  # a UUID except for memories
     base_revision: int = Field(ge=0)
-    action: Literal["create", "set_title", "set_state"]
+    action: Literal["create", "set_title", "set_state", "set_text"]
     payload: dict
 
     @field_validator("payload")
@@ -209,6 +210,71 @@ def validate_command(p: dict) -> str | None:
     return None
 
 
+def memory_json(row) -> dict:
+    o = row["original"]
+    return {"id": row["id"], "kind": row["kind"], "text": row["text"], "state": row["state"],
+            "original_text": o.get("text"), "confidence": o.get("confidence"),
+            "entity_type": o.get("entity_type"), "entity_name": o.get("entity_name"),
+            "observed_at": o.get("observed_at"), "evidence": row["evidence"], "revision": row["revision"],
+            "updated_at": row["updated_at"].isoformat(),
+            "deleted_at": row["deleted_at"].isoformat() if row["deleted_at"] else None}
+
+
+def clean_text(v, limit=2000) -> str | None:
+    """One line of plain text that the vault projection can write without escaping."""
+    if not isinstance(v, str) or not 1 <= len(v.strip()) <= limit or any(ord(c) < 32 for c in v):
+        return None
+    if "%%" in v or "<!--" in v:  # Obsidian comment and router marker syntax
+        return None
+    return v.strip()
+
+
+def apply_memory(conn, op: Operation, done, meta) -> dict:
+    current = conn.execute("SELECT * FROM memories WHERE id = %s FOR UPDATE", (op.entity_id,)).fetchone()
+    entity = memory_json(current) if current else None
+    p = op.payload
+    if op.action == "set_text":
+        value = clean_text(p.get("text")) if set(p) == {"text"} else None
+        if value is None:
+            return done("rejected", entity, "invalid_text")
+        column = "text"
+    elif op.action == "set_state" and set(p) == {"state"} and p["state"] in ("proposed", "confirmed", "archived"):
+        value, column = p["state"], "state"
+    else:
+        return done("rejected", entity, "invalid_state")  # memories come from the worker; no create
+    if not current or current["deleted_at"]:
+        return done("rejected", None, "not_found")
+    if current["revision"] != op.base_revision:
+        return done("conflict", entity, "stale_revision")
+    row = conn.execute(f"UPDATE memories SET {column} = %s, revision = revision + 1, updated_at = now() "
+                       "WHERE id = %s RETURNING *", (value, op.entity_id)).fetchone()
+    entity = memory_json(row)
+    log_change(conn, meta, "memory", entity)
+    return done("applied", entity)
+
+
+def import_memory(conn, meta, producer_id, r) -> None:
+    """A new extracted fact/decision/idea becomes a proposed memory. Existing ones are never
+    updated, so a replay cannot undo an edit, an archive or a confirmation."""
+    if r.kind != "item" or not r.data or r.data.get("kind") not in ("fact", "decision", "idea"):
+        return
+    text = " ".join(str(r.data.get("text", "")).split()).replace("%%", "%").replace("<!--", "<!-")[:2000]
+    if not text:
+        return
+    job, _, window = str(r.data.get("source_id", "")).rpartition("-")
+    source = conn.execute("SELECT data FROM worker_records WHERE producer_id = %s AND kind = 'source' AND id = %s",
+                          (producer_id, job)).fetchone()
+    w = next((w for w in (source["data"]["windows"] if source else []) if w["id"] == window), None)
+    evidence = {"source_id": r.data.get("source_id"), "note": r.data.get("note"),
+                "recorded_at": source["data"].get("recorded_at") if source else None,
+                **({"excerpt": w["excerpt"], "start": w["start"], "end": w["end"]} if w else {})}
+    row = conn.execute("""INSERT INTO memories (id, kind, text, state, original, evidence, revision)
+                          VALUES (%s, %s, %s, 'proposed', %s, %s, 1) ON CONFLICT (id) DO NOTHING RETURNING *""",
+                       (r.id, r.data["kind"], text, Jsonb(r.data), Jsonb(evidence))).fetchone()
+    if row:
+        log_change(conn, meta, "memory", memory_json(row))
+
+
 def command_json(row) -> dict:
     return {"id": str(row["id"]), "payload": row["payload"], "state": row["state"], "error": row["error"],
             "revision": row["revision"], "updated_at": row["updated_at"].isoformat(), "deleted_at": None}
@@ -243,6 +309,12 @@ def apply_one(conn, device_id: uuid.UUID, op: Operation) -> dict:
                          (op.operation_id, device_id, h, Jsonb(result)))
             return result
 
+        if op.entity_type == "memory":
+            return apply_memory(conn, op, done, meta)
+        try:
+            uuid.UUID(op.entity_id)
+        except ValueError:
+            return done("rejected", None, "invalid_entity_id")
         if op.entity_type == "command":
             existing = conn.execute("SELECT * FROM commands WHERE id = %s", (op.entity_id,)).fetchone()
             if existing:
@@ -343,6 +415,7 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
     # Idempotent by (producer, kind, id, hash): a replayed record is "unchanged". The worker
     # marks a record exported only after this commit returns.
     with conn.transaction():
+        meta = conn.execute("SELECT epoch, seq FROM meta FOR UPDATE").fetchone()  # memory imports log changes
         stored = 0
         for r in body.records:
             stored += conn.execute(
@@ -358,6 +431,7 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
             if r.kind == "observation" and (r.data is None or r.data.get("provenance") == "confirmed"
                                             or not r.data.get("clips")):
                 conn.execute("DELETE FROM clips WHERE observation_id = %s", (r.id,))
+            import_memory(conn, meta, producer_id, r)
         conn.execute("DELETE FROM clips WHERE created_at < now() - interval '30 days'")
         conn.execute("UPDATE producers SET last_seen_at = now(), status = %s WHERE id = %s",
                      (Jsonb(body.status), producer_id))
@@ -450,3 +524,11 @@ def worker_command_result(command_id: uuid.UUID, body: CommandResult, _: Produce
         entity = command_json(row)
         log_change(conn, meta, "command", entity)
         return entity
+
+
+@app.get("/v1/worker/memories")
+def worker_memories(_: Producer, conn: Db):
+    """Confirmed memories for the worker's vault projection.
+    ponytail: the full set every cycle; add a since-cursor once there are thousands."""
+    rows = conn.execute("SELECT * FROM memories WHERE state = 'confirmed' AND deleted_at IS NULL ORDER BY id").fetchall()
+    return {"memories": [memory_json(r) for r in rows]}

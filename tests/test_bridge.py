@@ -28,6 +28,7 @@ class FakeServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), Handler)
         self.records, self.requests, self.mode = {}, [], "ok"  # ok | down | lose_response
         self.commands, self.results, self.clips, self.lose_next_result = [], {}, {}, False
+        self.memories = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -50,9 +51,13 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         return self.rfile.read(int(self.headers["Content-Length"] or 0))
 
-    def do_GET(self):  # /v1/worker/commands: pending ones, in order
-        if self.allowed():
-            self.reply(200, {"commands": [c for c in self.server.commands if c["id"] not in self.server.results]})
+    def do_GET(self):
+        if not self.allowed():
+            return
+        if self.path == "/v1/worker/memories":
+            return self.reply(200, {"memories": self.server.memories})
+        # /v1/worker/commands: pending ones, in order
+        self.reply(200, {"commands": [c for c in self.server.commands if c["id"] not in self.server.results]})
 
     def do_PUT(self):  # /v1/worker/clips/{observation}/{n}
         if self.allowed():
@@ -274,6 +279,57 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(note.read_text(encoding="utf-8"), f"# Alex\n- Met Sam at lunch {marker(eid)}\n")
         self.bridge.tick()
         self.assertEqual(self.server.records[("clarification", eid)]["data"]["state"], "resolved")
+
+    # --- Milestone 4: vault projection of confirmed memories ---
+
+    def memory(self, mid, text, **kw):
+        return {"id": mid, "kind": "fact", "text": text, "entity_type": "person", "entity_name": "Alex",
+                "observed_at": "2026-10-09T08:00:00Z", **kw}
+
+    def test_projection_writes_overlay_once_and_leaves_router_notes_alone(self):
+        self.server.memories = [self.memory("b2", "Likes hiking"), self.memory("a1", "Prefers oat milk"),
+                                {"id": "d1", "kind": "decision", "text": "Move standup to 10", "observed_at": None}]
+        self.assertEqual(self.bridge.project(), 0)
+        alex = self.vault / "Mobile/People/Alex.md"
+        text = alex.read_text(encoding="utf-8")
+        self.assertLess(text.index("Prefers oat milk"), text.index("Likes hiking"))  # observed_at, then id
+        self.assertIn("- 2026-10-09 — Prefers oat milk %% memory:a1 %%", text)
+        self.assertIn("- unknown — Move standup to 10 %% memory:d1 %%", (self.vault / "Mobile/Decisions.md").read_text())
+        self.assertFalse((self.vault / "People").exists())  # router notes are never written by projection
+        before = alex.stat().st_mtime_ns
+        self.bridge.project()
+        self.assertEqual(alex.stat().st_mtime_ns, before)  # unchanged content is not rewritten
+
+    def test_hand_edited_overlay_keeps_both_versions_until_resolved(self):
+        self.server.memories = [self.memory("a1", "Prefers oat milk")]
+        self.bridge.project()
+        alex = self.vault / "Mobile/People/Alex.md"
+        alex.write_text(alex.read_text() + "My own note\n", encoding="utf-8")
+        self.server.memories = [self.memory("a1", "Prefers soy milk")]
+        self.assertEqual(self.bridge.project(), 1)
+        self.assertIn("My own note", alex.read_text())  # human edit intact
+        conflict = self.vault / "Mobile/People/Alex (conflict from app).md"
+        self.assertIn("Prefers soy milk", conflict.read_text())
+        self.assertEqual(self.bridge.project(), 1)  # stays visible, nothing overwritten
+        alex.unlink()  # the user resolves it by removing their copy
+        self.assertEqual(self.bridge.project(), 0)
+        self.assertIn("Prefers soy milk", alex.read_text())
+        self.assertFalse(conflict.exists())
+
+    def test_archived_memories_leave_the_overlay(self):
+        self.server.memories = [self.memory("a1", "Prefers oat milk"), self.memory("b2", "Likes hiking")]
+        self.bridge.project()
+        self.server.memories = [self.memory("b2", "Likes hiking")]
+        self.bridge.project()
+        self.assertNotIn("oat milk", (self.vault / "Mobile/People/Alex.md").read_text())
+        self.server.memories = []
+        self.assertEqual(self.bridge.project(), 0)
+        self.assertFalse((self.vault / "Mobile/People/Alex.md").exists())
+
+    def test_items_carry_their_vault_note(self):
+        self.bridge.tick()
+        notes = {r["data"]["kind"]: r["data"]["note"] for (k, _), r in self.server.records.items() if k == "item"}
+        self.assertEqual(notes, {"fact": "People/Alex.md", "task": "Projects/_Tasks.md", "daily": "Daily/2026-10-09.md"})
 
 
 class BridgeConfigTests(unittest.TestCase):

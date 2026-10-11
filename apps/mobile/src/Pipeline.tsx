@@ -35,6 +35,7 @@ export function Pipeline({ sync, version }: { sync: Sync; version: number }) {
             {w.name}: {seen ? `last report ${seen.toLocaleString()}` : 'never reported'}
             {jobs.pending ? ` · ${jobs.pending} recordings queued` : ''}
             {jobs.failed ? ` · ${jobs.failed} failed` : ''}
+            {w.status?.export_conflicts ? ` · ${w.status.export_conflicts} vault note(s) edited by hand; app changes were saved next to them in Mobile/` : ''}
           </Text>
         );
       })}

@@ -1,4 +1,4 @@
-# Second Brain sync API (milestones 1–3: todos, worker shadow import, speaker commands)
+# Second Brain sync API (milestones 1–4: todos, worker import, speaker commands, memories)
 
 FastAPI + Postgres. Implements the todo slice of
 [architecture-and-sync.md](../docs/mobile/architecture-and-sync.md): device
@@ -32,5 +32,8 @@ SB_DATABASE_URL=postgresql://... uv run python -m sb_server add-producer "Home P
 Worker records are untrusted model output stored as inert JSON. Device and producer
 tokens are separate tables, so neither can call the other's routes.
 
-Not yet: OpenAPI-generated client types, memories, clip range requests, tombstone
+| `POST /v1/operations` with `entity_type: "memory"` | `set_text` (one line ≤ 2000, no `%%`/`<!--`) and `set_state` (`proposed`/`confirmed`/`archived`) with revision checks; memories are created only from worker items |
+| `GET /v1/worker/memories` | producer token; confirmed memories for the vault projection |
+
+Not yet: OpenAPI-generated client types, clip range requests, tombstone
 retention/compaction, multi-owner scoping, multiple producers per command.

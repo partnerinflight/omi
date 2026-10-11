@@ -20,7 +20,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from .router import event_id, safe_name
+from .io import atomic_write
+from .router import ENTITY_FOLDERS, event_id, safe_name
 from .speaker_audio import useful_clip
 
 BATCH = 100
@@ -54,6 +55,7 @@ class Bridge:
                 CREATE TABLE IF NOT EXISTS exported (kind TEXT NOT NULL, id TEXT NOT NULL, hash TEXT NOT NULL,
                     PRIMARY KEY (kind, id));
                 CREATE TABLE IF NOT EXISTS done_files (name TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS projected (path TEXT PRIMARY KEY, hash TEXT NOT NULL);
             """)
 
     @contextmanager
@@ -127,18 +129,21 @@ class Bridge:
             day = safe_name(observed_at[:10])  # as router.route keys ideas and daily notes
             found = []
             for f in x["facts"]:
-                found.append(("fact", f"{f['entity_type']}:{f['entity_name']}", f["fact"], f))
+                found.append(("fact", f"{f['entity_type']}:{f['entity_name']}", f["fact"], f,
+                              f"{ENTITY_FOLDERS[f['entity_type']]}/{safe_name(f['entity_name'])}.md"))
             for d in x["decisions"]:
-                found.append(("decision", (d.get("observed_at") or observed_at)[:10], d["text"], d))
+                when = (d.get("observed_at") or observed_at)[:10]
+                found.append(("decision", when, d["text"], d, f"Decisions/{safe_name(when)}.md"))
             for t in x["tasks"]:
-                found.append(("task", t["owner"] or "", t["text"], t))
-            found += [("idea", day, i["text"], i) for i in x["ideas"]]
-            found += [("daily", day, t, {}) for t in x["daily_summary"]]
+                found.append(("task", t["owner"] or "", t["text"], t, "Projects/_Tasks.md"))
+            found += [("idea", day, i["text"], i, f"Ideas/{day}.md") for i in x["ideas"]]
+            found += [("daily", day, t, {}, f"Daily/{day}.md") for t in x["daily_summary"]]
             records = [(f"ledger:{path.stem}", "item", event_id(shash, kind, key, text), {
                 "kind": kind, "text": text, "source_id": source_id, "source_hash": shash,
+                "note": note,  # vault-relative, where router.route wrote it
                 "observed_at": fields.get("observed_at") or observed_at,
                 **{k: fields[k] for k in ("entity_type", "entity_name", "owner", "due", "confidence") if k in fields},
-            }) for kind, key, text, fields in found]
+            }) for kind, key, text, fields, note in found]
             # A ledger with no items still needs marking done; an empty marker record does it.
             out += records or [(f"ledger:{path.stem}", None, None, None)]
         return out
@@ -239,6 +244,57 @@ class Bridge:
         ok = response.get("ok") is True
         return {"ok": ok, "error": None if ok else str(response.get("error") or "Failed")[:500]}
 
+    # --- Vault projection of curated memories -------------------------------------------------
+
+    def project(self) -> int:
+        """Write confirmed memories into managed overlay notes under Mobile/. Router notes, curated
+        prose and published conversations are never modified. A note is replaced only while it
+        still holds exactly what was last written there; a human edit stops that note and the new
+        version goes beside it, so both survive. Returns the number of conflicted notes."""
+        memories = self.send("GET", "/v1/worker/memories")["memories"]
+        groups: dict[str, list] = {}
+        for m in memories:
+            if m["kind"] == "fact" and m.get("entity_type") in ENTITY_FOLDERS and m.get("entity_name"):
+                title = m["entity_name"]
+                path = f"{PROJECTION}/{ENTITY_FOLDERS[m['entity_type']]}/{safe_name(title)}.md"
+            else:
+                title = {"fact": "Facts", "decision": "Decisions", "idea": "Ideas"}[m["kind"]]
+                path = f"{PROJECTION}/{title}.md"
+            groups.setdefault(path, [title]).append(m)
+        with self.connect() as db:
+            ledger = dict(db.execute("SELECT path,hash FROM projected"))
+        conflicts = 0
+        for path in sorted(set(groups) | set(ledger)):
+            content = render(groups[path][0], groups[path][1:]) if path in groups else None
+            conflicts += not self.write_projection(path, content, ledger.get(path))
+        return conflicts
+
+    def write_projection(self, relative: str, content: bytes | None, last: str | None) -> bool:
+        target = self.vault / relative
+        conflict = target.with_name(target.stem + " (conflict from app).md")
+        try:
+            current = target.read_bytes()
+        except FileNotFoundError:
+            current = None
+        new = hashlib.sha256(content).hexdigest() if content is not None else None
+        ours = current is None or hashlib.sha256(current).hexdigest() in (last, new)
+        if not ours:
+            # Edited by hand: keep it, and offer the app's version next to it until resolved.
+            if content is not None and (not conflict.exists() or conflict.read_bytes() != content):
+                atomic_write(conflict, content)
+            return False
+        if content is None:
+            target.unlink(missing_ok=True)  # nothing curated left and the note was untouched
+        elif current != content:
+            atomic_write(target, content)
+        conflict.unlink(missing_ok=True)
+        with self.connect() as db:
+            if content is None:
+                db.execute("DELETE FROM projected WHERE path=?", (relative,))
+            else:
+                db.execute("INSERT OR REPLACE INTO projected VALUES(?,?)", (relative, new))
+        return True
+
     # --- Review clips -------------------------------------------------------------------------
 
     def upload_clips(self, records: dict, exported: dict) -> int:
@@ -306,6 +362,21 @@ class Bridge:
                                [(f,) for f, left in files.items() if left == 0])
             sent += len(batch)
         return {"sent": sent, "clips": self.upload_clips(speakers, exported)}
+
+
+PROJECTION = "Mobile"
+MARKER_PREFIX = "%% memory:"
+
+
+def render(title: str, memories: list[dict]) -> bytes:
+    """Deterministic: the same curated set always renders the same bytes."""
+    lines = ["---", "type: second-brain-memories", "managed_by: second-brain-app", "---", f"# {title}", "",
+             "Confirmed in the Second Brain app. Edit memories there; edits made here stop updates to this note.", ""]
+    for m in sorted(memories, key=lambda m: (m.get("observed_at") or "", m["id"])):
+        when = (m.get("observed_at") or "unknown")[:10]
+        text = " ".join(m["text"].split())
+        lines.append(f"- {when} — {text} {MARKER_PREFIX}{m['id']} %%")
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def load_token(path: Path) -> str:

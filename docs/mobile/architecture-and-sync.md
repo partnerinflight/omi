@@ -5,7 +5,10 @@ is implemented in [`server/`](../../server/README.md) as of 2026-10-10, as is th
 shadow import (`POST /v1/worker/events`, read-only `GET /v1/pipeline[/records]`) and the
 milestone 3 command path (`command` entities through `/v1/operations`, `GET /v1/worker/commands`,
 `POST /v1/worker/commands/{id}/result`, `PUT /v1/worker/clips/...`, `GET /v1/clips/{obs}/{n}`).
-`GET /v1/sources/{id}` does not exist yet.
+Milestone 4 memories are `memory` entities (bootstrap, changes, `set_text`/`set_state`
+operations) plus `GET /v1/worker/memories` for the vault projection. Evidence (excerpt,
+time, vault note) is copied into each memory at import instead of a `GET /v1/sources/{id}`
+route, so it is available offline.
 
 ## Topology and authority
 
@@ -187,6 +190,18 @@ Existing conversation/meeting notes remain the richer evidence archive, preservi
 the current memory gate and meeting exceptions; filtered transcripts stay in the
 private processing archive. Secondary storage does not imply publishing all chatter.
 Frozen publication manifests and old named transcripts remain immutable.
+
+Implemented for memories (milestone 4): extracted facts, decisions and ideas become
+`proposed` server memories once (`ON CONFLICT DO NOTHING`, so replays never undo an
+edit, confirmation or archive). The original extraction is kept beside the current
+text; change_log holds every revision. Confirmed memories are projected by the worker
+into `Mobile/<People|Projects|Topics>/<name>.md` and `Mobile/{Facts,Decisions,Ideas}.md`
+with `%% memory:<id> %%` markers. Router notes, curated prose and conversation notes are
+not modified. The export ledger (`projected` in `bridge.sqlite3`) holds each note's last
+written hash: a note whose bytes differ from it was edited by hand, is left alone, and
+the app version is written to `<name> (conflict from app).md`; deleting the edited note
+resolves it. The worker reports the conflict count in its status. `Mobile/` is outside
+the router's novelty scan.
 
 Project structured state into new managed files/sections with stable IDs and an
 export revision ledger. Compare the last exported content hash before replacement;

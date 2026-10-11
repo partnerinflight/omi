@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { applyLocal, listCommands, listTodos, migrate, queueCommand, type Db } from '../src/db.ts';
+import { applyLocal, applyMemory, listCommands, listMemories, listTodos, migrate, queueCommand, type Db } from '../src/db.ts';
 import { createSync, type Tokens, type TokenStore } from '../src/sync.ts';
 import { openDb } from './sqlite.ts';
 
@@ -197,6 +197,33 @@ async function scenarios(url: string) {
   await b.sync.sync(true);
   await a.sync.sync(true);
   for (const p of [a, b]) assert.deepEqual((await listCommands(p.db)).map((c) => c.state), ['applied_worker']);
+
+  // Memories arrive from the worker; edits sync with revision checks and search works offline.
+  const item = (id: string, text: string, name: string) => ({ kind: 'item', id, hash: `h-${id}`, data: { kind: 'fact', text,
+    entity_type: 'person', entity_name: name, observed_at: '2026-10-09T08:00:00Z', source_id: 'job-w1', note: `People/${name}.md` } });
+  await fetch(`${url}/v1/worker/events`, { method: 'POST', headers: { Authorization: `Bearer ${worker}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records: [item('m1', 'Prefers oat milk', 'Alex'), item('m2', 'Plays chess', 'Sam')] }) });
+  await a.sync.sync(true);
+  await b.sync.sync(true);
+  a.net.offline = true;
+  assert.deepEqual((await listMemories(a.db, { query: 'alex' })).map((m) => m.text), ['Prefers oat milk']);
+  assert.deepEqual((await listMemories(a.db, { query: '2026-10 chess' })).map((m) => m.entity_name), ['Sam']);
+  await applyMemory(a.db, 'm1', { action: 'set_text', payload: { text: 'Prefers oat milk, not soy' } }, randomUUID);
+  assert.deepEqual((await listMemories(a.db, { query: 'soy' })).map((m) => [m.pending, m.original_text]), [[1, 'Prefers oat milk']]);
+  a.net.offline = false;
+  await applyMemory(b.db, 'm1', { action: 'set_state', payload: { state: 'archived' } }, randomUUID);
+  await b.sync.sync(true);
+  s = await a.sync.sync(true);
+  assert.equal(s.problems, 1); // both edited revision 1
+  const [mem] = await listMemories(a.db, { query: 'soy' });
+  assert.deepEqual([mem.problem?.error, mem.problem?.server?.state], ['stale_revision', 'archived']);
+  await a.sync.resolve(mem.problem!.seq, 'keep_mine');
+  await a.sync.sync(true);
+  await b.sync.sync(true);
+  for (const p of [a, b]) {
+    const [m] = await listMemories(p.db, { query: 'alex' });
+    assert.deepEqual([m.text, m.state, m.revision, m.pending], ['Prefers oat milk, not soy', 'archived', 3, 0]);
+  }
 
   // A's cursor is from the old epoch too: 410, bootstrap, and both phones agree.
   await b.sync.sync(true);

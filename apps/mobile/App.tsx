@@ -7,6 +7,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { ClipCheck } from './src/ClipCheck';
 import { Connection } from './src/Connection';
 import { migrate, type Db } from './src/db';
+import { Memories } from './src/Memories';
 import { Pipeline } from './src/Pipeline';
 import { Speakers } from './src/Speakers';
 import { createSync, type SyncStatus } from './src/sync';
@@ -62,6 +63,7 @@ function Main() {
         }} />}
       >
         <Section title="Todos"><Todos sync={sync} version={version} onEdit={() => run()} /></Section>
+        <Section title="Memories"><Memories sync={sync} version={version} onEdit={() => run()} /></Section>
         <Section title="Speakers and clarifications"><Speakers sync={sync} version={version} onEdit={() => run()} /></Section>
         <Section title="Windows pipeline (preview)"><Pipeline sync={sync} version={version} /></Section>
         <Section title="Connection"><Connection sync={sync} status={status} onChange={changed} /></Section>

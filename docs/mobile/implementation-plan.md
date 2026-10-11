@@ -83,6 +83,13 @@ prevents subsequent replay from restoring the old reference. Old notes stay inta
 
 ### 4. Memories, search and archive projections
 
+Status 2026-10-10: implemented and tested with synthetic data (`tests/test_bridge.py`,
+`server/tests/test_api.py`, `apps/mobile/tests/`). Search is a local scan over the
+phone cache (text, original extraction, person/project, date), not FTS5. Not done: a
+separate source-detail route (evidence is embedded instead), people/project link
+editing, on-device UI checks, Windows service/live check. Router dedupe verdicts are
+not applied, so the inbox can hold items the router judged duplicates.
+
 - Add structured memory inbox, correction/archive/restore, evidence details and
   SQLite search. Preserve original extraction and user revisions separately.
 - Add guarded deterministic vault projection, export ledger and visible conflicts.

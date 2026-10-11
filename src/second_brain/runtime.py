@@ -360,8 +360,11 @@ class Runtime:
                                          review_dir=self.cfg.review_dir)
             # Phone commands first, so the export that follows already shows their effect.
             exporter.apply_commands(self.speakers, self.clarifications)
+            conflicts = exporter.project()
+            self.bridge_status["export_conflicts"] = conflicts
             # Counts only: the server sees worker freshness and backlog, never content.
-            return exporter.tick({"jobs": self.queue.snapshot()["counts"], "routes_pending": self.router.snapshot()["pending"]})
+            return exporter.tick({"jobs": self.queue.snapshot()["counts"], "routes_pending": self.router.snapshot()["pending"],
+                                  "export_conflicts": conflicts})
 
         while not self.stop.is_set():
             try:

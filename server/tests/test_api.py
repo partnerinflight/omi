@@ -54,7 +54,7 @@ class Api(unittest.TestCase):
             raise RuntimeError("postgres did not start")
 
         from sb_server.db import migrate
-        assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql"]
+        assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql", "004_memories.sql"]
         assert migrate() == []  # idempotent
 
         port = free_port()
@@ -337,6 +337,82 @@ class Api(unittest.TestCase):
         import hashlib
         headers["X-Content-SHA256"] = hashlib.sha256(b"x").hexdigest()
         self.assertEqual(httpx.put(self.base + "/v1/worker/clips/unknown/0", content=b"x", headers=headers).status_code, 404)
+
+
+    # --- Milestone 4: memories ---
+
+    def memory_op(self, token, mid, action, payload, base):
+        op = {"operation_id": str(uuid.uuid4()), "entity_type": "memory", "entity_id": mid,
+              "base_revision": base, "action": action, "payload": payload}
+        r = self.http("POST", "/v1/operations", token, json={"operations": [op]})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["results"][0]
+
+    def test_memories_import_edit_replay_and_project(self):
+        producer = self.cli("add-producer", "memory-pc").strip()
+        phone = self.paired()["access_token"]
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        queue = Queue(root / "data" / "queue.sqlite3")
+        (root / "rec.opus").write_bytes(b"memory test")
+        job = queue.enqueue(root / "rec.opus", {"device": "m", "start_seq": 7, "first_utc": "2026-10-09T08:00:00Z"})
+        queue.complete(job, {})
+        write_json(root / "data" / "jobs" / job / "publication-manifest.json", {"windows": [
+            {"id": "w1", "start": 0, "end": 9, "final_transcript": "Alex said she prefers oat milk.",
+             "memory_keep": True, "route_to_knowledge_router": True}]})
+        from second_brain.router import event_id, source_hash
+        shash = source_hash(f"{job}-w1", "Alex said she prefers oat milk.")
+        write_json(root / "vault" / "System/Router/Ledger" / f"{shash}.json", {
+            "source_hash": shash, "source_id": f"{job}-w1", "extraction": {
+                "facts": [{"entity_type": "person", "entity_name": "Alex", "fact": "Prefers oat milk", "confidence": 0.9,
+                           "observed_at": None}],
+                "decisions": [], "ideas": [{"text": "Oat milk subscription", "confidence": 0.6}],
+                "daily_summary": ["Groceries"], "clarifications": [],
+                "tasks": [{"text": "Buy oat milk", "owner": "", "due": "", "confidence": 0.8}]}})
+        bridge = Bridge(root / "data", root / "vault", self.base, producer)
+        cursor = self.http("GET", "/v1/bootstrap", phone).json()["cursor"]
+        bridge.tick()
+
+        fact_id = event_id(shash, "fact", "person:Alex", "Prefers oat milk")
+        mine = {m["id"]: m for m in self.http("GET", "/v1/bootstrap", phone).json()["memories"]}
+        fact = mine[fact_id]
+        self.assertEqual((fact["state"], fact["entity_name"], fact["confidence"]), ("proposed", "Alex", 0.9))
+        self.assertEqual(fact["evidence"]["excerpt"], "Alex said she prefers oat milk.")  # cached for offline detail
+        self.assertEqual(fact["evidence"]["note"], "People/Alex.md")
+        idea = next(m for m in mine.values() if m["kind"] == "idea" and m["text"] == "Oat milk subscription")
+        self.assertFalse(any(m["text"] in ("Buy oat milk", "Groceries") for m in mine.values()))  # tasks/daily are not memories
+        new = self.http("GET", "/v1/changes", phone, params={"cursor": cursor}).json()["changes"]
+        self.assertEqual({c["entity"]["id"] for c in new if c["entity_type"] == "memory"}, {fact_id, idea["id"]})
+
+        # Correct, confirm; a stale edit conflicts; bad text is rejected.
+        edited = self.memory_op(phone, fact_id, "set_text", {"text": "Prefers oat milk, not soy"}, 1)
+        self.assertEqual((edited["outcome"], edited["entity"]["original_text"]), ("applied", "Prefers oat milk"))
+        self.assertEqual(self.memory_op(phone, fact_id, "set_state", {"state": "confirmed"}, 2)["outcome"], "applied")
+        self.assertEqual(self.memory_op(phone, fact_id, "set_text", {"text": "x"}, 2)["error"], "stale_revision")
+        for bad in ("", "two\nlines", "hidden %% comment", "x" * 2001):
+            self.assertEqual(self.memory_op(phone, fact_id, "set_text", {"text": bad}, 3)["error"], "invalid_text")
+        self.assertEqual(self.memory_op(phone, idea["id"], "set_state", {"state": "archived"}, 1)["outcome"], "applied")
+        self.assertEqual(self.memory_op(phone, "nope", "set_state", {"state": "archived"}, 1)["error"], "not_found")
+        self.assertEqual(self.op(phone, "not-a-uuid", "create", {"title": "x"})["error"], "invalid_entity_id")
+
+        # Extraction replay (everything resent) changes nothing the user decided.
+        with bridge.connect() as db:
+            db.execute("DELETE FROM exported")
+            db.execute("DELETE FROM done_files")
+        bridge.tick()
+        mine = {m["id"]: m for m in self.http("GET", "/v1/bootstrap", phone).json()["memories"]}
+        self.assertEqual((mine[fact_id]["text"], mine[fact_id]["state"], mine[fact_id]["revision"]),
+                         ("Prefers oat milk, not soy", "confirmed", 3))
+        self.assertEqual(mine[idea["id"]]["state"], "archived")
+
+        # Only confirmed memories reach the vault overlay; devices cannot read the worker route.
+        self.assertEqual(self.http("GET", "/v1/worker/memories", phone).status_code, 401)
+        self.assertEqual(bridge.project(), 0)
+        note = (root / "vault" / "Mobile/People/Alex.md").read_text(encoding="utf-8")
+        self.assertIn(f"Prefers oat milk, not soy %% memory:{fact_id} %%", note)
+        self.assertNotIn("subscription", note)
+        self.assertFalse((root / "vault" / "Mobile/Ideas.md").exists())
 
 
 if __name__ == "__main__":
