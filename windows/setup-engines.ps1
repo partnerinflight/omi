@@ -5,7 +5,9 @@ param(
     [string]$MossBinaryDir = '',
     # Build MOSS for an NVIDIA GPU (CUDA Toolkit required) and run it there.
     [switch]$Cuda,
-    [switch]$SkipVibe7
+    [switch]$SkipVibe7,
+    # Build NeMo-Speech.cpp and fetch Nemotron-3-Diarization to link speakers across chunks.
+    [switch]$SpeakerLinking
 )
 . "$PSScriptRoot/setup-common.ps1"
 if (-not (Test-Path $Config)) { throw 'Copy config/pipeline.example.json to a private config first.' }
@@ -52,5 +54,17 @@ if (-not $SkipVibe7) {
     Set-ConfigValue $cfg 'vibe_7b_device' 'cpu'
     Set-ConfigValue $cfg 'vibe_7b_dtype' 'float32'
 }
+if ($SpeakerLinking) {
+    & "$PSScriptRoot/build-nemo-speech.ps1" -EngineRoot $EngineRoot
+    $nemoExe = Join-Path $EngineRoot ('sources/nemo-speech-' + $lock.nemo_speech.revision.Substring(0,12) + '/build-cpu/bin/nemo-speech.exe')
+    $diarModel = Join-Path $EngineRoot ('models/nemotron-diar-' + $lock.diar_model.revision.Substring(0,12))
+    Invoke-Checked $setupPython @("$PSScriptRoot/download-model.py", '--lock', $lockPath, '--model', 'diar_model', '--destination', $diarModel)
+    # The pipeline runs [*command, 'diarize', ...]: the value must stay a JSON list, never a string.
+    Set-ConfigValue $cfg 'speaker_linking_command' ([string[]]@($nemoExe))
+    Set-ConfigValue $cfg 'speaker_linking_model' (Join-Path $diarModel 'Nemotron-3-Diarization.q8_0.gguf')
+}
 Save-PipelineConfig $Config $cfg
+if ($SpeakerLinking -and -not ((Get-Content $Config -Raw | ConvertFrom-Json).speaker_linking_command -is [array])) {
+    throw 'speaker_linking_command was not saved as a JSON list.'
+}
 Write-Host 'Engine setup complete. Config backed up and updated. CPU environments selected; see docs/install-windows.md for GPU setup.'

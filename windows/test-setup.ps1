@@ -25,9 +25,13 @@ try {
     Set-Content $config '{"hermes_scoring_enabled":true,"custom":42}'
     $cfg = Get-Content $config -Raw | ConvertFrom-Json
     Set-ConfigValue $cfg 'moss_model' 'new-path'
+    # A one-element command (setup-engines -SpeakerLinking) must stay a JSON list.
+    Set-ConfigValue $cfg 'speaker_linking_command' ([string[]]@('C:\engines\nemo-speech.exe'))
     Save-PipelineConfig $config $cfg
     $saved = Get-Content $config -Raw | ConvertFrom-Json
     if ($saved.custom -ne 42 -or -not $saved.hermes_scoring_enabled -or $saved.moss_model -ne 'new-path') { throw 'Setup lost configuration.' }
+    if (-not ($saved.speaker_linking_command -is [array]) -or @($saved.speaker_linking_command).Count -ne 1 -or
+        $saved.speaker_linking_command[0] -ne 'C:\engines\nemo-speech.exe') { throw 'One-element command was not saved as a JSON list.' }
     if (@(Get-ChildItem "$config.before-setup-*.bak").Count -ne 1) { throw 'Config backup missing.' }
     $rejected = $false
     try { Invoke-Checked ([Environment]::ProcessPath) @('-NoProfile', '-Command', 'exit 7') } catch {
@@ -38,5 +42,5 @@ try {
     # GitHub's pwsh wrapper propagates LASTEXITCODE after the script returns.
     # The nonzero code above was intentional and has now been asserted.
     $global:LASTEXITCODE = 0
-    Write-Host 'PASS: pinned checkout repeatability, dirty-source protection, config backup/preservation, native failure propagation.'
+    Write-Host 'PASS: pinned checkout repeatability, dirty-source protection, config backup/preservation, one-element list serialisation, native failure propagation.'
 } finally { Remove-Item $root -Recurse -Force }

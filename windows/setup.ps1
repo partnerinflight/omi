@@ -11,7 +11,9 @@ param(
     [switch]$Cuda,
     [switch]$SkipVibe7,
     [switch]$SkipSpeakers,
-    [switch]$PrepareOnly
+    [switch]$PrepareOnly,
+    # Opt-in: recording-wide speaker labels via NeMo-Speech.cpp + Nemotron-3-Diarization.
+    [switch]$SpeakerLinking
 )
 . "$PSScriptRoot/setup-common.ps1"
 $repo = Split-Path $PSScriptRoot -Parent
@@ -36,7 +38,7 @@ try {
         New-Item -ItemType Directory -Force (Split-Path $PipelineConfig -Parent) | Out-Null
         Copy-Item "$repo/config/pipeline.example.json" $PipelineConfig
     }
-    & "$PSScriptRoot/setup-engines.ps1" -Python $Python -Config $PipelineConfig -EngineRoot $EngineRoot -MossBinaryDir $MossBinaryDir -Cuda:$Cuda -SkipVibe7:$SkipVibe7
+    & "$PSScriptRoot/setup-engines.ps1" -Python $Python -Config $PipelineConfig -EngineRoot $EngineRoot -MossBinaryDir $MossBinaryDir -Cuda:$Cuda -SkipVibe7:$SkipVibe7 -SpeakerLinking:$SpeakerLinking
     if (-not $SkipSpeakers) {
         & "$PSScriptRoot/setup-speakers.ps1" -Python $Python -PipelineConfig $PipelineConfig -EngineRoot "$EngineRoot/speaker-recognition"
     }

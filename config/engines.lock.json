@@ -21,5 +21,15 @@
     "repo": "speechbrain/spkrec-ecapa-voxceleb",
     "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
     "patterns": ["hyperparams.yaml", "*.ckpt", "label_encoder.txt", "README.md"]
+  },
+  "nemo_speech": {
+    "url": "https://github.com/NVIDIA/NeMo-Speech.cpp.git",
+    "revision": "083861c241061562b8ec29eb06d7f6cdc3af8775"
+  },
+  "diar_model": {
+    "repo": "nvidia/Nemotron-3-Diarization",
+    "revision": "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+    "patterns": ["Nemotron-3-Diarization.q8_0.gguf", "README.md"],
+    "sha256": {"Nemotron-3-Diarization.q8_0.gguf": "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1"}
   }
 }

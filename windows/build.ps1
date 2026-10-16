@@ -20,7 +20,7 @@ try {
     Copy-Item 'config/engines.lock.json' 'dist/windows/config/' -Force
     Copy-Item (Join-Path $PSScriptRoot 'setup-engines.ps1') 'dist/windows/setup-engines.ps1' -Force
     Copy-Item (Join-Path $PSScriptRoot 'setup-speakers.ps1') 'dist/windows/setup-speakers.ps1' -Force
-    foreach ($file in @('setup-common.ps1', 'build-moss.ps1', 'download-model.py', 'run-audio.ps1')) {
+    foreach ($file in @('setup-common.ps1', 'build-moss.ps1', 'build-nemo-speech.ps1', 'download-model.py', 'run-audio.ps1')) {
         Copy-Item (Join-Path $PSScriptRoot $file) "dist/windows/$file" -Force
     }
     Copy-Item 'README.md' 'dist/windows/README.md' -Force
