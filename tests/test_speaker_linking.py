@@ -233,5 +233,17 @@ class MeetingLinkingTests(unittest.TestCase):
             self.assertEqual(received["channels"], 1)
 
 
+class DownstreamLabelTests(unittest.TestCase):
+    def test_one_review_observation_per_linked_person(self):
+        from second_brain.speaker_audio import candidates
+        manifest = {"windows": [{"id": "w0000", "moss_segments": [
+            {"start": 0.0, "end": 4.0, "speaker": "spk1", "chunk_speaker": "c0000:S1", "text": "one two three"},
+            {"start": 240.0, "end": 244.0, "speaker": "spk1", "chunk_speaker": "c0001:S2", "text": "four five six"},
+            {"start": 244.0, "end": 248.0, "speaker": "spk2", "chunk_speaker": "c0001:S1", "text": "seven eight"},
+        ]}]}
+        observations = {o["label"]: o for o in candidates(manifest)}
+        self.assertEqual(set(observations), {"spk1", "spk2"})
+        self.assertEqual(len(observations["spk1"]["clips"]), 2)    # clips from both chunks
+
 if __name__ == "__main__":
     unittest.main()
