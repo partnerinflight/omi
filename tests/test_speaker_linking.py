@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import wave
 from pathlib import Path
 
@@ -162,6 +163,54 @@ class PipelineLinkingTests(unittest.TestCase):
                       manifest["fallbacks"])
         self.assertEqual(len({s["speaker"] for s in self.segments(manifest)}), 6)
 
+    def test_a_rerun_into_the_same_directory_still_links(self):
+        # Recovery reuses the attempt directory; the real CLI refuses to overwrite its --output.
+        config = pipeline_config(self.root, coarse_max_seconds=2,
+                                 speaker_linking_command=FAKE + ["--block", "2"],
+                                 speaker_linking_model=str(self.root / "model.gguf"))
+        run_pipeline(self.root, self.audio, self.root / "rerun", config)
+        manifest = run_pipeline(self.root, self.audio, self.root / "rerun", config)
+        self.assertIn("speaker_linking", manifest)
+        self.assertEqual({s["speaker"] for s in self.segments(manifest)}, {"spk1", "spk2"})
+        self.assertFalse([f for f in manifest["fallbacks"] if f["from"] == "speaker linking"])
+
+    def test_a_recording_longer_than_the_cap_keeps_chunk_labels(self):
+        config = pipeline_config(self.root, coarse_max_seconds=2, speaker_linking_max_seconds=5,
+                                 speaker_linking_command=FAKE + ["--block", "2"],
+                                 speaker_linking_model=str(self.root / "model.gguf"))
+        manifest = run_pipeline(self.root, self.audio, self.root / "capped", config)
+        self.assertNotIn("speaker_linking", manifest)
+        self.assertIn({"from": "speaker linking", "to": "chunk-local labels",
+                       "reason": "recording longer than speaker_linking_max_seconds"}, manifest["fallbacks"])
+        self.assertFalse((self.root / "capped/linking.rttm").exists())
+        self.assertEqual(len({s["speaker"] for s in self.segments(manifest)}), 6)
+
+
+class LinkRecordingSpeakersTests(unittest.TestCase):
+    def test_nothing_linkable_never_runs_the_diarizer(self):
+        from second_brain.adaptive.pipeline import link_recording_speakers
+        segments = [seg(0, 2, "owner"), seg(2, 4, "owner")]
+        cfg = {"speaker_linking_command": [sys.executable, "-c", "import sys; sys.exit(9)"],
+               "speaker_linking_model": "model.gguf"}
+        manifest = {"fallbacks": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            result = link_recording_speakers("missing.wav", segments, cfg, Path(tmp), manifest, 4.0, "R")
+        self.assertEqual([s["speaker"] for s in result], ["owner", "owner"])
+        self.assertEqual(manifest, {"fallbacks": []})
+
+    def test_an_unexpected_error_keeps_chunk_labels(self):
+        from second_brain.adaptive.pipeline import link_recording_speakers
+        writes_empty_rttm = "import sys; a = sys.argv; open(a[a.index('--output') + 1], 'w').close()"
+        cfg = {"speaker_linking_command": [sys.executable, "-c", writes_empty_rttm],
+               "speaker_linking_model": "model.gguf"}
+        manifest = {"fallbacks": []}
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch("second_brain.adaptive.linking.link_speakers", side_effect=KeyError("bug")):
+            audio = sine_wav(Path(tmp) / "a.wav", 2)
+            result = link_recording_speakers(str(audio), [seg(0, 2, "c0000:S1")], cfg, Path(tmp), manifest, 2.0)
+        self.assertEqual(result[0]["speaker"], "c0000:S1")
+        self.assertEqual(manifest["fallbacks"],
+                         [{"from": "speaker linking", "to": "chunk-local labels", "reason": "KeyError"}])
 
 if __name__ == "__main__":
     unittest.main()

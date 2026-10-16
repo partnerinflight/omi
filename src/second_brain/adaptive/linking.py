@@ -24,7 +24,7 @@ def parse_rttm(text):
     return turns
 
 
-def _linkable(label):
+def linkable(label):
     return label != "owner" and ":" in label and not label.endswith("S?")
 
 
@@ -36,7 +36,7 @@ def link_speakers(segments, turns, min_share=MIN_SHARE):
     speech, overlap, chunk_of, first = {}, {}, {}, {}
     for segment in segments:
         label = str(segment["speaker"])
-        if not _linkable(label):
+        if not linkable(label):
             continue
         start, end = float(segment["start"]), float(segment["end"])
         speech[label] = speech.get(label, 0.0) + max(0.0, end - start)

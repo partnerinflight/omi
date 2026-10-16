@@ -4,9 +4,11 @@ never used in production configuration.
 Usage as a speaker_linking_command prefix: [python, fake_nemo_speech.py, "--block", "<seconds>"].
 Each block's first half is speaker_a and second half speaker_b, matching tests/fixtures/fake_moss.py,
 which splits every MOSS chunk into an S1 half and an S2 half. Records what it was asked to read in
-OUT.input.json so tests can check the audio it received."""
+OUT.input.json so tests can check the audio it received. Like the real CLI it refuses to
+overwrite an existing OUT."""
 
 import json
+import os
 import sys
 import wave
 
@@ -16,6 +18,9 @@ command = args[args.index("diarize"):]
 audio, out = command[1], command[command.index("--output") + 1]
 if command[command.index("--format") + 1] != "rttm" or "--model" not in command:
     raise SystemExit(2)
+if os.path.exists(out):                                   # like the real CLI without --force
+    sys.stderr.write(f"error: output file {out} already exists (use --force to replace it)\n")
+    raise SystemExit(1)
 with wave.open(audio) as source:
     duration = source.getnframes() / source.getframerate()
     channels, rate = source.getnchannels(), source.getframerate()
