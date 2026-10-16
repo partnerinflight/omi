@@ -32,6 +32,8 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    lists (no shell); the supervising worker bounds total runtime. Failures and
    heuristic/ASR fallbacks are visible in job results. Vibe padding is filtered
    to the selected window and speaker labels are locally scoped.
+   After MOSS, optional speaker linking relabels chunk-local speakers as
+   recording-wide ones before dedupe and windowing; failures keep chunk labels.
 5. The vault writer creates deterministic names from job and window identity.
    A flushed temporary file is atomically published without replacing an existing
    note. Retrying identical output is a no-op; different existing content is a

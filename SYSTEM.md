@@ -184,6 +184,27 @@ are authoritative; explain deliberate policy changes.
   there is no separate diarization toggle. Missing labels become unknown.
 - Speaker labels are scoped by chunk/window, never global identities. Group
   turns into conversation windows (gap 35 seconds, maximum 180 seconds).
+- With `speaker_linking_command` (JSON list) and `speaker_linking_model` set (Windows:
+  `setup.ps1 -SpeakerLinking`), Nemotron-3-Diarization (NeMo-Speech.cpp, CPU) runs once per
+  recording on a 16 kHz mono copy, the remote channel for meetings, between MOSS and meeting
+  dedupe. Each MOSS chunk label joins the Nemotron speaker it overlaps most and becomes
+  `spk<n>` for the whole recording; the original stays in `chunk_speaker`. Labels MOSS
+  separated inside one chunk never merge (Nemotron tracks at most 8 speakers), and a label
+  whose best overlap covers under 30% of its speech keeps its own identity. The manifest's
+  `speaker_linking` records labels/linked/kept_apart/unlinked/speakers. Not run when no
+  segment is linkable. Any error (or a recording over `speaker_linking_max_seconds`, default
+  7200) keeps chunk labels and adds a `fallbacks` entry (error type name only; details in the
+  private pipeline log); retries and recovery re-run linking cleanly. Measured on the owner's
+  M4 Pro: about 10-11% of real time and about 19 MB RSS per audio minute (385 MB for 8.5 min,
+  1.57 GB for 70 min), inside the job's total time limit. The CLI needs only `--model` at
+  runtime (no network, cache or environment; verified with an empty environment on macOS);
+  on Windows its ggml DLLs must sit next to `nemo-speech.exe` (`build-nemo-speech.ps1` checks).
+  Windows prerequisites: Visual Studio 2022 Build Tools (C++ workload), CMake 3.26+, Ninja,
+  Git; the upstream build bootstraps its own pinned vcpkg at setup time.
+- v3 scoring note: with linking, labels for one person compare equal across chunks, so in a
+  window crossing a chunk boundary `importance_heuristic`'s 2+ speakers bonus and
+  `uncertainty_heuristic`'s speaker-switch ratio can come out lower than before. Linking is
+  off by default, so default v3 behaviour is unchanged.
 - Heuristics score importance, uncertainty, durability, actionability, and
   retrieval value. Novelty uses lexical overlap with up to 4,000 vault notes;
   this is not a vector index. Vault entity names supply VibeVoice hotwords.
@@ -435,6 +456,12 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   count means "not routed to Hermes"; those windows are still in the note. Real ASR on
   meeting audio, real voice matching of remote speakers, and Windows ffmpeg decoding
   of a real Mac CAF are unverified (fixtures only).
+- Speaker linking, known limits (2026-10-15): AMI cpWER 37.8% whole recording vs MOSS 37.1%
+  within chunks; a real-engine check (MOSS + nemo-speech) on an 8.5-minute AMI excerpt turned
+  10 chunk labels into 4 speakers matching the 4 reference speakers (two sub-second labels
+  ambiguous). Never measured on Omi chest-mic audio. Windows refined by VibeVoice 7B keep
+  VibeVoice's window-local labels. Calls with more than 8 people can still show one person under
+  two labels. The Windows CPU build of NeMo-Speech.cpp was not run before release.
 - Omi/meeting dedupe, known limits (2026-10-07): a meeting uploaded after its overlapping Omi
   recording was already processed leaves two notes; nothing reconciles them (owner accepted).
   Decisions are per ASR segment: a segment mixing meeting and room speech is kept or dropped

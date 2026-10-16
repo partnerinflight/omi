@@ -76,7 +76,15 @@ outside Git before unattended service use; use a **local directory** for
 The imported policy uses MOSS for the first pass, optional Hermes scoring
 (disabled by default), and selective VibeVoice 7B refinement. `-SkipVibe7` can
 be used when installing an initial MOSS-only service. Model IDs, device, dtype,
-thresholds, threads and hotwords remain configurable. The service's vault path
+thresholds, threads and hotwords remain configurable.
+
+Speaker linking (opt-in) gives each person one label across a recording instead of
+one per chunk: `speaker_linking_command` (JSON list, the `nemo-speech` executable),
+`speaker_linking_model` (Nemotron-3-Diarization GGUF; both `null` = off) and
+`speaker_linking_max_seconds` (default 7200; longer recordings keep chunk labels).
+`windows\setup.ps1 -SpeakerLinking` builds NeMo-Speech.cpp and fetches the model; it needs
+Visual Studio 2022 Build Tools (C++ workload), CMake 3.26+, Ninja and Git. Any linking
+failure keeps chunk labels. See SYSTEM.md for cost and limits. The service's vault path
 overrides the pipeline example's path. Its engine processes need no GUI.
 
 ## Install on the Windows receiver
@@ -128,7 +136,7 @@ local mailbox. It cannot read the pairing key or stop the service.
 - Durable windows create one deterministic Markdown note each under
   `Omi/Conversations`. Notes contain recording time, audio link, window offsets,
   engine, speaker-labelled transcript, content type and filtering reason.
-- Anonymous speaker labels are scoped to chunks/windows. Confirmed voice profiles
+- Anonymous speaker labels are scoped to chunks/windows (recording-wide with opt-in speaker linking). Confirmed voice profiles
   can attach names to future recordings with sufficiently strong evidence;
   ambiguous voices remain unidentified. VibeVoice's approximate timing cannot
   provide word-accurate boundaries or clean voice-enrollment samples.
