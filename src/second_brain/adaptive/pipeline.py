@@ -1168,6 +1168,36 @@ def apply_meeting_dedupe(index_path, audio, segments, manifest):
     return decisions.kept
 
 
+def link_recording_speakers(audio, segments, cfg, run_dir, manifest, channel=None):
+    """Relabel MOSS chunk-local speakers with recording-wide ones from Nemotron-3-Diarization
+    (NeMo-Speech.cpp CLI). Off unless both config keys are set; any failure keeps the chunk labels."""
+    from second_brain.adaptive.linking import link_speakers, parse_rttm
+
+    command, model = cfg.get("speaker_linking_command"), cfg.get("speaker_linking_model")
+    if not command or not model:
+        return segments
+    print("=== Speaker linking across chunks ===", flush=True)
+    try:
+        source = run_dir / "linking-input.wav"
+        extract_wav(audio, 0.0, ffprobe_duration(audio), 16000, source, channel)
+        rttm = run_dir / "linking.rttm"
+        run([*command, "diarize", str(source), "--model", str(model), "--format", "rttm", "--output", str(rttm)])
+        mapping, report = link_speakers(segments, parse_rttm(rttm.read_text(encoding="utf-8")))
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+        manifest["fallbacks"].append({"from": "speaker linking", "to": "chunk-local labels",
+                                      "reason": type(error).__name__})
+        print(f"[linking] failed ({type(error).__name__}); keeping chunk-local labels", flush=True)
+        return segments
+    for segment in segments:
+        if segment["speaker"] in mapping:
+            segment["chunk_speaker"] = segment["speaker"]
+            segment["speaker"] = mapping[segment["speaker"]]
+    manifest["speaker_linking"] = report
+    print(f"[linking] {report['labels']} chunk labels -> {report['speakers']} speakers "
+          f"({report['kept_apart']} kept apart, {report['unlinked']} unlinked)", flush=True)
+    return segments
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio", required=True)
@@ -1232,6 +1262,8 @@ def main():
         all_segments, manifest["coarse_chunks"] = transcribe_spans(audio, coarse_spans, cfg, coarse_dir)
 
     all_segments.sort(key=lambda s: (s["start"], s["end"]))
+    all_segments = link_recording_speakers(audio, all_segments, cfg, run_dir, manifest,
+                                           "R" if args.meeting else None)
     (run_dir / "moss_all_segments.json").write_text(
         json.dumps(all_segments, ensure_ascii=False, indent=2), encoding="utf-8"
     )

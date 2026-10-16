@@ -80,5 +80,88 @@ class LinkSpeakersTests(unittest.TestCase):
         self.assertEqual(report["unlinked"], 2)
 
 
+def sine_wav(path: Path, seconds: float, channels: int = 1) -> Path:
+    spec = "|".join(["0.3*sin(2*PI*700*t)"] * channels)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
+                    "-i", f"aevalsrc='{spec}':s=16000:d={seconds}", "-c:a", "pcm_s16le", str(path)], check=True)
+    return path
+
+
+def pipeline_config(root: Path, **extra) -> Path:
+    cfg = json.loads((ROOT / "config/pipeline.example.json").read_text())
+    cfg.update(moss_command=[sys.executable, str(ROOT / "tests/fixtures/fake_moss.py")],
+               scan_vault_for_novelty=False, long_silence_seconds=999, memory_gate_min_words=1,
+               work_root=str(root / "work"), **extra)
+    path = root / "pipeline.json"
+    path.write_text(json.dumps(cfg))
+    return path
+
+
+def run_pipeline(root: Path, audio: Path, out: Path, config: Path, *extra) -> dict:
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")]))
+    proc = subprocess.run([sys.executable, "-m", "second_brain.adaptive.pipeline", "--audio", str(audio),
+                           "--config", str(config), "--output-dir", str(out), "--no-hermes", "--skip-vibe7", *extra],
+                          capture_output=True, text=True, env=env)
+    if proc.returncode:
+        raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+    return json.loads((out / "manifest.json").read_text())
+
+
+FAKE = [sys.executable, str(ROOT / "tests/fixtures/fake_nemo_speech.py")]
+
+
+class PipelineLinkingTests(unittest.TestCase):
+    """Three 2 s MOSS chunks (coarse_max_seconds=2): fake MOSS labels each half S1/S2 per chunk,
+    so without linking there are six labels; the fake diarizer says it is two people."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.audio = sine_wav(cls.root / "omi.wav", 6)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def segments(self, manifest):
+        return [s for w in manifest["windows"] for s in w["moss_segments"]]
+
+    def test_chunk_labels_become_two_recording_wide_speakers(self):
+        config = pipeline_config(self.root, coarse_max_seconds=2,
+                                 speaker_linking_command=FAKE + ["--block", "2"],
+                                 speaker_linking_model=str(self.root / "model.gguf"))
+        manifest = run_pipeline(self.root, self.audio, self.root / "linked", config)
+        labels = {s["speaker"] for s in self.segments(manifest)}
+        self.assertEqual(labels, {"spk1", "spk2"})
+        self.assertEqual({s["chunk_speaker"] for s in self.segments(manifest)},
+                         {f"c000{i}:S{j}" for i in range(3) for j in (1, 2)})
+        self.assertEqual(manifest["speaker_linking"],
+                         {"labels": 6, "linked": 6, "kept_apart": 0, "unlinked": 0, "speakers": 2})
+        received = json.loads((self.root / "linked/linking.rttm.input.json").read_text())
+        self.assertEqual((received["channels"], received["rate"]), (1, 16000))
+        self.assertAlmostEqual(received["duration"], 6, delta=0.1)
+        # The archive carries the linked labels too, with the original kept alongside.
+        archive = json.loads((self.root / "linked/moss_all_segments.json").read_text())
+        self.assertEqual({s["speaker"] for s in archive}, {"spk1", "spk2"})
+
+    def test_linking_is_off_unless_configured(self):
+        manifest = run_pipeline(self.root, self.audio, self.root / "plain",
+                                pipeline_config(self.root, coarse_max_seconds=2))
+        self.assertNotIn("speaker_linking", manifest)
+        self.assertEqual({s["speaker"] for s in self.segments(manifest)},
+                         {f"c000{i}:S{j}" for i in range(3) for j in (1, 2)})
+
+    def test_a_failing_diarizer_keeps_chunk_labels_and_records_a_fallback(self):
+        config = pipeline_config(self.root, coarse_max_seconds=2,
+                                 speaker_linking_command=[sys.executable, "-c", "import sys; sys.exit(3)"],
+                                 speaker_linking_model=str(self.root / "model.gguf"))
+        manifest = run_pipeline(self.root, self.audio, self.root / "failed", config)
+        self.assertNotIn("speaker_linking", manifest)
+        self.assertIn({"from": "speaker linking", "to": "chunk-local labels", "reason": "RuntimeError"},
+                      manifest["fallbacks"])
+        self.assertEqual(len({s["speaker"] for s in self.segments(manifest)}), 6)
+
+
 if __name__ == "__main__":
     unittest.main()
