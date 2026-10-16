@@ -207,7 +207,7 @@ ENTERTAINMENT_PATTERNS = [
 ]
 
 
-def run(cmd, *, capture=True, check=True, env=None):
+def run(cmd, *, capture=True, check=True, env=None, timeout=None):
     print("[run] " + subprocess.list2cmdline([str(x) for x in cmd]), flush=True)
     proc = subprocess.run(
         [str(x) for x in cmd],
@@ -217,7 +217,7 @@ def run(cmd, *, capture=True, check=True, env=None):
         errors="replace",
         check=False,
         env=env,
-        timeout=COMMAND_TIMEOUT,
+        timeout=COMMAND_TIMEOUT if timeout is None else timeout,
     )
     if check and proc.returncode != 0:
         raise RuntimeError(
@@ -1177,6 +1177,12 @@ def link_recording_speakers(audio, segments, cfg, run_dir, manifest, duration, c
     if not command or not model or not any(linking.linkable(str(s["speaker"])) for s in segments):
         return segments
     print("=== Speaker linking across chunks ===", flush=True)
+    if not isinstance(command, list):      # a bare string would be splatted one character per argument
+        manifest["fallbacks"].append({"from": "speaker linking", "to": "chunk-local labels",
+                                      "reason": "speaker_linking_command must be a list"})
+        print("[linking] skipped: speaker_linking_command is not a JSON list; keeping chunk-local labels",
+              flush=True)
+        return segments
     # The CLI holds the whole recording (~19 MB RSS per audio minute) inside the job's timeout.
     if duration > float(cfg.get("speaker_linking_max_seconds", 7200)):
         manifest["fallbacks"].append({"from": "speaker linking", "to": "chunk-local labels",
@@ -1189,8 +1195,17 @@ def link_recording_speakers(audio, segments, cfg, run_dir, manifest, duration, c
         extract_wav(audio, 0.0, duration, 16000, source, channel)
         rttm = run_dir / "linking.rttm"
         rttm.unlink(missing_ok=True)       # a recovered attempt reuses run_dir; the CLI never overwrites
-        run([*command, "diarize", str(source), "--model", str(model), "--format", "rttm", "--output", str(rttm)])
-        mapping, report = linking.link_speakers(segments, linking.parse_rttm(rttm.read_text(encoding="utf-8")))
+        # Its own bound, well inside the job timeout, so a hung diarizer costs only the linking.
+        timeout = float(cfg.get("speaker_linking_timeout_seconds") or 300 + 0.5 * duration)
+        run([*command, "diarize", str(source), "--model", str(model), "--format", "rttm", "--output", str(rttm)],
+            timeout=timeout)
+        turns = linking.parse_rttm(rttm.read_text(encoding="utf-8"))
+        if not turns:                      # a clean exit with nothing heard links nobody: say so
+            manifest["fallbacks"].append({"from": "speaker linking", "to": "chunk-local labels",
+                                          "reason": "no diarization turns"})
+            print("[linking] the diarizer wrote no turns; keeping chunk-local labels", flush=True)
+            return segments
+        mapping, report = linking.link_speakers(segments, turns)
         relabelled = []                    # copies: a failure here must not leave mixed labels behind
         for segment in segments:
             segment = dict(segment)

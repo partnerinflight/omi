@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 import wave
@@ -174,6 +175,18 @@ class PipelineLinkingTests(unittest.TestCase):
         self.assertEqual({s["speaker"] for s in self.segments(manifest)}, {"spk1", "spk2"})
         self.assertFalse([f for f in manifest["fallbacks"] if f["from"] == "speaker linking"])
 
+    def test_a_hung_diarizer_times_out_and_keeps_chunk_labels(self):
+        config = pipeline_config(self.root, coarse_max_seconds=2, speaker_linking_timeout_seconds=1,
+                                 speaker_linking_command=[sys.executable, "-c", "import time; time.sleep(60)"],
+                                 speaker_linking_model=str(self.root / "model.gguf"))
+        started = time.monotonic()
+        manifest = run_pipeline(self.root, self.audio, self.root / "hung", config)
+        self.assertLess(time.monotonic() - started, 45)
+        self.assertNotIn("speaker_linking", manifest)
+        self.assertIn({"from": "speaker linking", "to": "chunk-local labels", "reason": "TimeoutExpired"},
+                      manifest["fallbacks"])
+        self.assertEqual(len({s["speaker"] for s in self.segments(manifest)}), 6)
+
     def test_a_recording_longer_than_the_cap_keeps_chunk_labels(self):
         config = pipeline_config(self.root, coarse_max_seconds=2, speaker_linking_max_seconds=5,
                                  speaker_linking_command=FAKE + ["--block", "2"],
@@ -186,7 +199,46 @@ class PipelineLinkingTests(unittest.TestCase):
         self.assertEqual(len({s["speaker"] for s in self.segments(manifest)}), 6)
 
 
+WRITES_ONE_TURN = ("import sys; a = sys.argv; open(a[a.index('--output') + 1], 'w')"
+                   ".write('SPEAKER rec 1 0.000 2.000 <NA> <NA> speaker_0 <NA> <NA>\\n')")
+WRITES_NOTHING = "import sys; a = sys.argv; open(a[a.index('--output') + 1], 'w').close()"
+
+
 class LinkRecordingSpeakersTests(unittest.TestCase):
+    def link(self, cfg, duration=2.0):
+        from second_brain.adaptive.pipeline import link_recording_speakers
+        manifest = {"fallbacks": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = sine_wav(Path(tmp) / "a.wav", duration)
+            result = link_recording_speakers(str(audio), [seg(0, 2, "c0000:S1")], dict(cfg, speaker_linking_model="m.gguf"),
+                                             Path(tmp), manifest, duration)
+        return result, manifest
+
+    def test_a_diarizer_that_writes_no_turns_is_a_fallback(self):
+        result, manifest = self.link({"speaker_linking_command": [sys.executable, "-c", WRITES_NOTHING]})
+        self.assertEqual(result[0]["speaker"], "c0000:S1")
+        self.assertNotIn("speaker_linking", manifest)
+        self.assertEqual(manifest["fallbacks"],
+                         [{"from": "speaker linking", "to": "chunk-local labels", "reason": "no diarization turns"}])
+
+    def test_a_string_command_is_refused_rather_than_split_per_character(self):
+        result, manifest = self.link({"speaker_linking_command": "C:/engines/nemo-speech.exe"})
+        self.assertEqual(result[0]["speaker"], "c0000:S1")
+        self.assertEqual(manifest["fallbacks"], [{"from": "speaker linking", "to": "chunk-local labels",
+                                                  "reason": "speaker_linking_command must be a list"}])
+
+    def test_the_default_timeout_scales_with_the_recording(self):
+        from second_brain.adaptive import pipeline
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.object(pipeline, "run", side_effect=lambda *a, **kw: calls.append(kw)), \
+                unittest.mock.patch.object(pipeline, "extract_wav"):
+            for extra in ({}, {"speaker_linking_timeout_seconds": 42}):
+                pipeline.link_recording_speakers("a.wav", [seg(0, 2, "c0000:S1")],
+                                                 {"speaker_linking_command": ["x"], "speaker_linking_model": "m",
+                                                  **extra}, Path(tmp), {"fallbacks": []}, 600.0)
+        self.assertEqual([c["timeout"] for c in calls], [600.0, 42.0])
+
     def test_nothing_linkable_never_runs_the_diarizer(self):
         from second_brain.adaptive.pipeline import link_recording_speakers
         segments = [seg(0, 2, "owner"), seg(2, 4, "owner")]
@@ -200,8 +252,7 @@ class LinkRecordingSpeakersTests(unittest.TestCase):
 
     def test_an_unexpected_error_keeps_chunk_labels(self):
         from second_brain.adaptive.pipeline import link_recording_speakers
-        writes_empty_rttm = "import sys; a = sys.argv; open(a[a.index('--output') + 1], 'w').close()"
-        cfg = {"speaker_linking_command": [sys.executable, "-c", writes_empty_rttm],
+        cfg = {"speaker_linking_command": [sys.executable, "-c", WRITES_ONE_TURN],
                "speaker_linking_model": "model.gguf"}
         manifest = {"fallbacks": []}
         with tempfile.TemporaryDirectory() as tmp, \
@@ -211,6 +262,40 @@ class LinkRecordingSpeakersTests(unittest.TestCase):
         self.assertEqual(result[0]["speaker"], "c0000:S1")
         self.assertEqual(manifest["fallbacks"],
                          [{"from": "speaker linking", "to": "chunk-local labels", "reason": "KeyError"}])
+
+class PreflightLinkingTests(unittest.TestCase):
+    def errors(self, root, **pipe):
+        from tests.helpers import configuration
+        from second_brain.preflight import check
+        cfg = configuration(root)
+        data = json.loads(cfg.pipeline_config.read_text())
+        data.update(pipe)
+        cfg.pipeline_config.write_text(json.dumps(data))
+        return [e for e in check(cfg)["errors"] if "linking" in e]
+
+    def test_unconfigured_linking_is_not_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.errors(Path(tmp)), [])
+
+    def test_existing_engine_and_model_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "nemo-speech.exe").write_bytes(b"")
+            (root / "model.gguf").write_bytes(b"")
+            self.assertEqual(self.errors(root, speaker_linking_command=[str(root / "nemo-speech.exe")],
+                                         speaker_linking_model=str(root / "model.gguf")), [])
+
+    def test_missing_or_malformed_settings_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(self.errors(root, speaker_linking_command=str(root / "nemo-speech.exe"),
+                                         speaker_linking_model="model.gguf"),
+                             ["speaker_linking_command must be a JSON list whose first element is an existing "
+                              "absolute executable path",
+                              "speaker_linking_model must be an existing absolute file path"])
+            self.assertEqual(len(self.errors(root, speaker_linking_command=[str(root / "missing.exe")])), 2)
+            self.assertEqual(len(self.errors(root, speaker_linking_model=str(root / "missing.gguf"))), 2)
+
 
 class MeetingLinkingTests(unittest.TestCase):
     def test_remote_channel_is_linked_and_the_owner_is_untouched(self):

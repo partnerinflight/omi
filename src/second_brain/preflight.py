@@ -70,6 +70,15 @@ def check(cfg: Config):
             if not model.is_absolute() or not (model / name).is_file():
                 errors.append("Speaker model is incomplete; run windows/setup-speakers.ps1")
                 break
+    if pipeline.get("speaker_linking_command") or pipeline.get("speaker_linking_model"):
+        command = pipeline.get("speaker_linking_command")
+        model = Path(pipeline.get("speaker_linking_model") or "")
+        if not (isinstance(command, list) and command and Path(str(command[0])).is_absolute()
+                and Path(str(command[0])).is_file()):
+            errors.append("speaker_linking_command must be a JSON list whose first element is an existing "
+                          "absolute executable path")
+        if not model.is_absolute() or not model.is_file():
+            errors.append("speaker_linking_model must be an existing absolute file path")
     for name, path in [
         ("vault", cfg.vault_path / cfg.vault_folder),
         ("data", cfg.data_dir),
