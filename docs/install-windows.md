@@ -49,6 +49,11 @@ Optional switches:
   1660 Super (2026-09-30) it transcribed 3–4.7× faster than 16 CPU threads with
   equivalent text. If the GPU is unavailable, MOSS falls back to the CPU; each
   job's `pipeline.log` names the backend used (`[MOSS] done in … on CUDA0`).
+- `-SpeakerLinking` (`setup.ps1` and `setup-engines.ps1`): build NeMo-Speech.cpp
+  (CPU) and fetch the Nemotron-3-Diarization model so each person gets one label
+  across a recording instead of one per chunk; sets `speaker_linking_command` and
+  `speaker_linking_model`. Needs Visual Studio 2022 Build Tools (C++ workload),
+  CMake 3.26+, Ninja and Git. See [speakers.md](speakers.md) and SYSTEM.md.
 - `-PrepareOnly`: prepare engines/build/test without installing a service.
 - `-EngineRoot`, `-PipelineConfig`: change machine-local destinations.
 

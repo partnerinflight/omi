@@ -367,7 +367,8 @@ class Speakers:
                 label = seg["speaker"]
                 display, person, manual = names.get(label, (label, None, False))
                 # Keep machine labels visible as provenance, never equate a label
-                # from one chunk/file with a label from another.
+                # from one chunk/file with a label from another (with speaker linking
+                # on, labels are recording-wide; still never across files).
                 rows.append(f"[{seg['start']:.2f}-{seg['end']:.2f}] {display} ({label}): {seg['text'].strip()}")
                 if person:
                     identities[label] = {

@@ -107,6 +107,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Speaker encoder interpreter is not runnable' }
         $enginePaths += @($pipeline.speaker_model) + $speakerRoots
     }
+    if ($pipeline.speaker_linking_command) {
+        # The NeMo-Speech exe directory holds its ggml DLLs; the Nemotron GGUF may live elsewhere.
+        if (-not ($pipeline.speaker_linking_command -is [array])) { throw 'speaker_linking_command must be a JSON list' }
+        if (-not $pipeline.speaker_linking_model) { throw 'speaker_linking_model is required with speaker_linking_command' }
+        $enginePaths += @((Split-Path $pipeline.speaker_linking_command[0]), $pipeline.speaker_linking_model)
+    }
     if (-not $SkipVibe7) {
         $vibePython = if ($pipeline.vibe_python) { $pipeline.vibe_python } else { Join-Path $pipeline.vibe_repo '.venv\Scripts\python.exe' }
         $vibeRoots = (& $vibePython -c 'import sys,json; print(json.dumps([sys.prefix,sys.base_prefix]))') | ConvertFrom-Json

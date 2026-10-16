@@ -192,9 +192,13 @@ are authoritative; explain deliberate policy changes.
   separated inside one chunk never merge (Nemotron tracks at most 8 speakers), and a label
   whose best overlap covers under 30% of its speech keeps its own identity. The manifest's
   `speaker_linking` records labels/linked/kept_apart/unlinked/speakers. Not run when no
-  segment is linkable. Any error (or a recording over `speaker_linking_max_seconds`, default
-  7200) keeps chunk labels and adds a `fallbacks` entry (error type name only; details in the
-  private pipeline log); retries and recovery re-run linking cleanly. Measured on the owner's
+  segment is linkable. The CLI gets its own time limit, `speaker_linking_timeout_seconds`
+  (optional; default 300 s plus half the recording length), well inside the job's. Any error,
+  timeout (`TimeoutExpired`), clean exit with no turns (`no diarization turns`), non-list
+  command, or a recording over `speaker_linking_max_seconds` (default 7200) keeps chunk labels
+  and adds a `fallbacks` entry (error type name or short reason only; details in the private
+  pipeline log); retries and recovery re-run linking cleanly. Preflight requires an absolute,
+  existing executable as the command's first element and an existing absolute model file. Measured on the owner's
   M4 Pro: about 10-11% of real time and about 19 MB RSS per audio minute (385 MB for 8.5 min,
   1.57 GB for 70 min), inside the job's total time limit. The CLI needs only `--model` at
   runtime (no network, cache or environment; verified with an empty environment on macOS);

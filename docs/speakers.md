@@ -2,9 +2,9 @@
 
 Click the tray icon to open Second Brain and choose **Speakers** (or use **Review
 speakers** in the tray menu or on the Overview page). Speakers are grouped by
-recording. Each row is a speaker within one recording/chunk, initially
-**Speaker 1**, **Speaker 2**, etc. The same number in another recording does not
-imply the same person. The list shows **Unidentified** speakers by default;
+recording. Each row is a speaker within one recording/chunk (within the whole
+recording when speaker linking is on), initially **Speaker 1**, **Speaker 2**, etc.
+The same number in another recording does not imply the same person. The list shows **Unidentified** speakers by default;
 choose **All** to review or correct existing names. **Ctrl+F** searches by name
 or recording date.
 

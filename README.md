@@ -81,10 +81,11 @@ thresholds, threads and hotwords remain configurable.
 Speaker linking (opt-in) gives each person one label across a recording instead of
 one per chunk: `speaker_linking_command` (JSON list, the `nemo-speech` executable),
 `speaker_linking_model` (Nemotron-3-Diarization GGUF; both `null` = off) and
-`speaker_linking_max_seconds` (default 7200; longer recordings keep chunk labels).
+`speaker_linking_max_seconds` (default 7200; longer recordings keep chunk labels) and
+`speaker_linking_timeout_seconds` (optional; default 300 s plus half the recording length).
 `windows\setup.ps1 -SpeakerLinking` builds NeMo-Speech.cpp and fetches the model; it needs
 Visual Studio 2022 Build Tools (C++ workload), CMake 3.26+, Ninja and Git. Any linking
-failure keeps chunk labels. See SYSTEM.md for cost and limits. The service's vault path
+failure or timeout keeps chunk labels. See SYSTEM.md for cost and limits. The service's vault path
 overrides the pipeline example's path. Its engine processes need no GUI.
 
 ## Install on the Windows receiver
