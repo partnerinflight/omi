@@ -212,5 +212,26 @@ class LinkRecordingSpeakersTests(unittest.TestCase):
         self.assertEqual(manifest["fallbacks"],
                          [{"from": "speaker linking", "to": "chunk-local labels", "reason": "KeyError"}])
 
+class MeetingLinkingTests(unittest.TestCase):
+    def test_remote_channel_is_linked_and_the_owner_is_untouched(self):
+        from tests.test_meetings import make_capture
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = make_capture(root / "capture.caf")          # L owner tone, R remote tone, 10 s
+            cfg = json.loads((ROOT / "config/pipeline.example.json").read_text())
+            cfg.update(moss_command=[sys.executable, str(ROOT / "tests/fixtures/fake_moss_tones.py")],
+                       scan_vault_for_novelty=False, long_silence_seconds=999, memory_gate_min_words=1,
+                       work_root=str(root / "work"), speaker_linking_command=FAKE,
+                       speaker_linking_model=str(root / "model.gguf"))
+            config = root / "pipeline.json"
+            config.write_text(json.dumps(cfg))
+            manifest = run_pipeline(root, capture, root / "run", config, "--meeting")
+            segments = [s for w in manifest["windows"] for s in w["moss_segments"]]
+            self.assertEqual({s["speaker"] for s in segments if s.get("channel") == "L"}, {"owner"})
+            self.assertEqual({s["speaker"] for s in segments if s.get("channel") == "R"}, {"spk1"})
+            received = json.loads((root / "run/linking.rttm.input.json").read_text())
+            self.assertEqual(received["channels"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

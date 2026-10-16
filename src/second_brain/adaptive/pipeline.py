@@ -1191,10 +1191,13 @@ def link_recording_speakers(audio, segments, cfg, run_dir, manifest, duration, c
         rttm.unlink(missing_ok=True)       # a recovered attempt reuses run_dir; the CLI never overwrites
         run([*command, "diarize", str(source), "--model", str(model), "--format", "rttm", "--output", str(rttm)])
         mapping, report = linking.link_speakers(segments, linking.parse_rttm(rttm.read_text(encoding="utf-8")))
+        relabelled = []                    # copies: a failure here must not leave mixed labels behind
         for segment in segments:
+            segment = dict(segment)
             if segment["speaker"] in mapping:
                 segment["chunk_speaker"] = segment["speaker"]
                 segment["speaker"] = mapping[segment["speaker"]]
+            relabelled.append(segment)
     except Exception as error:  # linking is an enhancement: it must never cost the recording its note
         manifest["fallbacks"].append({"from": "speaker linking", "to": "chunk-local labels",
                                       "reason": type(error).__name__})
@@ -1204,7 +1207,7 @@ def link_recording_speakers(audio, segments, cfg, run_dir, manifest, duration, c
     manifest["speaker_linking"] = report
     print(f"[linking] {report['labels']} chunk labels -> {report['speakers']} speakers "
           f"({report['kept_apart']} kept apart, {report['unlinked']} unlinked)", flush=True)
-    return segments
+    return relabelled
 
 def main():
     ap = argparse.ArgumentParser()
