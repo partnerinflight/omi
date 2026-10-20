@@ -30,7 +30,7 @@ if (-not [IO.Path]::IsPathRooted($Vault)) { throw 'Vault must be a local absolut
 if (-not $IncomingDir) { $IncomingDir = Join-Path $DataRoot 'incoming' }
 $reviewSid = (New-Object Security.Principal.NTAccount($ReviewUser)).Translate([Security.Principal.SecurityIdentifier]).Value
 $reviewPrincipal = '*' + $reviewSid
-$paths = @($InstallDir, $DataRoot, "$DataRoot\config", "$DataRoot\data", "$DataRoot\status", "$DataRoot\review", "$DataRoot\review\requests", "$DataRoot\review\responses", "$DataRoot\review\clips", $IncomingDir, "$Vault\Omi\Conversations")
+$paths = @($InstallDir, $DataRoot, "$DataRoot\config", "$DataRoot\data", "$DataRoot\status", "$DataRoot\review", "$DataRoot\review\requests", "$DataRoot\review\responses", "$DataRoot\review\clips", $IncomingDir)
 foreach ($path in $paths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 Run icacls.exe @($DataRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
 foreach ($component in @('service', 'tray')) {
@@ -51,15 +51,31 @@ if ((Test-Path $targetKey) -and (Get-Content $targetKey -Raw).Trim() -ne $key) {
 [IO.File]::WriteAllText($targetKey, $key + "`n")
 $pipelineTarget = "$DataRoot\config\pipeline.json"
 if ([IO.Path]::GetFullPath($PipelineConfig) -ne [IO.Path]::GetFullPath($pipelineTarget)) { Copy-Item $PipelineConfig $pipelineTarget -Force }
-$cfg = [ordered]@{
-    data_dir = "$DataRoot\data"; incoming_dir = [IO.Path]::GetFullPath($IncomingDir)
-    secret_file = $targetKey; pipeline_config = $pipelineTarget
-    vault_path = $Vault; vault_folder = 'Omi/Conversations'
-    status_file = "$DataRoot\status\status.json"; host = '0.0.0.0'; port = $Port
-    poll_seconds = 2; retry_seconds = 60; max_attempts = 5; job_timeout_seconds = 14400
-    skip_vibe7 = [bool]$SkipVibe7; no_hermes = $false; ffmpeg_dir = $FfmpegDir
+# Reinstall keeps every setting the owner or a later feature added; only installer-owned keys
+# change (src/second_brain/install_config.py). Defaults fill keys that are missing.
+$installerKeys = [ordered]@{
+    managed = [ordered]@{
+        data_dir = "$DataRoot\data"; incoming_dir = [IO.Path]::GetFullPath($IncomingDir)
+        secret_file = $targetKey; pipeline_config = $pipelineTarget
+        vault_path = $Vault; status_file = "$DataRoot\status\status.json"; port = $Port
+        ffmpeg_dir = $FfmpegDir; skip_vibe7 = [bool]$SkipVibe7
+    }
+    defaults = [ordered]@{
+        vault_folder = 'Omi/Conversations'; host = '0.0.0.0'
+        poll_seconds = 2; retry_seconds = 60; max_attempts = 5; job_timeout_seconds = 14400
+        no_hermes = $false
+    }
 }
-$cfg | ConvertTo-Json | Set-Content "$DataRoot\config\service.json" -Encoding UTF8
+$installerFile = Join-Path $env:TEMP ('secondbrain-install-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    $installerKeys | ConvertTo-Json -Depth 4 | Set-Content $installerFile -Encoding UTF8
+    Run $workerPython @('-I', '-m', 'second_brain.install_config', '--target', "$DataRoot\config\service.json", '--installer', $installerFile)
+} finally { Remove-Item $installerFile -ErrorAction SilentlyContinue }
+$serviceConfig = Get-Content "$DataRoot\config\service.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+# Omi notes publish to the configured vault_folder, known only after the merge.
+$conversationsFolder = if ($serviceConfig.vault_folder) { $serviceConfig.vault_folder } else { 'Omi/Conversations' }
+$conversationsPath = Join-Path $Vault ($conversationsFolder -replace '/', '\')
+New-Item -ItemType Directory -Force -Path $conversationsPath | Out-Null
 # Surface the preflight's own reasons instead of a bare exit code.
 $checkOutput = & $workerPython -I -m second_brain.cli check --config "$DataRoot\config\service.json"
 if ($LASTEXITCODE -ne 0) {
@@ -93,7 +109,13 @@ try {
     # an explicit entry on every file in large Python/model trees.
     Run icacls.exe @($InstallDir, '/grant:r', "${principal}:(OI)(CI)RX", '/Q')
     Run icacls.exe @($Vault, '/grant', "${principal}:(OI)(CI)RX", '/Q')
-    Run icacls.exe @("$Vault\Omi\Conversations", '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
+    Run icacls.exe @($conversationsPath, '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
+    # Meeting notes publish here (meetings_vault_folder). Granted even while meetings are off, so
+    # turning them on later needs no reinstall. Config.load already rejects unsafe folder values.
+    $meetingsFolder = if ($serviceConfig.meetings_vault_folder) { $serviceConfig.meetings_vault_folder } else { 'Omi/Meetings' }
+    $meetingsPath = Join-Path $Vault ($meetingsFolder -replace '/', '\')
+    New-Item -ItemType Directory -Force $meetingsPath | Out-Null
+    Run icacls.exe @($meetingsPath, '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
     # The knowledge router appends under "## Router Inbox" in these folders (router_enabled).
     foreach ($folder in @('People', 'Projects', 'Topics', 'Decisions', 'Ideas', 'Daily', 'System\Router')) {
         New-Item -ItemType Directory -Force "$Vault\$folder" | Out-Null
