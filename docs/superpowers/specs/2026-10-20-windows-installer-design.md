@@ -1,6 +1,6 @@
 # Windows installer — design
 
-Date: 2026-10-20. Status: approved design, not yet implemented.
+Date: 2026-10-20. Status: approved design; amended 2026-10-20 (local build, see Decisions). Phase 1 implemented.
 
 ## Problem
 
@@ -17,9 +17,11 @@ source, and runs several PowerShell scripts with long argument lists. Upgrades a
 ## Decisions (owner, 2026-10-17 to 2026-10-20)
 
 - Audience: the owner's own PCs only. Unsigned; one SmartScreen warning is acceptable.
-- Delivery: one `SecondBrain-Setup-<version>.exe` built by CI and attached to a GitHub Release
-  of the public repository. Publishing a release is an outward action: the first one is made
-  only with explicit owner confirmation.
+- Delivery (amended 2026-10-20): the owner builds `SecondBrain-Setup-<version>.exe` on the Windows
+  box with one script, `installer\build-installer.ps1`, into `dist\installer\`. Nothing is
+  published; no GitHub Release is used. The voice-matching and 7B runtimes are inside Setup.exe
+  (about 3.5 GB). GitHub's Windows CI runner runs the same script in a slim mode (no CUDA, no
+  large runtimes) so breakage is caught; the build never runs on the owner's Mac.
 - Models download during install (pinned revision + SHA-256); runtime stays offline.
 - GPU: MOSS ships both CPU and CUDA builds; the installer picks CUDA when an NVIDIA GPU is present.
 - Components, all on by default: voice matching, speaker linking, VibeVoice 7B refinement.
@@ -53,32 +55,30 @@ and models unless the owner ticks "Also delete my data and models".
 
 ## 2. Build
 
-`.github/workflows/release.yml`, triggered by a `v*` tag, on `windows-latest`:
+`installer\build-installer.ps1`, run by the owner on the Windows box (prerequisites: Visual Studio
+2022 Build Tools with the C++ workload, CMake 3.26+, Ninja, Git, .NET 10 SDK, CUDA Toolkit, Inno
+Setup 6). It stages everything under `dist\installer\payload\` and compiles the wizard:
 
-| Piece | Built from | Shipped |
+| Piece | Built from | Staged as |
 |---|---|---|
-| Service, tray | `dotnet publish --self-contained` (as `windows/build.ps1`) | in Setup.exe |
-| App Python | python-build-standalone CPython 3.12 (relocatable) with app wheels installed into it; no venv | in Setup.exe |
-| MOSS CPU, MOSS CUDA | `windows/build-moss.ps1` twice; CUDA Toolkit installed on the runner; CUDA runtime DLLs next to the CUDA CLI | in Setup.exe |
-| NeMo-Speech.cpp CPU | `windows/build-nemo-speech.ps1` | in Setup.exe |
-| ffmpeg | pinned LGPL build, SHA-256 checked, licence included | in Setup.exe |
-| Voice-matching runtime | standalone CPython + torch 2.8.0 CPU + speechbrain 1.0.3 | release asset `.zip` (~250 MB) |
-| 7B runtime, CUDA | standalone CPython + CUDA PyTorch + transformers 4.51.3 + VibeVoice (pinned) + accelerate | release asset `.zip` (~2.5 GB) |
-| 7B runtime, CPU | as today's CPU environment | release asset `.zip` (~350 MB) |
+| Service, tray | `dotnet publish --self-contained` (as `windows/build.ps1`) | `app\service`, `app\tray` |
+| App Python | python-build-standalone CPython 3.12 (pinned, relocatable) with app wheels installed into it; no venv | `app\python` |
+| MOSS CPU, MOSS CUDA | `windows/build-moss.ps1` twice; CUDA runtime DLLs next to the CUDA CLI | `engines\moss-cpu`, `engines\moss-cuda` |
+| NeMo-Speech.cpp CPU | `windows/build-nemo-speech.ps1` | `engines\nemo-speech` |
+| ffmpeg | pinned LGPL build, SHA-256 checked, licence included | `engines\ffmpeg` |
+| Voice-matching runtime | standalone CPython + torch 2.8.0 CPU + speechbrain 1.0.3 | `runtimes\voice` |
+| 7B runtime | standalone CPython + CUDA PyTorch + transformers 4.51.3 + VibeVoice (pinned) + accelerate; CUDA PyTorch also runs on CPU, so one runtime covers both | `runtimes\vibe` |
 | Models | not built: Hugging Face, pinned revisions in `config/engines.lock.json` plus SHA-256 | downloaded at install |
-| `release-manifest.json` | `scripts/make-manifest.py`: every download's URL, size, SHA-256 | in Setup.exe |
+| `release-manifest.json` | `scripts/make-manifest.py`: version, component sizes, model URLs/revisions/SHA-256 | `payload\` |
 
-GitHub release assets are limited to 2 GB per file. If the CUDA 7B runtime exceeds that, split
-it into numbered parts listed in the manifest. Setup.exe is about 700 MB.
+`-Slim` (used by CI): skips the CUDA MOSS build and both ML runtimes; the wizard then offers only
+the components present in the payload.
 
 Repository changes:
-- New: `installer/SecondBrain.iss` (wizard); `installer/install-core.ps1` (all install/upgrade
-  steps the wizard runs, non-interactive, parameterised); `installer/benchmark-7b.ps1`;
-  `scripts/make-manifest.py`; `.github/workflows/release.yml`.
-- `windows/install.ps1` becomes a thin wrapper over `install-core.ps1`, so the source-checkout
-  path (`windows/setup.ps1`) and the installer share one implementation.
-- Fixed in the shared core: config merge (existing values win; new keys get defaults; covers
-  `service.json` and `pipeline.json`), and write grants for `meetings_vault_folder`.
+- New: `installer/build-installer.ps1`; `installer/SecondBrain.iss` (wizard); `installer/install-core.ps1`
+  (done in phase 1); `installer/benchmark-7b.ps1`; `scripts/make-manifest.py`; a CI step running
+  `build-installer.ps1 -Slim`.
+- `windows/install.ps1` stays a thin wrapper over `install-core.ps1` (done in phase 1).
 - `src/second_brain/adaptive/runners/vibe_batch_runner.py`: new `vibe_7b_device` value
   `cuda-offload` → `device_map="auto"` with `max_memory` derived from free GPU memory, fp16
   (Turing has no bf16). `cuda` and `cpu` keep today's behaviour.
@@ -97,7 +97,7 @@ Repository changes:
   `vibe_7b_device`; a CUDA failure (out of memory, old driver) keeps CPU with the reason shown.
 
 Testing:
-- CI, every release build: build Setup.exe, then silent install (`/VERYSILENT` + a test answer
+- CI, every push: `build-installer.ps1 -Slim`, then silent install (`/VERYSILENT` + a test answer
   file) → upgrade over it → uninstall keeping data → reinstall, on the Windows runner. Assert the
   service runs, a synthetic recording produces a note (reuse `windows/smoke-test.ps1`), and
   settings (including `meetings_enabled`) survive upgrade. Components point at small fixture
@@ -113,7 +113,8 @@ default service account model.
 ## Implementation phases (each its own plan)
 
 1. Shared install core: `install-core.ps1`, config merge, meetings grant, `install.ps1` wrapper
-   (fixes both bugs for the existing path first).
-2. Release build: workflow, prebuilt engines and runtimes, standalone Python, manifest.
+   (fixes both bugs for the existing path first). Done 2026-10-20 (Windows CI green).
+2. Local build: `build-installer.ps1` staging the payload (engines, standalone Pythons, runtimes,
+   manifest) with `-Slim` for CI.
 3. Wizard: `SecondBrain.iss`, downloads, GPU detection, upgrade/rollback/uninstall, CI silent tests.
 4. 7B CUDA offload: runner change, CUDA runtime, benchmark.
