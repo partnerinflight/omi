@@ -46,6 +46,19 @@ jobs:
         run: ./windows/smoke-test.ps1
       - name: Build pinned MOSS runtime on Windows
         run: ./windows/build-moss.ps1 -EngineRoot "$env:RUNNER_TEMP/second-brain-engines"
+      - name: Stage the installer payload (slim)
+        shell: pwsh
+        run: ./installer/build-installer.ps1 -Slim -Version ci -CacheDir "$env:RUNNER_TEMP/sb-build-cache"
+      - name: Payload runs outside the checkout
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: |
+          $payload = "${{ github.workspace }}/dist/installer/payload"
+          & "$payload/app/python/python.exe" -I -m second_brain.cli --help
+          if ($LASTEXITCODE -ne 0) { throw 'payload Python cannot start the service CLI' }
+          $decoders = & "$payload/engines/ffmpeg/bin/ffmpeg.exe" -hide_banner -decoders
+          if (-not ($decoders | Select-String ' opus ')) { throw 'payload ffmpeg has no Opus decoder' }
+          Get-Content "$payload/release-manifest.json"
       - uses: actions/upload-artifact@v4
         with:
           name: second-brain-windows-x64
