@@ -5,8 +5,7 @@ import re
 from pathlib import Path
 
 from .router import MANAGED_HEADER
-
-MARKER = re.compile(r"<!-- router:([a-f0-9]+) -->")
+from .router_markers import MARKER, marker
 
 
 def clean_note(text: str, remove: set[str]) -> tuple[str, list[str]]:
@@ -36,7 +35,7 @@ def clean_note(text: str, remove: set[str]) -> tuple[str, list[str]]:
                     source_lines = lines[i + 1:end]
                     if all(re.match(r"^(?:  |&#x20;)*Source:", s) for s in source_lines):
                         body = body.replace("&#x20;", " ").rstrip().removesuffix("\\").rstrip()
-                        output.append(f"{body} <!-- router:{eid} -->\n")
+                        output.append(f"{body} {marker(eid)}\n")
                     else:
                         output.append(block)
                 i = end

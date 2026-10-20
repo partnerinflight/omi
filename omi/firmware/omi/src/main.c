@@ -144,7 +144,24 @@ void set_led_state()
         return;
     }
 
-    /* Manual pause is explicit privacy feedback, including during uploads. */
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    // Setup and active transfers temporarily override manual-pause feedback.
+    if (wifi_upload_provisioning()) {
+        set_led_green(false);
+        set_led_blue(blink_toggle);
+        set_led_red(false);
+        return;
+    }
+    if (wifi_upload_active() || storage_transfer_active()) {
+        set_led_green(true);
+        set_led_blue(blink_toggle);
+        set_led_red(false);
+        blink_toggle = !blink_toggle;
+        return;
+    }
+#endif
+
+    /* Restore privacy feedback when setup/transfer ends; the mic stays paused. */
     if (mic_is_manually_paused()) {
         set_led_green(false);
         set_led_blue(false);
@@ -153,21 +170,6 @@ void set_led_state()
     }
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    // Uploading over Wi-Fi (only ever on the charger): solid green + blue blink.
-    if (wifi_upload_provisioning()) {
-        set_led_green(false);
-        set_led_blue(blink_toggle);
-        set_led_red(false);
-        return;
-    }
-    if (wifi_upload_active()) {
-        set_led_green(true);
-        set_led_blue(blink_toggle);
-        set_led_red(false);
-        blink_toggle = !blink_toggle;
-        return;
-    }
-
     // Storage full: recording is paused (old audio is never overwritten).
     // Alternate red/blue every second -- a pattern no other state uses -- and
     // buzz once on the transition so it is noticed while worn.

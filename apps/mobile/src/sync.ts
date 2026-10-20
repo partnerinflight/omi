@@ -1,0 +1,405 @@
+// Phone side of the sync contract (docs/mobile/architecture-and-sync.md):
+// push the first queued operation per entity, then pull ordered changes.
+// Foreground only: callers trigger it on open/resume, after edits, on a timer
+// and on manual refresh. Background execution is never required for correctness.
+import { getMeta, setMeta, upsertServerCommand, upsertServerMemory, upsertServerTodo, type Db, type ServerCommand, type ServerMemory,
+  type ServerTodo } from './db.ts';
+
+export type Tokens = { access_token: string; refresh_token: string };
+
+export interface TokenStore {
+  get(): Promise<Tokens | null>;
+  set(tokens: Tokens): Promise<void>;
+  clear(): Promise<void>;
+}
+
+export type SyncState = 'unpaired' | 'synced' | 'offline' | 'auth_required' | 'error';
+
+export type SyncStatus = {
+  state: SyncState;
+  pending: number;
+  problems: number;
+  lastSuccessAt: string | null;
+  error: string | null;
+  restoreLost: number; // memory edits a server restore discarded; shown until acknowledged
+};
+
+type Options = {
+  fetch?: typeof fetch;
+  newId: () => string;
+  random?: () => number;
+  now?: () => number;
+  allowHttpLocalhost?: boolean; // development only; production requires verified HTTPS
+};
+
+class AuthRequired extends Error {}
+class HttpError extends Error {
+  status: number;
+  retryAfter?: number;
+  constructor(status: number, retryAfter?: number) {
+    super(`HTTP ${status}`);
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
+const TIMEOUT_MS = 15_000;
+const MAX_BACKOFF_MS = 5 * 60_000;
+const PUSH_BATCH = 100;
+const PULL_PAGE = 500;
+
+export function serverUrlProblem(url: string, allowHttpLocalhost = false): string | null {
+  if (/^https:\/\/[^/\s]+$/.test(url)) return null;
+  if (allowHttpLocalhost && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(url)) return null;
+  return 'Use an https:// address with no path.';
+}
+
+export type WorkerRecord<T> = { id: string; hash: string; data: T; updated_at: string };
+
+async function upsertEntity(txn: Parameters<typeof upsertServerTodo>[0], type: string, entity: any) {
+  if (type === 'todo') await upsertServerTodo(txn, entity);
+  if (type === 'command') await upsertServerCommand(txn, entity);
+  if (type === 'memory') await upsertServerMemory(txn, entity);
+}
+
+export type Pipeline = {
+  workers: { name: string; last_seen_at: string | null; status: { jobs?: Record<string, number>; routes_pending?: number; export_conflicts?: number } | null }[];
+  counts: Partial<Record<'source' | 'item' | 'person' | 'observation', number>>;
+  oldest_pending_command_at: string | null;
+};
+
+export function createSync(db: Db, tokens: TokenStore, opts: Options) {
+  const http = opts.fetch ?? fetch;
+  const now = opts.now ?? Date.now;
+  const random = opts.random ?? Math.random;
+  let running: Promise<SyncStatus> | null = null;
+  let again = false;
+  let refreshes: Promise<unknown> = Promise.resolve();
+
+  async function request(url: string, init: RequestInit = {}) {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
+    try {
+      return await http(url, { ...init, signal: abort.signal, headers: { 'Content-Type': 'application/json', ...init.headers } });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function serverUrl() {
+    const url = await getMeta(db, 'server_url');
+    if (!url) throw new AuthRequired('not paired');
+    return url;
+  }
+
+  async function refresh(url: string, current: Tokens) {
+    // ponytail: a lost refresh response leaves a used token, and reusing it revokes
+    // the device (theft detection), so the phone must pair again. Add a server-side
+    // grace window if that happens in practice.
+    const res = await request(`${url}/v1/auth/refresh`, { method: 'POST', body: JSON.stringify({ refresh_token: current.refresh_token }) });
+    if (res.status === 401) throw new AuthRequired('refresh rejected');
+    if (!res.ok) throw new HttpError(res.status);
+    const next = await res.json();
+    await tokens.set({ access_token: next.access_token, refresh_token: next.refresh_token });
+  }
+
+  // Serialized: two callers refreshing with the same token would look like theft and revoke
+  // the device. A caller whose token was already replaced just retries with the new one.
+  function refreshAfter(url: string, rejected: string) {
+    const next = refreshes.then(async () => {
+      const current = await tokens.get();
+      if (!current) throw new AuthRequired('no credentials');
+      if (current.access_token === rejected) await refresh(url, current);
+    });
+    refreshes = next.catch(() => {});
+    return next;
+  }
+
+  async function api(path: string, init: RequestInit = {}, retried = false): Promise<Response> {
+    const url = await serverUrl();
+    const current = await tokens.get();
+    if (!current) throw new AuthRequired('no credentials');
+    const res = await request(url + path, { ...init, headers: { Authorization: `Bearer ${current.access_token}` } });
+    if (res.status === 401 && !retried) {
+      await refreshAfter(url, current.access_token);
+      return api(path, init, true);
+    }
+    if (res.status === 401) throw new AuthRequired('access rejected');
+    if (res.status === 429 || res.status >= 500) {
+      throw new HttpError(res.status, Number(res.headers.get('Retry-After')) || undefined);
+    }
+    return res;
+  }
+
+  // A restored server lacks whatever it accepted after its backup. This phone still holds those
+  // acknowledged values, so it queues them again ahead of its unsent edits instead of dropping
+  // them; other phones and the usual conflict rules then apply. Memories the server no longer
+  // has at all come back from the Windows worker as new proposals, so edits to those are
+  // reported (restore_lost) rather than silently lost.
+  async function recoverLostEdits(txn: Parameters<typeof upsertServerTodo>[0], snapshot: { todos: ServerTodo[]; memories: ServerMemory[] }) {
+    const ops: { type: string; id: string; action: string; payload: object }[] = [];
+    const todos = new Map(snapshot.todos.map((t) => [t.id, t]));
+    // ponytail: title and state only; a snooze set after the backup (Telegram-only) is not recovered.
+    for (const local of await txn.getAllAsync<ServerTodo>('SELECT * FROM server_todos WHERE deleted_at IS NULL')) {
+      const server = todos.get(local.id);
+      if (server && server.revision >= local.revision) continue;
+      if (!server) ops.push({ type: 'todo', id: local.id, action: 'create', payload: { title: local.title } });
+      else if (server.title !== local.title) ops.push({ type: 'todo', id: local.id, action: 'set_title', payload: { title: local.title } });
+      if ((server?.state ?? 'open') !== local.state) ops.push({ type: 'todo', id: local.id, action: 'set_state', payload: { state: local.state } });
+    }
+    const memories = new Map(snapshot.memories.map((m) => [m.id, m]));
+    let lost = 0;
+    for (const row of await txn.getAllAsync<{ data: string }>('SELECT data FROM server_memories')) {
+      const local = JSON.parse(row.data) as ServerMemory;
+      const server = memories.get(local.id);
+      if (local.revision <= 1 || (server && server.revision >= local.revision)) continue;
+      if (!server) { lost += 1; continue; }
+      if (server.text !== local.text) ops.push({ type: 'memory', id: local.id, action: 'set_text', payload: { text: local.text } });
+      if (server.state !== local.state) ops.push({ type: 'memory', id: local.id, action: 'set_state', payload: { state: local.state } });
+    }
+    // Negative seqs sort before every queued edit, which was made on top of these values.
+    const first = (await txn.getFirstAsync<{ s: number | null }>('SELECT MIN(seq) AS s FROM outbox'))?.s ?? 1;
+    for (const [i, op] of ops.entries()) {
+      await txn.runAsync(
+        'INSERT INTO outbox (seq, operation_id, entity_type, entity_id, action, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        Math.min(first, 1) - ops.length + i - 1, opts.newId(), op.type, op.id, op.action, JSON.stringify(op.payload), new Date(now()).toISOString(),
+      );
+    }
+    if (lost) await setMeta(txn, 'restore_lost', lost);
+  }
+
+  async function push() {
+    for (;;) {
+      // The oldest operation per entity, unless it is stuck: later edits wait behind it.
+      const ops = await db.getAllAsync<{ seq: number; operation_id: string; entity_type: string; entity_id: string;
+        action: string; payload: string; sent_base_revision: number | null }>(
+        `SELECT o.* FROM outbox o
+         WHERE o.status = 'pending' AND o.seq = (SELECT MIN(seq) FROM outbox p WHERE p.entity_id = o.entity_id)
+         ORDER BY o.seq LIMIT ?`, PUSH_BATCH,
+      );
+      if (ops.length === 0) return;
+
+      await db.withExclusiveTransactionAsync(async (txn) => {
+        for (const op of ops) {
+          if (op.sent_base_revision !== null) continue;
+          const table = op.entity_type === 'memory' ? 'server_memories' : 'server_todos'; // commands are creates
+          const row = await txn.getFirstAsync<{ revision: number }>(`SELECT revision FROM ${table} WHERE id = ?`, op.entity_id);
+          op.sent_base_revision = op.action === 'create' ? 0 : row?.revision ?? 0;
+          await txn.runAsync('UPDATE outbox SET sent_base_revision = ? WHERE seq = ?', op.sent_base_revision, op.seq);
+        }
+      });
+
+      const res = await api('/v1/operations', {
+        method: 'POST',
+        body: JSON.stringify({ operations: ops.map((op) => ({ operation_id: op.operation_id, entity_type: op.entity_type,
+          entity_id: op.entity_id, base_revision: op.sent_base_revision, action: op.action, payload: JSON.parse(op.payload) })) }),
+      });
+      if (!res.ok) throw new HttpError(res.status);
+      const { results } = (await res.json()) as { results: { operation_id: string; outcome: string; error: string | null; entity: any }[] };
+      const types = new Map(ops.map((op) => [op.operation_id, op.entity_type]));
+
+      await db.withExclusiveTransactionAsync(async (txn) => {
+        for (const r of results) {
+          if (r.entity) await upsertEntity(txn, types.get(r.operation_id)!, r.entity);
+          const sent = ops.find((op) => op.operation_id === r.operation_id)!;
+          // Operations set desired values, so a conflict where the server already holds exactly
+          // those values is no conflict (two phones replaying the same edits after a restore).
+          const same = r.outcome === 'conflict' && r.entity && sent.entity_type !== 'command'
+            && Object.entries(JSON.parse(sent.payload)).every(([k, v]) => k === 'legacy_id' || r.entity[k] === v);
+          if (r.outcome === 'applied' || same) {
+            await txn.runAsync('DELETE FROM outbox WHERE operation_id = ?', r.operation_id);
+          } else {
+            await txn.runAsync('UPDATE outbox SET status = ?, error = ?, server_entity = ? WHERE operation_id = ?',
+              r.outcome === 'conflict' ? 'conflict' : 'rejected', r.error, r.entity ? JSON.stringify(r.entity) : null, r.operation_id);
+          }
+        }
+      });
+    }
+  }
+
+  async function bootstrap(restored = false) {
+    const res = await api('/v1/bootstrap');
+    if (!res.ok) throw new HttpError(res.status);
+    const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[]; commands: ServerCommand[]; memories: ServerMemory[] };
+    // Replaces only acknowledged state, atomically; the outbox is untouched.
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      if (restored) await recoverLostEdits(txn, snapshot);
+      await txn.runAsync('DELETE FROM server_todos');
+      await txn.runAsync('DELETE FROM server_commands');
+      await txn.runAsync('DELETE FROM server_memories');
+      for (const m of snapshot.memories) await upsertServerMemory(txn, m);
+      for (const t of snapshot.todos) await upsertServerTodo(txn, t);
+      for (const c of snapshot.commands) await upsertServerCommand(txn, c);
+      await setMeta(txn, 'cursor', snapshot.cursor);
+    });
+  }
+
+  async function pull() {
+    for (;;) {
+      const cursor = await getMeta(db, 'cursor');
+      if (!cursor) return bootstrap().then(() => false);
+      const res = await api(`/v1/changes?cursor=${encodeURIComponent(cursor)}&limit=${PULL_PAGE}`);
+      if (res.status === 410) {
+        await setMeta(db, 'cursor', null); // server restored or epoch changed
+        await bootstrap(true);
+        return true;
+      }
+      if (!res.ok) throw new HttpError(res.status);
+      const page = (await res.json()) as { cursor: string; has_more: boolean; changes: { entity_type: string; entity: any }[] };
+      await db.withExclusiveTransactionAsync(async (txn) => {
+        for (const c of page.changes) await upsertEntity(txn, c.entity_type, c.entity);
+        await setMeta(txn, 'cursor', page.cursor);
+      });
+      if (!page.has_more) return false;
+    }
+  }
+
+  async function status(): Promise<SyncStatus> {
+    const counts = await db.getFirstAsync<{ pending: number; problems: number }>(
+      "SELECT COUNT(*) AS pending, COALESCE(SUM(status != 'pending'), 0) AS problems FROM outbox",
+    );
+    const paired = (await getMeta(db, 'server_url')) !== null;
+    return {
+      state: paired ? ((await getMeta(db, 'state')) as SyncState | null) ?? 'offline' : 'unpaired',
+      pending: counts?.pending ?? 0,
+      problems: counts?.problems ?? 0,
+      lastSuccessAt: await getMeta(db, 'last_success_at'),
+      error: await getMeta(db, 'last_error'),
+      restoreLost: Number(await getMeta(db, 'restore_lost') ?? 0),
+    };
+  }
+
+  async function finish(state: SyncState, error: string | null = null) {
+    await setMeta(db, 'state', state);
+    await setMeta(db, 'last_error', error);
+    return status();
+  }
+
+  async function run(force: boolean): Promise<SyncStatus> {
+    const state = await getMeta(db, 'state');
+    if (!(await getMeta(db, 'server_url')) || state === 'auth_required') return status();
+    const nextAttempt = Number(await getMeta(db, 'next_attempt_at') ?? 0);
+    if (!force && now() < nextAttempt) return status(); // still backing off
+    try {
+      await push();
+      if (await pull()) await push(); // a restore re-queued acknowledged edits: send them now
+      await setMeta(db, 'failures', 0);
+      await setMeta(db, 'next_attempt_at', null);
+      await setMeta(db, 'last_success_at', new Date(now()).toISOString());
+      return finish('synced');
+    } catch (e) {
+      if (e instanceof AuthRequired) {
+        // Do not spin: keep every edit and wait for the user to pair again.
+        return finish('auth_required');
+      }
+      const failures = Number(await getMeta(db, 'failures') ?? 0) + 1;
+      const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** failures) * (0.5 + random() / 2);
+      const wait = e instanceof HttpError && e.retryAfter ? Math.max(e.retryAfter * 1000, backoff) : backoff;
+      await setMeta(db, 'failures', failures);
+      await setMeta(db, 'next_attempt_at', now() + wait);
+      // Network failures and timeouts are offline; server responses are errors.
+      return e instanceof HttpError ? finish('error', e.message) : finish('offline');
+    }
+  }
+
+  return {
+    status,
+
+    // Read-only shadow import from the Windows worker; online only, nothing cached.
+    async pipeline(): Promise<Pipeline> {
+      const res = await api('/v1/pipeline');
+      if (!res.ok) throw new HttpError(res.status);
+      return res.json();
+    },
+
+    async records<T>(kind: 'person' | 'observation' | 'clarification'): Promise<WorkerRecord<T>[]> {
+      const res = await api(`/v1/pipeline/records?kind=${kind}&limit=500`);
+      if (!res.ok) throw new HttpError(res.status);
+      return (await res.json()).records;
+    },
+
+    // For the audio player, which fetches the clip itself: one authenticated call first
+    // so an expired access token is refreshed before the player uses it.
+    async clipSource(observation: string, n: number) {
+      await api('/v1/pipeline');
+      const url = await serverUrl();
+      const current = await tokens.get();
+      return { uri: `${url}/v1/clips/${encodeURIComponent(observation)}/${n}`,
+        headers: { Authorization: `Bearer ${current?.access_token ?? ''}` } };
+    },
+
+    // Single flight. A trigger during a run (say, an edit made mid-pull) causes one
+    // more run afterwards, so the edit is not left waiting for the next timer tick.
+    sync(force = false) {
+      if (running) {
+        again = true;
+        return running;
+      }
+      running = (async () => {
+        let result: SyncStatus;
+        do {
+          again = false;
+          result = await run(force);
+        } while (again && result.state === 'synced');
+        return result;
+      })().finally(() => (running = null));
+      return running;
+    },
+
+    async pair(url: string, code: string) {
+      url = url.trim().replace(/\/+$/, '');
+      const problem = serverUrlProblem(url, opts.allowHttpLocalhost);
+      if (problem) throw new Error(problem);
+      const existing = await getMeta(db, 'server_url');
+      // Caches and queued edits are bound to one server (invariant 8).
+      if (existing && existing !== url) throw new Error('Sign out of the current server first.');
+      const res = await request(`${url}/v1/pair`, { method: 'POST', body: JSON.stringify({ code }) });
+      if (res.status === 401) throw new Error('That code is invalid or expired.');
+      if (res.status === 429) throw new Error('Too many attempts. Try again later.');
+      if (!res.ok) throw new Error(`Pairing failed (HTTP ${res.status}).`);
+      const body = await res.json();
+      await tokens.set({ access_token: body.access_token, refresh_token: body.refresh_token });
+      await db.withExclusiveTransactionAsync(async (txn) => {
+        await setMeta(txn, 'server_url', url);
+        await setMeta(txn, 'device_id', body.device_id);
+        await setMeta(txn, 'state', 'offline'); // until the first successful sync
+        await setMeta(txn, 'failures', 0);
+        await setMeta(txn, 'next_attempt_at', null);
+      });
+    },
+
+    async resolve(seq: number, choice: 'keep_mine' | 'discard') {
+      if (choice === 'discard') {
+        await db.runAsync("DELETE FROM outbox WHERE seq = ? AND status != 'pending'", seq);
+        return;
+      }
+      // A new operation against the latest server revision (invariant 3).
+      await db.runAsync(
+        `UPDATE outbox SET status = 'pending', error = NULL, server_entity = NULL, sent_base_revision = NULL, operation_id = ?
+         WHERE seq = ? AND status = 'conflict' AND action != 'create'`,
+        opts.newId(), seq,
+      );
+    },
+
+    async acknowledgeRestore() {
+      await setMeta(db, 'restore_lost', null);
+    },
+
+    // Without discard, refuses while edits are queued so the UI can warn first.
+    async signOut(discard: boolean) {
+      const { pending } = await status();
+      if (pending > 0 && !discard) return { signedOut: false, pending };
+      const current = await tokens.get();
+      const url = await getMeta(db, 'server_url');
+      if (current && url) {
+        await request(`${url}/v1/auth/revoke`, { method: 'POST', headers: { Authorization: `Bearer ${current.access_token}` } })
+          .catch(() => undefined); // offline: revocation cannot reach the server, local data is still cleared
+      }
+      await tokens.clear();
+      await db.execAsync('DELETE FROM outbox; DELETE FROM server_todos; DELETE FROM server_commands; DELETE FROM server_memories; DELETE FROM sync_meta;');
+      return { signedOut: true, pending: 0 };
+    },
+  };
+}
+
+export type Sync = ReturnType<typeof createSync>;

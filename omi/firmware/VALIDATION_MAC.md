@@ -627,3 +627,22 @@ After reset, SMP reports `2cd165b5…` active/confirmed/bootable and GATT report
 `[1612195, 1659890)` with zero dropped packets; the write sequence advanced past the
 pre-flash `1652470`, so recording continues. Wi-Fi upload state was not re-read. Whether
 car audio sounds better is an on-device user check.
+
+## Firmware 3.0.22-localwifi.19: transfer LED while paused — 2026-10-08
+
+The LED selector previously returned the manual-pause red pulse before checking
+uploads. Setup and active transfers now take precedence; Wi-Fi uploads and BLE
+storage transfers show solid green with blinking blue, then return to paused red
+when the transfer finishes or stops. Neither charging nor an idle BLE connection
+alone overrides pause. This only changes the indicator, not microphone state.
+
+Five native C tests passed on Windows using installed Clang: the production LED
+selector, three manual-recording tests, and BLE-disconnect storage ownership.
+The LED regression covers both transports, both pause/blink phases, charging on/off,
+device-off precedence, and returning to pause while warnings are present.
+Physical LED behavior is not yet verified; this revision has not been flashed.
+
+NCS 2.9.0 Wi-Fi sysbuild passed on Windows; both OTA image signatures verified OK.
+Archive: `C:\ncs\build\Omi_CV1_OTA_3.0.22-localwifi.19.zip`.
+ZIP SHA-256: `f5d7b0c5904b59c338353ea8b3b01b35001fc5888607d083f22fd2ccb3dbd432`.
+App digest: `174212e260eca36133d98fba38cf019b2055b3a54423326105cad45c52ddfcc1`.

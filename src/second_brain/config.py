@@ -46,6 +46,10 @@ class Config:
     meetings_enabled: bool = False
     meetings_vault_folder: str = "Omi/Meetings"
     owner_name: str = "Me"  # who speaks on a meeting capture's mic channel
+    # Opt-in outbound export to the selfhosted server (docs/mobile/). Empty URL = off.
+    bridge_url: str = ""
+    bridge_token_file: str = ""  # absolute; separate from the Omi pairing key
+    bridge_seconds: float = 60
 
     @property
     def review_dir(self):
@@ -78,6 +82,14 @@ class Config:
             ord(c) < 32 or c in "[]<>\\|" for c in owner
         ):
             raise ValueError("owner_name must be 1–80 characters without control characters or markup brackets")
+        if cfg.bridge_url:
+            from urllib.parse import urlsplit
+            url = urlsplit(cfg.bridge_url)
+            local = url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost")
+            if not (url.scheme == "https" or local) or not url.hostname or url.username or url.query:
+                raise ValueError("bridge_url must be an https:// server address")
+            if not Path(cfg.bridge_token_file).is_absolute() or cfg.bridge_seconds < 5:
+                raise ValueError("bridge_token_file must be an absolute path and bridge_seconds at least 5")
         return cfg
 
     def pipeline(self):

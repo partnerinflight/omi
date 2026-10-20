@@ -35,7 +35,8 @@ int main(void) {
     return 0;
 }
 ''')
-            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', str(CORE), str(root / 'test.c'),
+            # The firmware's features.h must not shadow glibc's <features.h>.
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-iquote', str(CORE), str(root / 'test.c'),
                             str(CORE / 'vox_filter.c'), '-o', str(root / 'test'), '-lm'], check=True)
             return subprocess.check_output([str(root / 'test')]).decode()
 

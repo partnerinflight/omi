@@ -50,6 +50,17 @@ class ClarificationTests(unittest.TestCase):
         self.assertTrue(self.store.command(dict(self.request, action='clarify_dismiss'))['ok'])
         self.assertEqual(self.store.count(), 0)
 
+    def test_legacy_review_survives_native_marker_migration(self):
+        with self.store.connect() as db:
+            db.execute("UPDATE items SET original=replace(replace(original, '%% router:', '<!-- router:'), ' %%', ' -->')")
+        self.assertTrue(self.store.command(self.request)['ok'])
+        self.assertNotIn('<!-- router:', self.path.read_text(encoding='utf-8'))
+
+    def test_legacy_note_is_still_editable(self):
+        text = self.path.read_text(encoding='utf-8').replace('%% router:', '<!-- router:').replace(' %%', ' -->')
+        self.path.write_text(text, encoding='utf-8')
+        self.assertTrue(self.store.command(self.request)['ok'])
+
     def test_resume_after_note_write_before_database_commit(self):
         old = self.path.read_text(encoding="utf-8")
         with patch('second_brain.clarifications.atomic_write') as write:

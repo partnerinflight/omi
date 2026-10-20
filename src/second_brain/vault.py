@@ -118,11 +118,16 @@ def _clock(seconds: float) -> str:
 
 def publish_meeting(vault: Path, folder: str, job: dict, manifest: dict) -> list[str]:
     """One note per meeting capture: highlights first, then the whole transcript. The memory gate
-    never filters a meeting; its findings only choose what is highlighted. Meeting audio is
+    never filters a meeting; speaker exclusions still apply. Gate findings only choose
+    what is highlighted. Meeting audio is
     retained (Omi dedupe needs it), so the note links it."""
     root, dest = _destination(vault, folder)
     metadata = json.loads(job["metadata"])
-    windows = [w for w in manifest["windows"] if w.get("final_transcript", "").strip()]
+    windows = [w for w in manifest["windows"]
+               if not w.get("speaker_filter") and w.get("final_transcript", "").strip()]
+    # Speaker exclusions also apply to meetings, despite their memory-gate bypass.
+    if not windows and any(w.get("speaker_filter") for w in manifest["windows"]):
+        return []
     identities = {k: v for w in windows for k, v in w.get("speaker_identities", {}).items()}
     front = {
         "type": "omi-meeting",

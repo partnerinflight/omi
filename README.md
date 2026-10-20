@@ -30,6 +30,8 @@ heartbeat is shown as stopped rather than falsely reporting idle.
 
 The **Speakers** page lets you play snippets, replace anonymous labels with names,
 and build local voice profiles for future recordings.
+Name narrators `[AudioBook] - SpeakerName` to exclude conversation windows with
+their confirmed or voice-matched identity from future vault publication and routing.
 See [speaker review and setup](docs/speakers.md) for model setup and correction controls.
 
 ## Repository
@@ -147,7 +149,8 @@ local mailbox. It cannot read the pairing key or stop the service.
 - `meetings_enabled` (false): process Mac meeting captures from `incoming/meetings/` into one note
   each under `meetings_vault_folder` (default `Omi/Meetings`). The capture's microphone channel is
   attributed to `owner_name`; the meeting app's channel is diarized and voice-matched like Omi
-  speakers. Meetings are never dropped by the memory gate, and meeting audio is retained.
+  speakers. Meetings are never dropped by the memory gate; `[AudioBook]` speaker
+  exclusions still apply. Meeting audio is retained.
   Captures uploaded before enabling are processed on the next scan.
   When an Omi recording overlaps a finished capture, the Omi segments the meeting already holds
   are dropped from its note; other speech the Omi heard (someone in the room) is kept. Room speech
@@ -173,6 +176,24 @@ local mailbox. It cannot read the pairing key or stop the service.
   expensive model run. Notes are published atomically without replacing edits.
 - A conflicting human-edited note causes a visible failure and remains intact.
   Resolve that conflict before retrying; the service never overwrites it.
+- **Shadow export to the mobile server** (`bridge_url`, off by default). When set,
+  the service sends completed conversations (only published windows, excerpts up to
+  4000 characters), router extractions, people and speaker assignments to the
+  selfhosted server over outbound HTTPS every `bridge_seconds` (60). It also fetches
+  speaker and clarification changes made on the phone and applies them like tray
+  changes (`docs/speakers.md`), and uploads review clips of speakers still waiting for
+  a name. Memories you save in the app are written to managed notes under
+  `Mobile/` in the vault; existing notes are never changed. If you edit a `Mobile/`
+  note by hand, it is left alone and the app's version is saved beside it as
+  `<name> (conflict from app).md` until you delete your edited copy. No recordings,
+  voice embeddings or filtered transcripts leave the machine, and nothing listens
+  for inbound connections. Create the token on the server with
+  `python -m sb_server add-producer "Home PC"`, save it to `bridge_token_file` (an
+  absolute path readable only by the service account, separate from the upload
+  secret), and restart the service. A server outage only delays export: each cycle
+  compares local state with what the server acknowledged (`data\bridge.sqlite3`) and
+  resends what is missing. The vault and tray stay authoritative; see
+  `docs/mobile/`.
 
 Administrator commands:
 

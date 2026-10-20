@@ -1,4 +1,6 @@
 import json
+import asyncio
+import copy
 import sqlite3
 import math
 import hashlib
@@ -9,6 +11,7 @@ import tempfile
 import unittest
 import uuid
 import wave
+from unittest.mock import Mock
 from second_brain.config import Config
 from second_brain.io import write_json
 from second_brain.speakers import Speakers, match, unit
@@ -182,6 +185,86 @@ class SpeakerStoreTests(unittest.TestCase):
         self.store.catalog()
         self.assertNotIn("a", {r["job"] for r in self.catalog()["speakers"]}, "replay does not bring it back")
         self.assertFalse(self.command("discard", observation="missing")["ok"])
+
+    def test_audiobook_name_allows_only_the_recognized_prefix(self):
+        for name in ("[AudioBook] - Narrator", "[audiobook] Narrator", "Alice"):
+            self.assertEqual(self.store.name(name), name)
+        for name in ("[AudioBook]", "[AudioBook] - ", "[Other] Narrator",
+                     "Alice [AudioBook]", "[AudioBook] [[Narrator]]", "[AudioBook] <x>"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.store.name(name)
+
+    def test_audiobook_identity_vetoes_mixed_windows_but_preserves_archive(self):
+        reference, original = self.ingest("reference", keep=True)
+        self.assertTrue(self.command("assign", observation=reference["id"], name="[AudioBook] - Narrator")["ok"])
+        confirmed = self.store.render("reference", original)["windows"][0]
+        self.assertFalse(confirmed["memory_keep"])
+        _, manifest = self.ingest("future", label="c2:S3", keep=True)
+        manifest["windows"][0]["final_segments"].append(dict(
+            speaker="unknown", start=4, end=6, text="my own comment"))
+        clean = dict(memory_keep=True, route_to_knowledge_router=True,
+                     final_segments=[dict(speaker="unknown", start=20, end=24, text="ordinary conversation")])
+        manifest["windows"].append(clean)
+        original = copy.deepcopy(manifest)
+        result = self.store.render("future", manifest)
+        blocked, allowed = result["windows"]
+        self.assertEqual(manifest, original)
+        self.assertFalse(blocked["memory_keep"])
+        self.assertFalse(blocked["route_to_knowledge_router"])
+        self.assertEqual(blocked["speaker_filter"], dict(reason="audiobook_speaker", labels=["c2:S3"]))
+        self.assertEqual(blocked["speaker_identities"]["c2:S3"]["source"], "voice match")
+        self.assertIn("my own comment", blocked["final_transcript"])
+        self.assertTrue(allowed["memory_keep"])
+        self.assertNotIn("speaker_filter", allowed)
+        person = blocked["speaker_identities"]["c2:S3"]["id"]
+        self.assertTrue(self.command("rename", person=person, name="Narrator")["ok"])
+        self.assertTrue(self.store.render("future", manifest)["windows"][0]["memory_keep"])
+        self.assertTrue(self.command("rename", person=person, name="[audiobook] - Narrator")["ok"])
+        self.assertFalse(self.store.render("future", manifest)["windows"][0]["memory_keep"])
+        self.command("clear", observation=reference["id"])
+        self.assertTrue(self.store.render("future", manifest)["windows"][0]["memory_keep"])
+
+    def test_audiobook_publication_and_router_veto_survive_replay(self):
+        from tests.helpers import configuration
+        from second_brain.runtime import Runtime
+        from second_brain.vault import publish_meeting
+
+        cfg = configuration(self.root)
+        runtime = Runtime(cfg)
+        runtime.speakers = self.store
+        runtime.routing = Mock(return_value=True)
+        runtime.router = Mock()
+        reference, _ = self.ingest("reference")
+        self.command("assign", observation=reference["id"], name="[AudioBook] - Narrator")
+        _, manifest = self.ingest("future", keep=True)
+        blocked = manifest["windows"][0]
+        blocked.update(id="w1", start=0, end=3, final_engine="fixture", route_to_knowledge_router=True)
+        clean = copy.deepcopy(blocked)
+        clean.update(id="w2", final_segments=[dict(speaker="unknown", start=10, end=13, text="real conversation")])
+        manifest["windows"].append(clean)
+        write_json(self.root / "data/jobs/future/manifest.json", manifest)
+        job = dict(id="future", audio=str(self.root / "source.wav"), sha256="abc",
+                   metadata=json.dumps(dict(device="test", capture_id="test", start_ms=0, end_ms=13000)))
+        result = asyncio.run(runtime.process(job))
+        self.assertEqual((result["notes"], result["filtered"]), (1, 1))
+        notes = list(cfg.vault_path.rglob("*.md"))
+        self.assertEqual([p.name for p in notes], ["future-w2.md"])
+        self.assertEqual([w["id"] for w in runtime.router.enqueue.call_args.args[1]], ["w2"])
+        frozen_path = self.root / "data/jobs/future/publication-manifest.json"
+        frozen = frozen_path.read_bytes()
+        rendered = json.loads(frozen)
+        # Meeting publication must respect the same veto despite bypassing the memory gate.
+        meeting_paths = publish_meeting(cfg.vault_path, "Meetings", job, rendered)
+        meeting_text = (cfg.vault_path / meeting_paths[0]).read_text()
+        self.assertIn("real conversation", meeting_text)
+        self.assertNotIn("Narrator", meeting_text)
+        self.assertEqual(publish_meeting(cfg.vault_path, "AllFiltered", job,
+                                       dict(windows=[rendered["windows"][0]])), [])
+        self.assertFalse((cfg.vault_path / "AllFiltered").exists())
+        self.command("rename", person=rendered["windows"][0]["speaker_identities"]["c:S1"]["id"], name="Narrator")
+        self.assertEqual(asyncio.run(runtime.process(job))["notes"], 1)
+        self.assertEqual(frozen_path.read_bytes(), frozen)
+        self.assertEqual([w["id"] for w in runtime.router.enqueue.call_args.args[1]], ["w2"])
 
     def test_review_hides_useless_rows_but_keeps_named_ones_and_counts_agree(self):
         wordless, _ = self.ingest("a", text="...")

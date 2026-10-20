@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .io import atomic_write, write_json
+from .router_markers import MARKER, marker, normalize
 
 NOTE_LOCK = threading.RLock()
 
@@ -38,7 +39,7 @@ class Clarifications:
         relative = path.resolve().relative_to(self.vault).as_posix()
         with self.connect() as db:
             db.execute("INSERT OR IGNORE INTO items(id,path,original,text,questions,context,created) VALUES(?,?,?,?,?,?,?)",
-                       (eid, relative, f'- {bullet} <!-- router:{eid} -->', bullet,
+                       (eid, relative, f'- {bullet} {marker(eid)}', bullet,
                         json.dumps(questions), context[:16000], time.time()))
 
     def count(self):
@@ -61,7 +62,7 @@ class Clarifications:
                 db.execute("UPDATE items SET state='dismissed' WHERE id=? AND state='pending'", (eid,))
             self.catalog()
             return dict(id=key, ok=True)
-        if not isinstance(answer, str) or not 1 <= len(answer.strip()) <= 4000 or any(ord(c) < 32 for c in answer) or '<!--' in answer:
+        if not isinstance(answer, str) or not 1 <= len(answer.strip()) <= 4000 or any(ord(c) < 32 for c in answer) or '<!--' in answer or '%%' in answer:
             return dict(id=key, ok=False, error='Enter a single corrected sentence, up to 4000 characters.')
         answer = answer.strip()
         with NOTE_LOCK, self.connect() as db:
@@ -79,10 +80,10 @@ class Clarifications:
             except FileNotFoundError:
                 return dict(id=key, ok=False, error='The note was moved or removed. Keep it as is to dismiss this review.')
             text = original.decode('utf-8')
-            new = f'- {answer} <!-- router:{eid} -->'
+            new = f'- {answer} {marker(eid)}'
             lines = text.splitlines(keepends=True)
-            matches = [i for i, line in enumerate(lines) if f'<!-- router:{eid} -->' in line]
-            if len(matches) != 1 or lines[matches[0]].rstrip('\r\n') not in (row['original'], new):
+            matches = [i for i, line in enumerate(lines) if eid in MARKER.findall(line)]
+            if len(matches) != 1 or normalize(lines[matches[0]].rstrip('\r\n')) not in (normalize(row['original']), new):
                 return dict(id=key, ok=False, error='The Obsidian entry was edited or removed. Your edits were preserved; resolve this entry in Obsidian.')
             i = matches[0]
             if lines[i].rstrip('\r\n') != new:

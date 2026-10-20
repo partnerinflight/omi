@@ -10,7 +10,7 @@ from second_brain.router_cleanup import clean_note
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--vault", type=Path, required=True)
-parser.add_argument("--remove", type=Path, help="JSON mapping decision event IDs to review reasons")
+parser.add_argument("--remove", type=Path, help="JSON mapping router event IDs (any category) to review reasons")
 args = parser.parse_args()
 reasons = json.loads(args.remove.read_text(encoding="utf-8")) if args.remove else {}
 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -19,7 +19,7 @@ changes = []
 for folder in ("People", "Projects", "Topics", "Decisions", "Ideas", "Daily"):
     for path in sorted((args.vault / folder).glob("*.md")):
         original = path.read_bytes()
-        updated, removed = clean_note(original.decode("utf-8"), set(reasons) if folder == "Decisions" else set())
+        updated, removed = clean_note(original.decode("utf-8"), set(reasons))
         if folder in ("Daily", "Decisions") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.stem):
             updated = re.sub(r"\A# " + re.escape(path.stem) + r"\r?\n(?:\r?\n)?", "", updated)
         if updated.encode("utf-8") == original:
@@ -32,5 +32,5 @@ for folder in ("People", "Projects", "Topics", "Decisions", "Ideas", "Daily"):
         atomic_write(path, updated.encode("utf-8"))
         changes.append(dict(path=str(rel), removed={eid: reasons[eid] for eid in removed}))
 atomic_write(backup / "review.json", json.dumps(changes, indent=2).encode("utf-8"))
-print(json.dumps(dict(changed_notes=len(changes), removed_decisions=sum(len(c['removed']) for c in changes),
+print(json.dumps(dict(changed_notes=len(changes), removed_items=sum(len(c['removed']) for c in changes),
                       backup=str(backup))))

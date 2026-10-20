@@ -6,11 +6,26 @@ import tempfile
 
 
 class CleanupTests(unittest.TestCase):
+    def test_replay_accepts_legacy_and_native_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'day.md'
+            path.write_text('## Router Inbox\n- Keep this. <!-- router:abc -->\n')
+            self.assertFalse(append_item(path, 'Changed model wording', 'abc'))
+            cleaned, _ = clean_note(path.read_text(), set())
+            path.write_text(cleaned)
+            self.assertNotIn('<!--', cleaned)
+            self.assertFalse(append_item(path, 'Changed model wording', 'abc'))
+            self.assertEqual(path.read_text(), cleaned)
+
+    def test_native_marker_can_be_removed_from_daily_content(self):
+        note = '## Router Inbox\n- Routine practice. %% router:abc %%\n- Human note.\n'
+        self.assertEqual(clean_note(note, {'abc'}), ('## Router Inbox\n- Human note.\n', ['abc']))
+
     def test_new_bullets_do_not_publish_encoded_spaces_or_hard_breaks(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "day.md"
             append_item(path, "&#x20;Readable text.\\\n&#x20;More text.&#x20;", "abc")
-            self.assertIn("- Readable text. More text. <!-- router:abc -->", path.read_text())
+            self.assertIn("- Readable text. More text. %% router:abc %%", path.read_text())
 
     def test_preserves_curated_sections_and_markers_and_is_idempotent(self):
         original = ("# Day\nHuman prose\n## Router Inbox\n"
@@ -20,7 +35,7 @@ class CleanupTests(unittest.TestCase):
         cleaned, removed = clean_note(original, {"def456"})
         self.assertEqual(removed, ["def456"])
         self.assertEqual(cleaned, "# Day\nHuman prose\n## Router Inbox\n"
-                         "- Keep this. <!-- router:abc123 -->\n"
+                         "- Keep this. %% router:abc123 %%\n"
                          "- Human bullet without marker.\n## Curated\n- Human choice.\n")
         self.assertEqual(clean_note(cleaned, {"def456"}), (cleaned, []))
 

@@ -130,6 +130,34 @@ after a correction; the app's catalog always reflects current mappings. A saved
 publication manifest freezes names for crash recovery so late naming cannot
 overwrite an existing note or turn a retry into a conflict.
 
+## Exclude audiobook narrators
+
+Assign a narrator the name **`[AudioBook] - SpeakerName`** in Speakers, or rename
+an existing person on the People page. The leading `[AudioBook]` tag is
+case-insensitive. Confirm usable voice clips as usual; future confident voice
+matches inherit the tagged identity.
+
+Before publication, any conversation window containing a tagged identity is
+excluded from vault notes and downstream knowledge-router extraction, even if
+the memory gate would keep it. The entire window is excluded, including other
+speakers in that window; unrelated windows from the same recording are kept
+according to the usual policy. Meeting notes also omit these windows; a capture
+with only excluded windows produces no note. This is a publication veto, not a
+change to the adaptive v3 scoring rules.
+
+Private transcripts and speaker identities remain available for audit. The frozen
+`publication-manifest.json` records `speaker_filter` with reason
+`audiobook_speaker` and the affected labels. Audio follows the usual retention
+policy. ASR and initial scoring still run before speaker matching, so this does
+not save transcription work or prevent configured Hermes scoring requests.
+
+Unknown or ambiguous narrators are not excluded by this tag. Matching requires
+the local encoder and usable confirmed reference clips; a tag alone cannot
+recognize a voice. A narrator's voice is excluded whenever recognized, even
+outside an audiobook. Naming, renaming, or removing the tag affects publications
+whose manifest has not yet been frozen; existing notes and frozen retries remain
+unchanged. This does not clean up audiobook material already in the vault.
+
 ## Local storage and access
 
 - `ProgramData\SecondBrain\data\speakers.sqlite3`: private identities,
@@ -140,6 +168,17 @@ overwrite an existing note or turn a retry into a conflict.
 - `review\requests\`: the review user's narrowly scoped write access; the
   service validates assignment commands and owns all authoritative state.
 - `review\responses\`: read-only acknowledgments for the app.
+
+When the mobile bridge is enabled (`bridge_url`, see `README.md`), the phone can
+make the same changes (name, confirm, clear, discard, rename, forget, answer or
+dismiss a clarification). The service fetches them over its outbound connection and
+applies them through these same commands, in order, keyed by the server's command
+ID so a crash or lost acknowledgment never applies one twice. Each phone change
+names the speaker or person state it was made against; if the tray changed it
+first, the phone change fails as "changed on Windows" instead of overwriting it.
+Review clips of speakers still waiting for a name are uploaded so the phone can
+play them; the server drops them once the speaker is confirmed or discarded, or
+after 30 days. Voice embeddings never leave this machine.
 
 No listener, browser endpoint, cloud recognition service, or pairing-key access
 is added. Public tray status remains operational metadata only. The installer

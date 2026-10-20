@@ -18,6 +18,7 @@ from .router import RouterQueue, route
 from .vault import publish, publish_meeting
 from .speakers import Speakers
 from .clarifications import Clarifications
+from . import bridge
 
 log = logging.getLogger("second_brain")
 STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
@@ -60,6 +61,7 @@ class Runtime:
         self.speakers.rematch()
         self.router = RouterQueue(cfg.data_dir / "router.sqlite3")
         self.clarifications = Clarifications(cfg.data_dir, cfg.review_dir, cfg.vault_path)
+        self.bridge_status = {"enabled": bool(cfg.bridge_url), "last_success": None, "error": None}
 
     def routing(self):
         """The pipeline config when the knowledge router should run, else None."""
@@ -345,6 +347,41 @@ class Runtime:
             except asyncio.TimeoutError:
                 pass
 
+    async def export(self):
+        """Phone commands and shadow export to the server. Never raises: an unreachable or broken server must not
+        stop the service (run() propagates task failures to SCM recovery)."""
+        exporter = None
+
+        def tick():
+            nonlocal exporter
+            if exporter is None:
+                exporter = bridge.Bridge(self.cfg.data_dir, self.cfg.vault_path, self.cfg.bridge_url,
+                                         bridge.load_token(Path(self.cfg.bridge_token_file)),
+                                         review_dir=self.cfg.review_dir)
+            # Phone commands first, so the export that follows already shows their effect.
+            exporter.apply_commands(self.speakers, self.clarifications)
+            conflicts = exporter.project() + (exporter.project_todos() == "conflict")
+            self.bridge_status["export_conflicts"] = conflicts
+            # Counts only: the server sees worker freshness and backlog, never content.
+            return exporter.tick({"jobs": self.queue.snapshot()["counts"], "routes_pending": self.router.snapshot()["pending"],
+                                  "export_conflicts": conflicts})
+
+        while not self.stop.is_set():
+            try:
+                result = await asyncio.to_thread(tick)
+                self.bridge_status.update(last_success=time.time(), error=None, sent=result["sent"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                error = bridge.safe_error(e)
+                if error != self.bridge_status["error"]:  # one traceback per outage, not one a minute
+                    log.exception("Bridge export failed; retrying every %s s", self.cfg.bridge_seconds)
+                self.bridge_status["error"] = error
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=self.cfg.bridge_seconds)
+            except asyncio.TimeoutError:
+                pass
+
     def status(self, state="running"):
         result = self.queue.snapshot()
         result.update(
@@ -364,6 +401,7 @@ class Runtime:
             speakers=self.speakers.summary(),
             clarifications=self.clarifications.count(),
             router=dict(self.router.snapshot(), enabled=self.routing() is not None),
+            bridge=self.bridge_status,
         )
         write_json(self.cfg.status_file, result)
 
@@ -407,6 +445,7 @@ class Runtime:
                 asyncio.create_task(self.heartbeat()),
                 asyncio.create_task(self.speaker_review()),
                 asyncio.create_task(self.route_published()),
+                *([asyncio.create_task(self.export())] if self.cfg.bridge_url else []),
             ]
             waiter = asyncio.create_task(self.stop.wait())
             try:
