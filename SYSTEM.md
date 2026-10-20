@@ -509,6 +509,13 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   low-bitrate joint-stereo coding can merge channels during overlapping talk, but real
   speech showed no material loss. Raising `bitRate` to 64000 removes the risk at double
   the size (about 29 MB/h); not changed, since the 32 kbit/s evidence is adequate.
+- Reinstall settings, fixed 2026-10-20: `install.ps1` used to regenerate `service.json` from a
+  fixed list, dropping meetings, bridge and tuning settings and resetting tuned defaults, and the
+  service had no write access to `Omi\Meetings`, so meeting notes failed with `PermissionError`.
+  `installer/install-core.ps1` (with `windows/install.ps1` as a wrapper) now merges via
+  `second_brain.install_config` (defaults < existing < installer-managed) and grants Modify on
+  `vault_folder` and `meetings_vault_folder`. The Windows smoke test reinstalls the real service
+  and checks that edited settings survive and the meetings folder is writable.
 - Keep changes on the feature branch; do not merge/push `main` without instruction.
   Preserve durability boundaries, v3 gates, edited notes, and third-party licenses.
   Add tests at real failure boundaries. Never present mocked model tests or a

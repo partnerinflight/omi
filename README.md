@@ -159,6 +159,8 @@ local mailbox. It cannot read the pairing key or stop the service.
   recording whose meeting is still uploading waits for it (up to 24 hours). Dedupe needs the
   Omi's clock within 10 seconds of the Mac's; keep it synced (`omi-local time-sync`, also done on
   every `omi-local` Bluetooth connect), otherwise both notes keep the speech.
+  `meetings_enabled`, `meetings_vault_folder` and `owner_name` survive a reinstall, and the
+  installer grants the service write access to `meetings_vault_folder`.
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
   default). Once a recording's note is published and its job is complete, the
   service deletes the original Omi recording, its sidecar and receipt, and all
@@ -216,6 +218,8 @@ all recordings, keys, history, notes and binaries. Run `register-tray.ps1
 -Unregister` as your normal user to disable tray autostart. For upgrades, stop
 and uninstall the service, rebuild/reinstall with the same paths/key, then
 restart the tray. No data directory should be deleted during an upgrade.
+Reinstall keeps every `service.json` setting the installer does not own; see
+[existing installations](docs/install-windows.md#existing-installations-and-individual-steps).
 
 ## Firmware
 

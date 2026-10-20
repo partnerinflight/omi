@@ -86,6 +86,15 @@ then `dist\windows\install.ps1` with the **same** key, vault, incoming and insta
 pipeline config paths; include `-SkipVibe7` if that was your configuration. See
 [README](../README.md) for full installer arguments. Restart/register the tray.
 
+Reinstall keeps every `service.json` setting the installer does not own (for example
+`meetings_enabled`, `owner_name`, bridge and tuning values), so nothing needs re-entering,
+and editing `service.json` before a reinstall is safe. The installer always sets
+`data_dir`, `incoming_dir`, `secret_file`, `pipeline_config`, `status_file`, `vault_path`,
+`port`, `ffmpeg_dir` and `skip_vibe7` from its arguments, and fills `vault_folder`, `host`,
+`poll_seconds`, `retry_seconds`, `max_attempts`, `job_timeout_seconds` and `no_hermes` with
+defaults only when they are missing. The service is granted write access to the configured
+`vault_folder` and `meetings_vault_folder` (also while meetings are off).
+
 To provision missing engines without reinstalling application code:
 
 ```powershell
