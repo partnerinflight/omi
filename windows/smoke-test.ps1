@@ -46,7 +46,44 @@ try {
     $svc = Get-CimInstance Win32_Service -Filter "Name='$name'"
     $process = Get-Process -Id $svc.ProcessId
     if ($process.SessionId -ne 0) { throw 'Service is not running in Session 0' }
-    Write-Host "PASS: virtual service account, Session 0, synthetic upload, adaptive pipeline, vault publication, restart without duplication. Evidence: $root"
+    # Reinstall must keep settings the installer does not own, and the service must be able to
+    # write meeting notes (installer/install-core.ps1, src/second_brain/install_config.py).
+    $serviceJson = "$root\machine\config\service.json"
+    $edited = Get-Content $serviceJson -Raw | ConvertFrom-Json
+    $edited | Add-Member -NotePropertyName meetings_enabled -NotePropertyValue $true -Force
+    $edited | Add-Member -NotePropertyName owner_name -NotePropertyValue 'Smoke Owner' -Force
+    $edited | Add-Member -NotePropertyName poll_seconds -NotePropertyValue 3 -Force
+    $edited | ConvertTo-Json -Depth 10 | Set-Content $serviceJson -Encoding UTF8
+    # The status file keeps the old heartbeat across uninstall; require one newer than this.
+    $beforeReinstall = $status.started
+    & "$PSScriptRoot\uninstall.ps1" -ServiceName $name
+    # sc.exe delete only marks the service; install refuses while SCM still lists it.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Service $name -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+    # Same -SecretFile as the first install: the core refuses a different pairing key.
+    & "$PSScriptRoot\install.ps1" -Python $pythonPath -PipelineConfig "$root\pipeline.json" -SecretFile "$root\secret.hex" -Vault "$root\vault" -IncomingDir "$root\incoming" -DataRoot "$root\machine" -InstallDir "$root\app" -Bundle $Bundle -FfmpegDir $FfmpegDir -SkipVibe7 -ServiceName $name -Port 17331
+    $kept = Get-Content $serviceJson -Raw | ConvertFrom-Json
+    if (-not $kept.meetings_enabled -or $kept.owner_name -ne 'Smoke Owner' -or $kept.poll_seconds -ne 3) {
+        throw "Reinstall lost settings: $(Get-Content $serviceJson -Raw)"
+    }
+    # Get-Acl reports resolvable accounts by name and unresolvable ones as a SID string; accept
+    # either form instead of translating every entry, which throws for orphaned SIDs.
+    $account = 'NT SERVICE\' + $name
+    $sid = (New-Object Security.Principal.NTAccount($account)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $modify = [Security.AccessControl.FileSystemRights]::Modify
+    $writable = (Get-Acl "$root\vault\Omi\Meetings").Access | Where-Object {
+        $_.IdentityReference.Value -in @($account, $sid) -and
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        ($_.FileSystemRights -band $modify) -eq $modify
+    }
+    if (-not $writable) { throw 'The service cannot write meeting notes (no Modify on Omi\Meetings)' }
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Milliseconds 500
+        $status = Get-Content $statusPath -Raw | ConvertFrom-Json
+    } until (($status.service -eq 'running' -and $status.started -gt $beforeReinstall) -or (Get-Date) -gt $deadline)
+    if ($status.service -ne 'running' -or $status.started -le $beforeReinstall) { throw 'Service did not publish a fresh heartbeat after reinstall' }
+    Write-Host "PASS: virtual service account, Session 0, synthetic upload, adaptive pipeline, vault publication, restart without duplication, reinstall keeps settings, meetings folder writable. Evidence: $root"
 } catch {
     # Synthetic fixture only: surface startup diagnostics before cleanup removes
     # the service. Never collect logs from the user's production service here.
