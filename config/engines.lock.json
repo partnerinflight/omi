@@ -10,17 +10,32 @@
   "moss_model": {
     "repo": "mudler/moss-transcribe.cpp-gguf",
     "revision": "54e4bbd17da3f84adf1c1bcf7791b9b9266f741e",
-    "patterns": ["moss-transcribe-q5_k.gguf", "README.md"]
+    "patterns": ["moss-transcribe-q5_k.gguf", "README.md"],
+    "sha256": {"moss-transcribe-q5_k.gguf": "6fe985fd9a9cd043728f7be49659d10de6901872dad73b49e3c30e1340582e79"}
   },
   "vibe_model": {
     "repo": "microsoft/VibeVoice-ASR-Streaming-7B",
     "revision": "60d858b518b4e19d404af3737f848fc185b30177",
-    "patterns": ["*.json", "*.txt", "*.safetensors", "README.md"]
+    "patterns": ["*.json", "*.txt", "*.safetensors", "README.md"],
+    "sha256": {
+      "model-00001-of-00008.safetensors": "3685d210ad49c49521e71a0cc5418ea94b20761c801dc8fc95938c4ec1ab27b3",
+      "model-00002-of-00008.safetensors": "d0252f5e9bdf7e65bb0ae051c49148fd5d77e531057556eb955fc6dc72f4f0bc",
+      "model-00003-of-00008.safetensors": "eeeb0c24e4a3746f16512c0d4aef84732bf8bb4dc5452782e4db356eb5fc7ce7",
+      "model-00004-of-00008.safetensors": "02fec24aaf3e59cbc653b55d94665d6393543f2550364c2c8bc9e75e2a2ca3c0",
+      "model-00005-of-00008.safetensors": "a78637bdc2b44f28601f7ee12503e28f5e9faedde35ff5bcdc2e7356c9a6458e",
+      "model-00006-of-00008.safetensors": "5bc9dfef14c62989192ab39356da45a9ccc9f0ef82f7f7127e48c17b5bd5a2f8",
+      "model-00007-of-00008.safetensors": "bb6da42b3547124eb67645fc6fb92523e93310a107872643f7df6dd75f85b4d7",
+      "model-00008-of-00008.safetensors": "b1499fbe8bc0454eeafc1177db144679940f2456eae188299214c629d4d618b4"
+    }
   },
   "speaker_model": {
     "repo": "speechbrain/spkrec-ecapa-voxceleb",
     "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
-    "patterns": ["hyperparams.yaml", "*.ckpt", "label_encoder.txt", "README.md"]
+    "patterns": ["hyperparams.yaml", "*.ckpt", "label_encoder.txt", "README.md"],
+    "sha256": {
+      "classifier.ckpt": "fd9e3634fe68bd0a427c95e354c0c677374f62b3f434e45b78599950d860d535",
+      "embedding_model.ckpt": "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2"
+    }
   },
   "nemo_speech": {
     "url": "https://github.com/NVIDIA/NeMo-Speech.cpp.git",
@@ -31,5 +46,15 @@
     "revision": "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
     "patterns": ["Nemotron-3-Diarization.q8_0.gguf", "README.md"],
     "sha256": {"Nemotron-3-Diarization.q8_0.gguf": "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1"}
+  },
+  "python_standalone": {
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.12.15%2B20261013-x86_64-pc-windows-msvc-install_only.tar.gz",
+    "sha256": "bbc902d4d187ac4914915bf538196a064b49109a33a104965b5164ced5b80a1e",
+    "size": 46390009
+  },
+  "ffmpeg": {
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-20-13-08/ffmpeg-n9.0.2-29-g6dfaba896f-win64-lgpl-shared-9.0.zip",
+    "sha256": "c39750c8dfe849e4389843e5f4af51e8062a6d6a3e8b74c1fd7e469594ef68e2",
+    "size": 77233322
   }
 }

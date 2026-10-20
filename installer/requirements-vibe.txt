@@ -1,0 +1,11 @@
+# VibeVoice 7B runtime: CUDA 12.6 PyTorch (also runs on CPU), plus offload support (accelerate).
+# The VibeVoice package itself is installed from the pinned checkout in config/engines.lock.json.
+--index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://pypi.org/simple
+torch==2.8.0
+torchaudio==2.8.0
+transformers==4.51.3
+accelerate==1.6.0
+huggingface-hub==0.34.6
+soundfile==0.13.1
+librosa==0.11.0

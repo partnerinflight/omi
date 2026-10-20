@@ -1,0 +1,7 @@
+# Voice matching runtime (speaker_audio / speaker_encoder.py): CPU PyTorch + SpeechBrain.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch==2.8.0
+torchaudio==2.8.0
+speechbrain==1.0.3
+huggingface-hub==0.34.6
