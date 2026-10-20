@@ -13,6 +13,7 @@ try {
     Get-ChildItem 'dist/windows/python/*.whl' -ErrorAction SilentlyContinue | Remove-Item
     Run $Python @('-m', 'pip', 'wheel', '--no-deps', '--wheel-dir', 'dist/windows/python', '.', './omi/firmware/scripts/omi-local')
     Copy-Item (Join-Path $PSScriptRoot 'install.ps1') 'dist/windows/install.ps1' -Force
+    Copy-Item (Join-Path $repo 'installer/install-core.ps1') 'dist/windows/install-core.ps1' -Force
     Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') 'dist/windows/uninstall.ps1' -Force
     Copy-Item (Join-Path $PSScriptRoot 'register-tray.ps1') 'dist/windows/register-tray.ps1' -Force
     New-Item -ItemType Directory -Force 'dist/windows/config' | Out-Null
