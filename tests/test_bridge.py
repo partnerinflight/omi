@@ -307,7 +307,7 @@ class BridgeTests(unittest.TestCase):
         text = alex.read_text(encoding="utf-8")
         self.assertLess(text.index("Prefers oat milk"), text.index("Likes hiking"))  # observed_at, then id
         self.assertIn("- 2026-10-09 — Prefers oat milk %% memory:a1 %%", text)
-        self.assertIn("- unknown — Move standup to 10 %% memory:d1 %%", (self.vault / "Mobile/Decisions.md").read_text())
+        self.assertIn("- unknown — Move standup to 10 %% memory:d1 %%", (self.vault / "Mobile/Decisions.md").read_text(encoding="utf-8"))
         self.assertFalse((self.vault / "People").exists())  # router notes are never written by projection
         before = alex.stat().st_mtime_ns
         self.bridge.project()
@@ -317,16 +317,16 @@ class BridgeTests(unittest.TestCase):
         self.server.memories = [self.memory("a1", "Prefers oat milk")]
         self.bridge.project()
         alex = self.vault / "Mobile/People/Alex.md"
-        alex.write_text(alex.read_text() + "My own note\n", encoding="utf-8")
+        alex.write_text(alex.read_text(encoding="utf-8") + "My own note\n", encoding="utf-8")
         self.server.memories = [self.memory("a1", "Prefers soy milk")]
         self.assertEqual(self.bridge.project(), 1)
-        self.assertIn("My own note", alex.read_text())  # human edit intact
+        self.assertIn("My own note", alex.read_text(encoding="utf-8"))  # human edit intact
         conflict = self.vault / "Mobile/People/Alex (conflict from app).md"
-        self.assertIn("Prefers soy milk", conflict.read_text())
+        self.assertIn("Prefers soy milk", conflict.read_text(encoding="utf-8"))
         self.assertEqual(self.bridge.project(), 1)  # stays visible, nothing overwritten
         alex.unlink()  # the user resolves it by removing their copy
         self.assertEqual(self.bridge.project(), 0)
-        self.assertIn("Prefers soy milk", alex.read_text())
+        self.assertIn("Prefers soy milk", alex.read_text(encoding="utf-8"))
         self.assertFalse(conflict.exists())
 
     def test_archived_memories_leave_the_overlay(self):
@@ -334,7 +334,7 @@ class BridgeTests(unittest.TestCase):
         self.bridge.project()
         self.server.memories = [self.memory("b2", "Likes hiking")]
         self.bridge.project()
-        self.assertNotIn("oat milk", (self.vault / "Mobile/People/Alex.md").read_text())
+        self.assertNotIn("oat milk", (self.vault / "Mobile/People/Alex.md").read_text(encoding="utf-8"))
         self.server.memories = []
         self.assertEqual(self.bridge.project(), 0)
         self.assertFalse((self.vault / "Mobile/People/Alex.md").exists())
