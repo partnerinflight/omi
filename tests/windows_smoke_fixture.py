@@ -27,7 +27,8 @@ if a.action == "prepare":
     pipeline.update(moss_cpp_engine_dir=str(fake_engine), moss_model=str(model))
     write_json(cfg.pipeline_config, pipeline)
 elif a.action == "upload":
-    asyncio.run(upload(a.port, records()))
+    # 5 s of audio: speaker review leaves out clips under 2 s (speaker_audio.MIN_REVIEW_SECONDS).
+    asyncio.run(upload(a.port, records(count=250)))
 else:
     review = a.root / "machine/review"
     for _ in range(100):
