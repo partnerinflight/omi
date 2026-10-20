@@ -132,6 +132,28 @@ This produces manifest/report/transcripts/clips; it does **not** publish notes o
 consume receiver checkpoints. The service adds queue, identity store and vault
 publication. `check` validates paths/configuration, not recognition accuracy.
 
+## Build the installer (Windows box)
+
+`installer\build-installer.ps1` stages everything the installer ships into
+`dist\installer\payload\`: service, tray, a standalone Python with the app
+wheels, both MOSS builds, NeMo-Speech, ffmpeg, the voice-matching and VibeVoice
+7B runtimes, licences and a verified `release-manifest.json`. It needs .NET 10
+SDK, Git, CMake 3.26+, Visual Studio 2022 Build Tools with the C++ workload,
+Ninja and the CUDA Toolkit (`CUDA_PATH`). `-Slim` (used by CI) skips CUDA MOSS,
+NeMo-Speech and both ML runtimes, so it needs neither Ninja nor CUDA.
+
+```powershell
+.\installer\build-installer.ps1 -Version 1.0.0
+```
+
+Downloads and engine checkouts are cached in `%LOCALAPPDATA%\SecondBrainBuildCache`
+and hash-checked against `engines.lock.json` on every build. The cache also keeps
+the build working after BtbN prunes the pinned ffmpeg build; `-FfmpegZip <path>`
+accepts a local copy with the same hash. The first full build compiles MOSS twice
+and NeMo-Speech and downloads about 4 GB (mostly CUDA PyTorch); the payload is
+about 6 GB uncompressed. This produces the payload only; turning it into
+`Setup.exe` is a later phase.
+
 ## Dependency and verification boundaries
 
 [engines.lock.json](../config/engines.lock.json) pins MOSS/VibeVoice source and all

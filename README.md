@@ -64,6 +64,7 @@ The bundle is written to `dist\windows` (service, tray, Python wheels, install
 scripts and examples). CI runs Linux receiver/native tests and a real Windows
 Service Control Manager smoke test using synthetic audio and a deterministic
 ASR fixture. Fixture success does **not** measure speech recognition accuracy.
+To stage the full installer payload, see [Build the installer](docs/install-windows.md#build-the-installer-windows-box).
 
 ## Configure the engines
 
