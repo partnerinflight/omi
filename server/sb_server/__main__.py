@@ -73,7 +73,9 @@ def main():
 
         migrate()
         # TLS terminates at the reverse proxy; trust its forwarded headers only.
-        uvicorn.run("sb_server.app:app", host="0.0.0.0", port=int(os.environ.get("SB_PORT", "8000")),
+        # Loopback unless told otherwise; the container image sets SB_HOST=0.0.0.0 and publishes
+        # no port, so only Traefik on the compose network can reach it.
+        uvicorn.run("sb_server.app:app", host=os.environ.get("SB_HOST", "127.0.0.1"), port=int(os.environ.get("SB_PORT", "8000")),
                     proxy_headers=True, forwarded_allow_ips=os.environ.get("SB_FORWARDED_ALLOW_IPS", "127.0.0.1"))
 
 

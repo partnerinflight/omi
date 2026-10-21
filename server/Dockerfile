@@ -6,7 +6,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-dev --no-hashes -o /tmp/req.txt && pip install --no-cache-dir -r /tmp/req.txt && rm /tmp/req.txt
 COPY sb_server ./sb_server
 USER 65532:65532
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SB_HOST=0.0.0.0
 EXPOSE 8000
 ENTRYPOINT ["python", "-m", "sb_server"]
 CMD ["serve"]
