@@ -77,7 +77,7 @@ extern bool is_connected; /* from main.c: keep SD up while a phone can sync */
 static const struct gpio_dt_spec aad_wake = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(pdm_wake_pin), gpios, {0});
 static struct gpio_callback aad_wake_cb;
 
-#define AAD_THREAD_STACK_SIZE 1024
+#define AAD_THREAD_STACK_SIZE 1280 /* lecture transitions nest one call deeper */
 #define AAD_THREAD_PRIORITY 5
 static K_THREAD_STACK_DEFINE(aad_stack, AAD_THREAD_STACK_SIZE);
 static struct k_thread aad_thread_data;
