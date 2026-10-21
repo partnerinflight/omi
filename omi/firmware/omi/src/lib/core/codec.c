@@ -44,20 +44,31 @@ static atomic_t codec_end_requested;
 static atomic_t codec_mode_requested; /* mode + 1; 0 = none */
 static int codec_end_result;
 
-int codec_end_recording(void)
+/* End and mode requests share codec_end_done and codec_end_result, so only one may be
+ * outstanding: they come from the single microphone owner thread (codec.h). */
+static atomic_t codec_request_busy;
+
+static int codec_request(atomic_t *request, atomic_val_t value)
 {
-    atomic_set(&codec_end_requested, 1);
+    bool idle = atomic_cas(&codec_request_busy, 0, 1);
+    __ASSERT(idle, "concurrent codec marker requests");
+    (void) idle;
+    atomic_set(request, value);
     k_sem_give(&codec_data_sem);
     k_sem_take(&codec_end_done, K_FOREVER);
-    return codec_end_result;
+    int ret = codec_end_result;
+    atomic_clear(&codec_request_busy);
+    return ret;
+}
+
+int codec_end_recording(void)
+{
+    return codec_request(&codec_end_requested, 1);
 }
 
 int codec_mark_mode(uint8_t mode)
 {
-    atomic_set(&codec_mode_requested, (atomic_val_t) mode + 1);
-    k_sem_give(&codec_data_sem);
-    k_sem_take(&codec_end_done, K_FOREVER);
-    return codec_end_result;
+    return codec_request(&codec_mode_requested, (atomic_val_t) mode + 1);
 }
 int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic data is finished
 {
