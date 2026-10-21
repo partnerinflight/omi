@@ -45,7 +45,7 @@ static bool manual_end_pending,aad_thread_started=true,is_connected,upload;
 static bool running=true,rail=true,irq,sd=true,race_pause;
 static int settles,flushes,flush_error,resume_error,pause_error,buzzes,disabled;
 static jmp_buf stop;static int steps;
-static int lecture_requested,lecture_active;
+static int lecture_requested,lecture_active,lecture_expired;
 static void enter_lecture(void){assert(0);}
 static void exit_lecture(void){assert(0);}
 static bool lecture_marker_pending;

@@ -44,7 +44,7 @@ PRELUDE = r'''
 struct k_timer {int unused;};
 static struct k_timer lecture_timer;
 static int aad_sem,aad_in_sleep,aad_woke,aad_wake_pending,aad_req_sleep;
-static int manual_pause_requested,manual_paused,mic_discard_blocks,lecture_requested,lecture_active;
+static int manual_pause_requested,manual_paused,mic_discard_blocks,lecture_requested,lecture_active,lecture_expired;
 static uint32_t manual_pause_started_ms,aad_sleep_started_ms,now;
 static bool manual_end_pending,lecture_marker_pending,aad_thread_started=true,is_connected,upload;
 static bool running=true,rail=true,irq,sd=true,timer_on;
@@ -155,6 +155,25 @@ class LectureModeTests(unittest.TestCase):
  end_error=-EIO;assert(!mic_toggle_manual_pause());step();expect("PE");assert(manual_end_pending);
  end_error=0;assert(!mic_toggle_lecture());step();expect("EL2R");
  assert(!manual_end_pending && mic_in_lecture() && running);
+''')
+
+    def test_auto_exit_wins_a_racing_triple_click_and_stale_expiry_is_ignored(self):
+        self.run_main(r'''
+ now=1000;assert(!mic_toggle_lecture());step();expect("PEL2R");
+ /* The timer fires and a triple-click lands before the owner runs: both mean leave. */
+ lecture_timer_expired(&lecture_timer);assert(!mic_toggle_lecture());step();expect("PEN2R");
+ assert(!mic_in_lecture() && !lecture_requested && !lecture_expired && !timer_on);
+ /* An expiry that fired just as a triple-click exit ran never ends the next lecture. */
+ assert(!mic_toggle_lecture());step();expect("PEL2R");
+ assert(!mic_toggle_lecture());step();expect("PEN2R");
+ lecture_timer_expired(&lecture_timer);
+ assert(!mic_toggle_lecture());step();expect("PEL2R");
+ step();expect("");assert(mic_in_lecture() && lecture_requested && !lecture_expired && timer_on);
+ /* A failed auto-exit retries through the timer, still forced. */
+ mark_error=-EIO;lecture_timer_expired(&lecture_timer);step();expect("PENR");
+ assert(mic_in_lecture() && timer_ms==60000);
+ mark_error=0;lecture_timer_expired(&lecture_timer);assert(!mic_toggle_lecture());step();expect("PEN2R");
+ assert(!mic_in_lecture());
 ''')
 
 

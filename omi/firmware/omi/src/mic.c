@@ -105,6 +105,7 @@ static bool manual_end_pending; /* owner-only: retry failed boundary before resu
  * CONFIG_OMI_LECTURE_MAX_MS. Not saved; a reboot returns to normal mode. */
 static atomic_t lecture_requested;  /* button / timer: wanted state */
 static atomic_t lecture_active;     /* owner: applied state */
+static atomic_t lecture_expired;    /* timer: auto-exit (or its retry) is due */
 static bool lecture_marker_pending; /* owner-only: re-mark lecture before resumed audio */
 #define LECTURE_EXIT_RETRY_MS 60000 /* a failed exit retries every minute */
 BUILD_ASSERT(IS_ENABLED(CONFIG_TIMEOUT_64BIT), "the lecture timer needs 64-bit kernel timeouts");
@@ -423,11 +424,12 @@ bool mic_manual_pause_led_on(void)
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
 
-/* Auto-exit: behaves exactly like a triple-click that leaves lecture mode. */
+/* Auto-exit: behaves exactly like a triple-click that leaves lecture mode. It has its own
+ * flag so a triple-click racing the timer cannot toggle the exit back into a lecture. */
 static void lecture_timer_expired(struct k_timer *timer)
 {
     ARG_UNUSED(timer);
-    atomic_clear(&lecture_requested);
+    atomic_set(&lecture_expired, 1);
     k_sem_give(&aad_sem);
 }
 
@@ -618,9 +620,13 @@ static void enter_lecture(void)
     if (!ret)
         ret = codec_mark_mode(RECORDING_MODE_LECTURE);
     if (ret) {
-        atomic_clear(&lecture_requested); /* no vibration: the user sees it failed */
+        /* No vibration: the user sees it failed. This overwrites any triple-click that
+         * arrived during the transition, so the wanted state matches the applied one;
+         * the user triple-clicks again. */
+        atomic_clear(&lecture_requested);
         LOG_ERR("Lecture mode unavailable (%d)", ret);
     } else {
+        atomic_clear(&lecture_expired); /* an expiry from an earlier lecture is stale */
         atomic_set(&lecture_active, 1);
         atomic_clear(&aad_req_sleep);
         lecture_marker_pending = false;
@@ -671,7 +677,9 @@ static void exit_lecture(void)
     if (!ret)
         ret = codec_mark_mode(RECORDING_MODE_NORMAL);
     if (ret) {
-        /* Stay in lecture mode; another triple-click or the retry timer tries again. */
+        /* Stay in lecture mode; another triple-click or the retry timer tries again. This
+         * overwrites any triple-click that arrived during the transition (wanted state =
+         * applied state); the retry timer's expiry still forces the exit. */
         atomic_set(&lecture_requested, 1);
         k_timer_start(&lecture_timer, K_MSEC(LECTURE_EXIT_RETRY_MS), K_NO_WAIT);
         LOG_ERR("Lecture exit blocked by recording boundary (%d)", ret);
@@ -706,6 +714,10 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
          * stays asleep and adds no idle CPU wakeups. */
         k_sem_take(&aad_sem, K_FOREVER);
 
+        /* Auto-exit leaves the lecture whatever a racing triple-click did to
+         * lecture_requested; an expiry left from a lecture already exited is ignored. */
+        if (atomic_cas(&lecture_expired, 1, 0) && atomic_get(&lecture_active))
+            atomic_clear(&lecture_requested);
         bool lecture = atomic_get(&lecture_requested);
         if (lecture && !atomic_get(&lecture_active))
             enter_lecture();
