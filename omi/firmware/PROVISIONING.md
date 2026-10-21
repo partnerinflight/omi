@@ -46,12 +46,21 @@ remain until a successful save. A short press never resets settings.
 | 10–15 s | 2 pulses at 10 s | power off |
 | 20 s or more | 3 pulses at 20 s | open Wi-Fi setup (Wi-Fi build) |
 
-Short clicks and releases between windows do nothing. From `3.0.22-localwifi.15`.
+Single and double clicks and releases between windows do nothing. From `3.0.22-localwifi.15`.
 The BLE-only build uses the same pause and power-off windows; it has no setup
 gesture. An active upload
 stops at a safe record boundary before setup; an outstanding network operation
 may delay entry until its timeout. `omi-local wifi-forget` explicitly clears
 the selected configuration; reboot or hold 20 seconds and release to start setup again.
+
+**Triple-click** (three quick presses, each shorter than 0.3 s and at most 0.6 s apart)
+toggles **lecture mode**, from `3.0.22-localwifi.20`. Two vibration pulses confirm entry
+and exit, and the LED stays dim yellow while a lecture records. Entry ends the current
+recording; everything until the next triple-click is one lecture recording, because the
+30-second silence timer does not stop it. A 3–5 second hold still pauses, and resuming
+continues the lecture. Lecture mode ends by itself after 4 hours and is not kept across a
+restart. A fourth press cancels the gesture. Update the receiver first: older receivers
+ignore the marker and treat lectures as normal recordings.
 
 Configured boot does not expose an AP, including when Wi-Fi or the receiver is
 down. Normal uploads require charging, at least roughly one minute of queued

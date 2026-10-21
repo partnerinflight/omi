@@ -38,3 +38,10 @@ vm.createContext(context);vm.runInContext(SCRIPT,context);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''.replace('SCRIPT', json.dumps(script))
         subprocess.run([shutil.which('node'),'-e',harness],check=True)
+
+
+class PortalHelpTests(unittest.TestCase):
+    def test_help_describes_every_button_gesture_it_mentions(self):
+        text = PAGE.read_text()
+        self.assertIn('three times (20 seconds)', text)
+        self.assertIn('Triple-click the button to start or stop lecture mode', text)
