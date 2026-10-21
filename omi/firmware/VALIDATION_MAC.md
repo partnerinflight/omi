@@ -646,3 +646,29 @@ NCS 2.9.0 Wi-Fi sysbuild passed on Windows; both OTA image signatures verified O
 Archive: `C:\ncs\build\Omi_CV1_OTA_3.0.22-localwifi.19.zip`.
 ZIP SHA-256: `f5d7b0c5904b59c338353ea8b3b01b35001fc5888607d083f22fd2ccb3dbd432`.
 App digest: `174212e260eca36133d98fba38cf019b2055b3a54423326105cad45c52ddfcc1`.
+
+## Firmware 3.0.22-localwifi.20: lecture mode — 2026-10-21
+
+Triple-click toggles lecture mode: end marker, recording-mode marker
+(`"\0OMIMOD\1"` + mode byte), two pulses, dim solid yellow LED, no acoustic sleep,
+auto-exit after `CONFIG_OMI_LECTURE_MAX_MS` (4 h). Every boot writes a normal-mode
+marker before the first audio record. Single/double BLE tap notifications
+now wait for the 600 ms tap window. Hold gestures are unchanged.
+
+Native C tests execute the production tap logic and button handler, the owner
+transitions (entry/exit from recording, pause and acoustic sleep; pause inside a
+lecture; auto-exit; failed markers), the codec/TX-queue/pusher marker order, the boot
+marker ahead of the first audio record (including retries while the SD ring mounts),
+VOX suppression and the LED selector. Host suite: Ran 162 tests, OK.
+NCS 2.9.0 Wi-Fi sysbuild: app FLASH 874888 B of 949760 B (92.12%) / RAM 428976 B of
+440 KB (95.21%).
+Both OTA images pass MCUboot signature verification (`verify_zip.py`).
+Archive: `~/omi-firmware/Omi_CV1_OTA_3.0.22-localwifi.20.zip`.
+ZIP SHA-256: `e8f25ba1e76fdd0c57ad34dd2d38c01dbefaa4fcf27acff7d34d0bbac37399a2`.
+App digest: `0f8a9f56fcc5f6ba1c5de75d43aaa0920ce90dfdf38db4d67be063820b1c63b2`.
+Network digest: `c631a46b429e32d4ebf67ccc34fb3932a5a58562393de7f137bac7a656da9905`.
+
+Not flashed. Not validated on hardware: triple-click reliability on the real button,
+motor feel, yellow colour and brightness at 10 % PWM, battery cost of a 4-hour
+lecture without acoustic sleep, AAD owner stack headroom, and how long the boot marker
+waits for the SD ring to mount.
