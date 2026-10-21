@@ -173,6 +173,28 @@ class ProtocolCodecTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_lecture_marker_reaches_sidecar_over_wifi(self):
+        ts = 1_700_000_030
+        end = struct.pack('>I', ts) + P.RECORD_END_MAGIC + bytes(P.AUDIO_PAYLOAD_BYTES - len(P.RECORD_END_MAGIC))
+        payload = P.RECORD_MODE_MAGIC + b'\x01'
+        lecture = struct.pack('>I', ts) + payload + bytes(P.AUDIO_PAYLOAD_BYTES - len(payload))
+        self.ring.records[300] = end
+        self.ring.records[301] = lecture
+        self.ring.write_seq = 302
+        self.ring.record_session(ts, 20)  # seq 302-321, lecture audio
+        self.ring.records[self.ring.write_seq] = end
+        self.ring.write_seq += 1
+        up = FakeUploader(self.ring, self.secret)
+
+        async def go(server):
+            await up.run('127.0.0.1', server.bound_port)
+
+        run(self._with_server(go))
+        self.assertEqual(up.result, 'ok')
+        metas = [json.loads(p.with_suffix('.json').read_text()) for p in sorted(self.dest.glob('*.opus'))]
+        self.assertEqual([(m['start_seq'], m['mode'], m['complete']) for m in metas],
+                         [(0, 'normal', True), (302, 'lecture', True)])
+
     def test_timeout_keeps_checkpoint_and_next_session_resumes(self):
         up = FakeUploader(self.ring, self.secret, stall_after_chunks=3)
         async def stall(server):
