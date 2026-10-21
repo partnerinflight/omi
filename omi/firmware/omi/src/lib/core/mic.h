@@ -30,4 +30,7 @@ bool mic_in_aad_sleep(void);
 int mic_toggle_manual_pause(void);
 bool mic_is_manually_paused(void);
 bool mic_manual_pause_led_on(void);
+/* Nonblocking triple-click toggle; the microphone owner writes the markers. */
+int mic_toggle_lecture(void);
+bool mic_in_lecture(void);
 #endif

@@ -133,6 +133,24 @@ config OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS
         "A sound wake vibrates only when the mic was in hardware AAD sleep for
          at least this long. Shorter wake/sleep cycles resume silently."
 
+config OMI_LECTURE_MAX_MS
+    int "Lecture mode automatic exit (ms)"
+    range 60000 86400000
+    default 14400000
+    depends on OMI_ENABLE_T5838_AAD
+    help
+        "Lecture mode (triple-click) ends by itself after this long, exactly as if
+         triple-clicked again: end marker, normal-mode marker and two pulses.
+         Default 4 hours."
+
+config OMI_LECTURE_LED_PWM
+    int "Lecture mode yellow LED level (percent)"
+    range 1 100
+    default 10
+    help
+        "PWM duty of the red and green LEDs that show solid yellow during lecture
+         mode. Kept low so hours of solid light cost little battery."
+
 config OMI_MIC_START_DISCARD_MS
     int "Audio discarded after the mic restarts (ms)"
     range 0 2000
