@@ -16,7 +16,7 @@ from .meetings import overlapping, recording_span
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
 from .router import RouterQueue, route
-from .vault import publish, publish_meeting
+from .vault import publish, publish_lecture, publish_meeting
 from .speakers import Speakers
 from .clarifications import Clarifications
 from . import bridge
@@ -225,6 +225,8 @@ class Runtime:
                 cmd.append("--no-hermes")
             if kind == "meeting":
                 cmd.append("--meeting")
+            elif kind == "lecture":
+                cmd.append("--lecture")
             # Only on a fresh run: a replay from a saved manifest never re-runs dedupe.
             index = self.dedupe_index_or_none(job, root, kind)
             if index:
@@ -278,11 +280,17 @@ class Runtime:
         self.queue.progress(job["id"], "publishing")
         if kind == "meeting":
             notes = await asyncio.to_thread(publish_meeting, cfg.vault_path, cfg.meetings_vault_folder, job, manifest)
+        elif kind == "lecture":
+            notes = await asyncio.to_thread(
+                publish_lecture, cfg.vault_path, cfg.lectures_vault_folder, job, manifest,
+                not cfg.delete_audio_after_processing,
+            )
         else:
             notes = await asyncio.to_thread(
                 publish, cfg.vault_path, cfg.vault_folder, job, manifest, not cfg.delete_audio_after_processing
             )
-        if self.routing():
+        # Lectures stay in the lectures folder: never routed, so never in daily notes either.
+        if kind != "lecture" and self.routing():
             # Idempotent, so a crash-replay of this job enqueues nothing twice.
             kept = [w for w in manifest["windows"]
                     if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
@@ -290,7 +298,8 @@ class Runtime:
         return {
             "notes": len(notes),
             "warnings": len(manifest.get("fallbacks", [])),
-            "filtered": sum(w.get("memory_keep") is not True for w in manifest["windows"]),
+            # A lecture is published whole: nothing is filtered.
+            "filtered": 0 if kind == "lecture" else sum(w.get("memory_keep") is not True for w in manifest["windows"]),
             "windows": len(manifest["windows"]),
             **({"deduped": manifest["dedupe"]["dropped_count"],
                 "alignment_failed": manifest["dedupe"]["alignment_failed"]}

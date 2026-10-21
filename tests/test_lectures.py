@@ -321,5 +321,81 @@ class LectureNoteTests(unittest.TestCase):
         self.assertFalse((self.vault / "Omi" / "Lectures").exists())
 
 
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
+class LectureEndToEndTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.task = None
+
+    async def asyncTearDown(self):
+        if self.task:
+            self.runtime.stop.set()
+            await asyncio.wait_for(self.task, 10)
+        self.tmp.cleanup()
+
+    async def start(self, hermes_url=None):
+        from second_brain.runtime import Runtime
+        cfg = configuration(self.root)
+        if hermes_url:
+            pipeline = json.loads(cfg.pipeline_config.read_text())
+            # router_enabled too: if lecture text reached the router, Decisions/Daily notes would appear.
+            pipeline.update(router_enabled=True, hermes_url=hermes_url)
+            write_json(cfg.pipeline_config, pipeline)
+            cfg = dataclasses.replace(cfg, no_hermes=False)  # helpers default to no Hermes
+        self.cfg = cfg
+        self.runtime = Runtime(cfg)
+        self.task = asyncio.create_task(self.runtime.run())
+        for _ in range(100):
+            if self.runtime.server and self.runtime.server._server:
+                break
+            if self.task.done():
+                await self.task
+            await asyncio.sleep(0.01)
+
+    async def wait_complete(self):
+        for _ in range(600):
+            counts = self.runtime.queue.snapshot()["counts"]
+            if counts.get("complete") or counts.get("failed"):
+                break
+            await asyncio.sleep(0.05)
+        logs = "\n".join(p.read_text()[-3000:] for p in (self.root / "data/jobs").rglob("pipeline.log"))
+        self.assertEqual(counts.get("complete"), 1, str(self.runtime.queue.snapshot()) + logs)
+
+    async def test_uploaded_lecture_becomes_one_transcript_note(self):
+        from tests.helpers import lecture_records, upload
+        from omi_local import upload_protocol as U
+        await self.start()
+        self.assertEqual(await upload(self.runtime.server.bound_port, lecture_records()), U.MSG_BYE)
+        await self.wait_complete()
+        folder = self.cfg.vault_path / "Omi" / "Lectures"
+        [note] = list(folder.glob("*.md"))
+        text = note.read_text(encoding="utf-8")
+        self.assertIn('type: "omi-lecture"', text)
+        self.assertIn(f"[[{note.stem} Summary]]", text)
+        self.assertIn("### 0:00", text)
+        self.assertIn("c0000:S1", text)
+        self.assertIn("c0000:S2", text)
+        self.assertIn("project launch", text)
+        # Exactly one note in the whole vault: nothing in Conversations, no router or daily notes.
+        self.assertEqual(list(self.cfg.vault_path.rglob("*.md")), [note])
+        self.assertEqual(self.runtime.router.snapshot()["pending"] + self.runtime.router.snapshot()["done"], 0)
+        [job] = self.runtime.queue.snapshot()["recent"]
+        self.assertEqual(job["kind"], "lecture")
+        with self.runtime.queue.connect() as db:
+            result = json.loads(db.execute("SELECT result FROM jobs").fetchone()[0])
+        self.assertEqual((result["notes"], result["filtered"]), (1, 0))
+        # Lecture audio is deleted after publication, like other Omi audio.
+        self.assertIn("Audio deleted after processing", text)
+        self.assertEqual(list(self.cfg.incoming_dir.glob("*.opus")), [])
+        # Crash replay republishes from the saved manifest without another ASR run.
+        with self.runtime.queue.connect() as db:
+            db.execute("UPDATE jobs SET state='processing'")
+        self.runtime.queue.recover()
+        await self.wait_complete()
+        self.assertEqual(note.read_text(encoding="utf-8"), text)
+        self.assertEqual(len(list((self.root / "data/jobs").rglob("pipeline.log"))), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
