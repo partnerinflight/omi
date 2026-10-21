@@ -55,6 +55,80 @@ int main(void){
 }
 ''')
 
+    def test_button_handler_toggles_lecture_and_delays_tap_notifications(self):
+        self.compile_run(r'''
+#include <stdint.h>
+#include <stdbool.h>
+#include <assert.h>
+#include <stddef.h>
+#include "lib/core/button_hold.h"
+#include "lib/core/button_taps.h"
+#define CONFIG_OMI_WIFI_UPLOAD 1
+#define CONFIG_OMI_ENABLE_HAPTIC 1
+#define IS_ENABLED(x) (x)
+#define LOG_INF(...) ((void)0)
+#define LOG_WRN(...) ((void)0)
+#define LOG_PRINTK(...) ((void)0)
+#define K_MSEC(x) (x)
+#define BUTTON_CHECK_INTERVAL 40
+#define BUTTON_PRESSED 1
+#define BUTTON_RELEASED 0
+#define GRACE 1
+typedef uint8_t u_int8_t;
+typedef enum { BUTTON_EVENT_NONE, BUTTON_EVENT_SINGLE_TAP, BUTTON_EVENT_DOUBLE_TAP,
+ BUTTON_EVENT_LONG_PRESS, BUTTON_EVENT_RELEASE } ButtonEvent;
+struct k_work {int unused;};
+static bool was_pressed,btn_is_pressed,is_off;
+static uint8_t hold_level_played;
+static uint32_t now,current_time,btn_last_pressed_time,btn_press_start_time;
+static u_int8_t btn_last_event;
+static struct button_taps btn_taps;
+static int button_work,current_button_state,toggles,lectures,taps,doubles,releases,off,setup;
+uint32_t k_uptime_get_32(void){return now;}
+int mic_toggle_manual_pause(void){toggles++;return 0;}
+int mic_toggle_lecture(void){lectures++;return 0;}
+void turnoff_all(void){off++;}
+void wifi_upload_request_provisioning(void){setup++;}
+void notify_long_tap(void){}
+void notify_tap(void){taps++;}
+void notify_double_tap(void){doubles++;}
+void notify_unpress(void){releases++;}
+void play_haptic_pulses(uint8_t n){(void)n;}
+void k_work_reschedule(int *w,int ms){(void)w;assert(ms==40);}
+''' + function(SRC/'lib/core/button.c', 'void check_button_level(struct k_work *work_item)\n{') + r'''
+static void poll(uint32_t t,bool down){now=t;was_pressed=down;check_button_level(NULL);}
+/* Hold for `down` ms, polled every 40 ms like the work item; returns the release poll. */
+static uint32_t click(uint32_t at,uint32_t down){uint32_t t=at;for(;t<at+down;t+=40)poll(t,true);poll(t,false);return t;}
+static void idle(uint32_t from,uint32_t to){for(uint32_t t=from;t<=to;t+=40)poll(t,false);}
+int main(void){
+ /* Triple-click toggles lecture mode once, only after the 600 ms window closes. */
+ uint32_t r=click(1000,120);r=click(r+200,120);r=click(r+200,120);
+ idle(r+40,r+600);assert(!lectures && !taps && !doubles && !releases);
+ poll(r+640,false);assert(lectures==1 && !taps && !doubles && !toggles && releases==1);
+ /* Single and double taps are notified only once their window has closed. */
+ r=click(5000,120);idle(r+40,r+600);assert(!taps);poll(r+640,false);assert(taps==1 && !doubles);
+ r=click(8000,120);r=click(r+200,120);idle(r+40,r+600);assert(!doubles);
+ poll(r+640,false);assert(doubles==1 && taps==1 && lectures==1);
+ /* A fourth click cancels: no lecture toggle, no tap notification. */
+ r=click(12000,120);for(int i=0;i<3;i++)r=click(r+200,120);idle(r+40,r+2000);
+ assert(lectures==1 && taps==1 && doubles==1);
+ /* Clicks then a 3 s hold: the hold pauses and the clicks are dropped. */
+ r=click(20000,120);r=click(r+200,120);r=click(r+200,3200);idle(r+40,r+2000);
+ assert(toggles==1 && lectures==1 && doubles==1 && taps==1);
+ /* A slow third click (680 ms gap) is a double then a single. */
+ r=click(30000,120);r=click(r+200,120);idle(r+40,r+640);r=click(r+680,120);idle(r+40,r+2000);
+ assert(lectures==1 && doubles==2 && taps==2);
+ /* A 320 ms press inside the sequence is not a tap. */
+ r=click(40000,120);r=click(r+200,320);r=click(r+200,120);idle(r+40,r+2000);
+ assert(lectures==1 && taps==3 && doubles==2 && toggles==1);
+ /* No lecture toggle while powered off. */
+ is_off=true;r=click(50000,120);r=click(r+200,120);r=click(r+200,120);idle(r+40,r+2000);
+ assert(lectures==1);is_off=false;
+ assert(!off && !setup);
+ return 0;
+}
+''')
+
 
 if __name__ == '__main__':
     unittest.main()

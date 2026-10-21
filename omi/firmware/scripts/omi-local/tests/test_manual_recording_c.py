@@ -154,6 +154,7 @@ int main(void){int16_t samples[4]={0};
 #include <assert.h>
 #include <stddef.h>
 #include "lib/core/button_hold.h"
+#include "lib/core/button_taps.h"
 #define CONFIG_OMI_WIFI_UPLOAD 1
 #define CONFIG_OMI_ENABLE_HAPTIC 1
 #define IS_ENABLED(x) (x)
@@ -164,8 +165,6 @@ int main(void){int16_t samples[4]={0};
 #define BUTTON_CHECK_INTERVAL 40
 #define BUTTON_PRESSED 1
 #define BUTTON_RELEASED 0
-#define TAP_THRESHOLD 300
-#define DOUBLE_TAP_WINDOW 600
 #define GRACE 1
 typedef uint8_t u_int8_t;
 typedef enum { BUTTON_EVENT_NONE, BUTTON_EVENT_SINGLE_TAP, BUTTON_EVENT_DOUBLE_TAP,
@@ -173,11 +172,13 @@ typedef enum { BUTTON_EVENT_NONE, BUTTON_EVENT_SINGLE_TAP, BUTTON_EVENT_DOUBLE_T
 struct k_work {int unused;};
 static bool was_pressed,btn_is_pressed,is_off;
 static uint8_t hold_level_played;
-static uint32_t now,current_time,btn_last_pressed_time,btn_press_start_time,btn_release_time,btn_last_tap_time;
+static uint32_t now,current_time,btn_last_pressed_time,btn_press_start_time;
 static u_int8_t btn_last_event;
+static struct button_taps btn_taps;
 static int button_work,current_button_state,toggles,off,setup,buzz,last;
 uint32_t k_uptime_get_32(void){return now;}
 int mic_toggle_manual_pause(void){toggles++;return 0;}
+int mic_toggle_lecture(void){assert(0);return 0;}
 void turnoff_all(void){off++;}
 void wifi_upload_request_provisioning(void){setup++;}
 void notify_long_tap(void){} void notify_tap(void){}
