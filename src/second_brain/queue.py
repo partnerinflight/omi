@@ -10,6 +10,13 @@ from pathlib import Path
 from .kinds import job_kind
 
 
+def public(row) -> dict:
+    """A job row for public status: its kind replaces the private metadata it is derived from."""
+    value = dict(row)
+    value["kind"] = job_kind(json.loads(value.pop("metadata")))
+    return value
+
+
 class Queue:
     def __init__(self, path: Path):
         self.path = path
@@ -139,13 +146,13 @@ class Queue:
         with self.connect() as db:
             counts = {r["state"]: r["n"] for r in db.execute("SELECT state,count(*) n FROM jobs GROUP BY state")}
             current = db.execute(
-                "SELECT id,stage,attempts,updated FROM jobs WHERE state='processing' LIMIT 1"
+                "SELECT id,stage,attempts,updated,metadata FROM jobs WHERE state='processing' LIMIT 1"
             ).fetchone()
             events = [dict(r) for r in db.execute("SELECT time,kind,job,detail FROM events ORDER BY id DESC LIMIT 10")]
             recent = [
-                dict(r)
+                public(r)
                 for r in db.execute(
-                    "SELECT id,state,stage,attempts,error,updated FROM jobs ORDER BY updated DESC LIMIT 10"
+                    "SELECT id,state,stage,attempts,error,updated,metadata FROM jobs ORDER BY updated DESC LIMIT 10"
                 )
             ]
-            return {"counts": counts, "current": dict(current) if current else None, "recent": recent, "events": events}
+            return {"counts": counts, "current": public(current) if current else None, "recent": recent, "events": events}

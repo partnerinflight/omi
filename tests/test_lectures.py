@@ -119,5 +119,25 @@ class LectureKindWiringTests(unittest.TestCase):
             {"kind": "lecture", "first_utc": "2026-10-21T15:00:00Z"})}}, set()), [])
 
 
+class QueueKindTests(unittest.TestCase):
+    def test_public_snapshot_carries_the_kind_but_never_the_metadata(self):
+        from second_brain.queue import Queue
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            queue = Queue(root / "queue.sqlite3")
+            expected = {"a": "lecture", "b": "meeting", "c": "omi"}
+            for name, extra in (("a", {"mode": "lecture"}), ("b", {"source": "meeting", "capture_id": "ab" * 16}),
+                                ("c", {})):
+                audio = root / f"{name}.opus"
+                audio.write_bytes(name.encode())
+                queue.enqueue(audio, {"device": "private-device-name", "start_seq": 1, **extra})
+            job = queue.claim()
+            snapshot = queue.snapshot()
+            self.assertEqual(sorted(j["kind"] for j in snapshot["recent"]), ["lecture", "meeting", "omi"])
+            self.assertEqual(snapshot["current"]["kind"], expected[Path(job["audio"]).stem])
+            self.assertNotIn("metadata", snapshot["recent"][0])
+            self.assertNotIn("private-device-name", json.dumps(snapshot))
+
+
 if __name__ == "__main__":
     unittest.main()
