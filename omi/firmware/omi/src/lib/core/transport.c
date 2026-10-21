@@ -935,6 +935,31 @@ K_SEM_DEFINE(tx_queue_sem, 0, NETWORK_RING_BUF_SIZE);
 static K_SEM_DEFINE(recording_end_done, 0, 1);
 static int recording_end_result;
 
+/* Each slot is a 2-byte header plus CODEC_OUTPUT_MAX_BYTES of data. The header is
+ * the Opus frame length, 0 for a recording-end marker, or TX_ENTRY_MODE_MARKER
+ * followed by one recording-mode byte. */
+#define TX_ENTRY_MODE_MARKER 0xFFFFU
+BUILD_ASSERT(CODEC_OUTPUT_MAX_BYTES < TX_ENTRY_MODE_MARKER, "Opus length collides with the mode marker");
+
+static bool put_tx_entry(uint16_t header, const uint8_t *data, size_t size)
+{
+    // Copy data (TODO: Avoid this copy)
+    tx_buffer_2[0] = header & 0xFF;
+    tx_buffer_2[1] = (header >> 8) & 0xFF;
+    memcpy(tx_buffer_2 + RING_BUFFER_HEADER_SIZE, data, size);
+
+    // Write to ring buffer
+    int written =
+        ring_buf_put(&ring_buf,
+                     tx_buffer_2,
+                     (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)); // It always fits completely or not at all
+    if (written != CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE) {
+        return false;
+    }
+    k_sem_give(&tx_queue_sem);
+    return true;
+}
+
 static bool write_to_tx_queue(uint8_t *data, size_t size)
 {
 #ifdef CONFIG_OMI_ENABLE_MONITOR
@@ -945,23 +970,7 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
     if (size > CODEC_OUTPUT_MAX_BYTES) {
         return false;
     }
-
-    // Copy data (TODO: Avoid this copy)
-    tx_buffer_2[0] = size & 0xFF;
-    tx_buffer_2[1] = (size >> 8) & 0xFF;
-    memcpy(tx_buffer_2 + RING_BUFFER_HEADER_SIZE, data, size);
-
-    // Write to ring buffer
-    int written =
-        ring_buf_put(&ring_buf,
-                     tx_buffer_2,
-                     (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)); // It always fits completely or not at all
-    if (written != CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE) {
-        return false;
-    } else {
-        k_sem_give(&tx_queue_sem);
-        return true;
-    }
+    return put_tx_entry((uint16_t) size, data, size);
 }
 
 static bool read_from_tx_queue()
@@ -1046,13 +1055,19 @@ void pusher(void)
         }
 
         while (read_from_tx_queue()) {
-            if (!tx_buffer_size) {
+            if (!tx_buffer_size || tx_buffer_size == TX_ENTRY_MODE_MARKER) {
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                recording_end_result =
-                    is_sd_on() && record_packer_end(
-                                      storage_temp_data, sizeof(storage_temp_data), &buffer_offset, emit_recording_end)
-                        ? 0
-                        : -EIO;
+                /* Both markers flush the partial record first, so they follow every earlier frame. */
+                bool written = is_sd_on() && (tx_buffer_size ? record_packer_mode(storage_temp_data,
+                                                                                  sizeof(storage_temp_data),
+                                                                                  &buffer_offset,
+                                                                                  tx_buffer[RING_BUFFER_HEADER_SIZE],
+                                                                                  emit_recording_end)
+                                                             : record_packer_end(storage_temp_data,
+                                                                                 sizeof(storage_temp_data),
+                                                                                 &buffer_offset,
+                                                                                 emit_recording_end));
+                recording_end_result = written ? 0 : -EIO;
 #else
                 recording_end_result = -ENOTSUP;
 #endif
@@ -1276,15 +1291,25 @@ int broadcast_audio_packets(uint8_t *buffer, size_t size)
     return 0;
 }
 
-int transport_end_recording(void)
+/* Queue a marker behind every earlier frame and wait until the pusher wrote it. */
+static int queue_recording_marker(uint16_t header, uint8_t value)
 {
-    uint8_t unused = 0;
     int64_t deadline = k_uptime_get() + 1000;
-    while (!write_to_tx_queue(&unused, 0)) {
+    while (!put_tx_entry(header, &value, header == TX_ENTRY_MODE_MARKER ? 1 : 0)) {
         if (k_uptime_get() >= deadline)
             return -ENOBUFS;
         k_sleep(K_MSEC(5));
     }
     k_sem_take(&recording_end_done, K_FOREVER);
     return recording_end_result;
+}
+
+int transport_end_recording(void)
+{
+    return queue_recording_marker(0, 0);
+}
+
+int transport_mark_mode(uint8_t mode)
+{
+    return queue_recording_marker(TX_ENTRY_MODE_MARKER, mode);
 }
