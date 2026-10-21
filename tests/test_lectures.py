@@ -321,6 +321,88 @@ class LectureNoteTests(unittest.TestCase):
         self.assertFalse((self.vault / "Omi" / "Lectures").exists())
 
 
+class FakeSummarizer:
+    """Stands in for router.chat: numbered section summaries, then one combined summary."""
+
+    def __init__(self, error=None):
+        self.calls, self.error = [], error
+
+    def __call__(self, cfg, system, user):
+        from second_brain import lectures
+        if self.error:
+            raise self.error
+        self.calls.append((system, user))
+        if system == lectures.SECTION_PROMPT:
+            return {"summary": f"Section {len(self.calls)}."}
+        return {"summary": "Combined."}
+
+
+class LectureSummaryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / "vault"
+        self.vault.mkdir()
+
+    def test_sections_are_summarized_then_combined(self):
+        from second_brain import lectures, router
+        fake = FakeSummarizer()
+        with patch.object(router, "chat", fake):
+            summary = lectures.summarize({}, lecture_manifest())
+        self.assertEqual([system for system, _ in fake.calls],
+                         [lectures.SECTION_PROMPT, lectures.SECTION_PROMPT, lectures.COMBINE_PROMPT])
+        self.assertIn("Today we define entropy.", fake.calls[0][1])
+        self.assertNotIn("Chapter one.", "".join(user for _, user in fake.calls))  # excluded speaker
+        self.assertIn("[0:00] Section 1.", fake.calls[2][1])
+        self.assertIn("[1:01:40] Section 2.", fake.calls[2][1])
+        self.assertEqual(summary, {"version": 1, "summary": "Combined.", "sections": [
+            {"id": "w0000", "start": 0.0, "end": 65.0, "summary": "Section 1."},
+            {"id": "w0001", "start": 3700.0, "end": 3720.0, "summary": "Section 2."}]})
+
+    def test_an_empty_hermes_reply_is_an_error_not_an_empty_summary(self):
+        from second_brain import lectures, router
+        for reply in ({}, {"summary": "  "}, {"summary": ["not", "text"]}):
+            with patch.object(router, "chat", lambda cfg, system, user: reply):
+                with self.assertRaisesRegex(ValueError, "Hermes returned no summary"):
+                    lectures.summarize({}, lecture_manifest())
+        with self.assertRaisesRegex(ValueError, "no transcript"):
+            lectures.summarize({}, {"windows": []})
+
+    def test_summary_note_links_back_and_preserves_edits(self):
+        from second_brain.vault import NoteConflict, publish_lecture_summary
+        summary = {"version": 1, "summary": "Combined.", "sections": [
+            {"id": "w0000", "start": 0.0, "end": 65.0, "summary": "Section 1."}]}
+        written = publish_lecture_summary(self.vault, "Omi/Lectures", JOB, "2026-10-21T15:00:00Z", summary)
+        self.assertEqual([Path(p) for p in written], [Path("Omi/Lectures") / f"{JOB} Summary.md"])
+        path = self.vault / written[0]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn('type: "omi-lecture-summary"', text)
+        self.assertIn(f'transcript: "[[{JOB}]]"', text)
+        self.assertIn(f"Transcript: [[{JOB}]]", text)
+        self.assertLess(text.index("## Summary"), text.index("Combined."))
+        self.assertLess(text.index("### 0:00"), text.index("Section 1."))
+        self.assertEqual(publish_lecture_summary(self.vault, "Omi/Lectures", JOB, "2026-10-21T15:00:00Z", summary),
+                         written)
+        path.write_text(text + "\nmy notes\n")
+        with self.assertRaises(NoteConflict):
+            publish_lecture_summary(self.vault, "Omi/Lectures", JOB, "2026-10-21T15:00:00Z", summary)
+        with self.assertRaisesRegex(ValueError, "Invalid job ID"):
+            publish_lecture_summary(self.vault, "Omi/Lectures", "../x", "2026-10-21T15:00:00Z", summary)
+
+    def test_summary_queue_is_idempotent_and_backs_off_like_routing(self):
+        from second_brain.lectures import SummaryQueue
+        queue = SummaryQueue(self.root / "lectures.sqlite3")
+        self.assertEqual(queue.enqueue(JOB, "2026-10-21T15:00:00Z"), 1)
+        self.assertEqual(queue.enqueue(JOB, "2026-10-21T15:00:00Z"), 0, "idempotent")
+        item = queue.claim()
+        self.assertEqual((item["id"], item["job"], item["observed_at"]), (JOB, JOB, "2026-10-21T15:00:00Z"))
+        queue.fail(item, "URLError; see private service log")
+        self.assertIsNone(queue.claim(), "backs off")
+        self.assertEqual(queue.snapshot()["pending"], 1)
+        self.assertEqual(queue.snapshot()["last_error"], "URLError; see private service log")
+
+
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
 class LectureEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

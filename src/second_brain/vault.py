@@ -215,3 +215,33 @@ def publish_lecture(vault: Path, folder: str, job: dict, manifest: dict, audio_r
     path = dest / f"{job['id']}.md"
     _write_note(path, dest, "\n".join(lines).encode("utf-8"))
     return [str(path.relative_to(root))]
+
+
+def publish_lecture_summary(vault: Path, folder: str, job_id: str, recorded_at: str, summary: dict) -> list[str]:
+    """The lecture's summary note, rendered from the frozen lecture-summary.json and linked back
+    to the transcript note."""
+    if not job_id.isalnum():
+        raise ValueError("Invalid job ID")
+    root, dest = _destination(vault, folder)
+    transcript = f"[[{job_id}]]"
+    front = {"type": "omi-lecture-summary", "source_id": job_id, "recorded_at": recorded_at,
+             "transcript": transcript}
+    lines = _frontmatter(front) + [
+        f"# Lecture summary · {recorded_at}",
+        "",
+        f"Transcript: {transcript}",
+        "",
+        "Written by Hermes from the transcript; check it against the transcript before relying on it.",
+        "",
+        "## Summary",
+        "",
+        summary["summary"].strip(),
+        "",
+        "## Sections",
+        "",
+    ]
+    for section in summary["sections"]:
+        lines += [f"### {_clock(section['start'])}", "", section["summary"].strip(), ""]
+    path = dest / f"{job_id} Summary.md"
+    _write_note(path, dest, "\n".join(lines).encode("utf-8"))
+    return [str(path.relative_to(root))]
