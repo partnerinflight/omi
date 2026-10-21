@@ -32,6 +32,7 @@
                       HeadersVisibility="Column" GridLinesVisibility="Horizontal" CanUserAddRows="False">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Job" Binding="{Binding Job}" Width="100" />
+                    <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="80" />
                     <DataGridTextColumn Header="State" Binding="{Binding State}" Width="100" />
                     <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="120" />
                     <DataGridTextColumn Header="Attempts" Binding="{Binding Attempts}" Width="80" />

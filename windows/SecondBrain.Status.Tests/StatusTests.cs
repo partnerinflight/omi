@@ -17,6 +17,7 @@ static class StatusTests
         {
             ["id"] = "14fe9d78d90b359d530a1dc5", ["state"] = "processing", ["stage"] = "transcribing",
             ["attempts"] = 1, ["error"] = null, ["updated"] = Now.ToUnixTimeSeconds(),
+            ["kind"] = "lecture",
         }),
         ["events"] = new JsonArray(new JsonObject
         {
@@ -64,6 +65,15 @@ static class StatusTests
         Check.Equal(2, live.People, "people");
         Check.Equal("1 note published", live.Events[0].Detail, "event detail");
         Check.Equal("14fe9d78", live.Jobs[0].ShortId, "short job id");
+        Check.Equal("lecture", live.Jobs[0].Kind, "job kind");
+        Check.Equal("Lecture", live.Jobs[0].Badge, "lecture badge");
+        var meetingJob = Live();
+        meetingJob["recent"]![0]!["kind"] = "meeting";
+        Check.Equal("Meeting", Parse(meetingJob).Jobs[0].Badge, "meeting badge");
+        var legacyJob = Live();
+        legacyJob["recent"]![0]!.AsObject().Remove("kind");
+        var legacy = Parse(legacyJob).Jobs[0];
+        Check.Equal(("omi", ""), (legacy.Kind, legacy.Badge), "a service before job kinds shows no badge");
         Check.That(live.Tooltip.Length <= 127 && live.Tooltip.Contains("Queue 2 · Done 4 · Failed 0"), "tooltip");
 
         Check.Equal(Health.Running, ServiceStatus.Parse(Live().ToJsonString(), Now.AddSeconds(15)).Health, "heartbeat exactly 15 s old is still fresh");

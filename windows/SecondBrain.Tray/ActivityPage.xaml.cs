@@ -3,7 +3,7 @@ using SecondBrain.Status;
 
 namespace SecondBrain.Tray;
 
-public sealed record JobRow(string Job, string State, string Stage, int Attempts, string Error, string Updated);
+public sealed record JobRow(string Job, string Kind, string State, string Stage, int Attempts, string Error, string Updated);
 
 public partial class ActivityPage : UserControl
 {
@@ -23,7 +23,7 @@ public partial class ActivityPage : UserControl
         if (shownJobs is null || !status.Jobs.SequenceEqual(shownJobs))
         {
             shownJobs = status.Jobs;
-            JobsGrid.ItemsSource = status.Jobs.Select(j => new JobRow(j.ShortId, j.State, j.Stage, j.Attempts, j.Error ?? "", Formats.Time(j.Updated, now))).ToList();
+            JobsGrid.ItemsSource = status.Jobs.Select(j => new JobRow(j.ShortId, j.Badge, j.State, j.Stage, j.Attempts, j.Error ?? "", Formats.Time(j.Updated, now))).ToList();
         }
     }
 }
