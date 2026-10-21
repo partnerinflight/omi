@@ -580,5 +580,27 @@ class Api(unittest.TestCase):
                 db.pool().putconn(conn)
         self.assertEqual(self.http("GET", "/v1/health").status_code, 200)
 
+    def test_pairing_limiter_is_per_ip_with_a_global_ceiling(self):
+        from sb_server import app as api
+        api.pairing_failures.reset()
+        attacker, owner = {"X-Forwarded-For": "203.0.113.7"}, {"X-Forwarded-For": "198.51.100.2"}
+        for _ in range(10):
+            self.assertEqual(self.http("POST", "/v1/pair", json={"code": "WRONGCODE1"}, headers=attacker).status_code, 401)
+        r = self.http("POST", "/v1/pair", json={"code": self.pairing_code()}, headers=attacker)
+        self.assertEqual((r.status_code, r.headers.get("retry-after")), (429, "600"))
+        # Another address still pairs.
+        self.assertEqual(self.http("POST", "/v1/pair", json={"code": self.pairing_code()}, headers=owner).status_code, 200)
+        api.pairing_failures.reset()
+
+    def test_limiter_counts_concurrent_attempts_and_global_ceiling(self):
+        from sb_server.auth import FailureLimiter
+        lim = FailureLimiter(per_key=10, window=600, total=100, total_window=3600)
+        slots = [lim.reserve("a") for _ in range(12)]
+        self.assertEqual(sum(s is not None for s in slots), 10)  # in-flight attempts count
+        lim.release("a", slots[0])  # a success frees its slot
+        self.assertIsNotNone(lim.reserve("a"))
+        lim = FailureLimiter(per_key=10, window=600, total=3, total_window=3600)
+        self.assertEqual([lim.reserve(k) is not None for k in "abcd"], [True, True, True, False])
+
 if __name__ == "__main__":
     unittest.main()

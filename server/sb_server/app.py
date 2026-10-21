@@ -67,8 +67,10 @@ class PairRequest(BaseModel):
 
 
 @app.post("/v1/pair")
-def pair(body: PairRequest, conn: Db):
-    if pairing_failures.blocked():
+def pair(body: PairRequest, conn: Db, request: Request):
+    client = request.client.host if request.client else "unknown"  # real IP: forwarded only from Traefik
+    slot = pairing_failures.reserve(client)
+    if slot is None:
         raise HTTPException(429, "too_many_attempts", headers={"Retry-After": "600"})
     with conn.transaction():
         row = conn.execute(
@@ -77,8 +79,8 @@ def pair(body: PairRequest, conn: Db):
             (auth.digest(body.code.strip().upper()),),
         ).fetchone()
         if not row:
-            pairing_failures.fail()
-            raise HTTPException(401, "invalid_code")
+            raise HTTPException(401, "invalid_code")  # the reserved slot stays: a failure
+        pairing_failures.release(client, slot)
         device_id = uuid.uuid4()
         conn.execute("INSERT INTO devices (id, name) VALUES (%s, %s)", (device_id, row["device_name"]))
         return auth.issue_tokens(conn, device_id)
