@@ -15,6 +15,15 @@ jobs:
           python-version: '3.12'
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python scripts/test.py
+      - name: Selfhost compose keeps its hardening
+        env:
+          HA_COMPOSE_PROJECT_NAME: ci
+          DOMAINNAME_CLOUD_SERVER: example.com
+          SECONDBRAIN_SERVER_COMMIT: "0000000"
+          SECONDBRAIN_DB_PASSWORD: ci-not-a-secret
+        run: |
+          docker compose -f deploy/selfhost/ci-stub.yml -f deploy/selfhost/secondbrain.yml --profile apps \
+            config --format json | python3 deploy/selfhost/check_compose.py
       - name: Hermes checklist contracts (no live Telegram traffic)
         working-directory: integrations/hermes/plugins/secondbrain-checklist
         run: |

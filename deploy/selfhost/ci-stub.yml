@@ -1,0 +1,10 @@
+# CI only: stands in for the HA_Selfhost networks and postgres service secondbrain.yml joins.
+networks:
+  proxy_secondbrain:
+    internal: true
+  secondbrain_db:
+    internal: true
+services:
+  postgresdb:
+    image: postgres:14-alpine
+    healthcheck: {test: ["CMD", "true"]}
