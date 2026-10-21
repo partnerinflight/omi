@@ -11,6 +11,7 @@ from pathlib import Path
 from omi_local.server import UploadServer, load_or_create_secret
 from .config import Config, read_json
 from .io import InstanceLock, utc_from_ms, write_json
+from .kinds import job_kind, with_kind
 from .meetings import overlapping, recording_span
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
@@ -87,8 +88,8 @@ class Runtime:
                 audio = Path(value["audio"]).resolve()
                 if not audio.is_relative_to(self.cfg.incoming_dir.resolve()):
                     raise ValueError("Receipt path escapes incoming directory")
-                metadata = value["metadata"]
-                if metadata.get("source") == "meeting":
+                metadata = with_kind(value["metadata"])
+                if metadata["kind"] == "meeting":
                     # Speaker review, routing and notes read the start time from first_utc.
                     metadata = {**metadata, "first_utc": utc_from_ms(metadata["start_ms"])}
                 if not self.queue.known(audio):
@@ -176,9 +177,10 @@ class Runtime:
         write_json(path, {"recording_epoch": int(span[0]), "captures": found.closed})
         return str(path)
 
-    def dedupe_index_or_none(self, job, root: Path, meeting):
-        """The dedupe index path, or None. Dedupe never fails a job: any error means no dedupe."""
-        if meeting:
+    def dedupe_index_or_none(self, job, root: Path, kind):
+        """The dedupe index path, or None. Only Omi recordings are deduped (never meetings or
+        lectures), and dedupe never fails a job: any error means no dedupe."""
+        if kind != "omi":
             return None
         try:
             return self.meeting_index(job, root)
@@ -192,7 +194,7 @@ class Runtime:
         root.mkdir(parents=True, exist_ok=True)
         manifest_path = root / "manifest.json"
         metadata = json.loads(job["metadata"])
-        meeting = metadata.get("source") == "meeting"
+        kind = job_kind(metadata)
         if not manifest_path.exists():
             with Path(job["audio"]).open("rb") as f:
                 digest = hashlib.file_digest(f, "sha256").hexdigest()
@@ -221,10 +223,10 @@ class Runtime:
                 cmd.append("--skip-vibe7")
             if cfg.no_hermes:
                 cmd.append("--no-hermes")
-            if meeting:
+            if kind == "meeting":
                 cmd.append("--meeting")
             # Only on a fresh run: a replay from a saved manifest never re-runs dedupe.
-            index = self.dedupe_index_or_none(job, root, meeting)
+            index = self.dedupe_index_or_none(job, root, kind)
             if index:
                 cmd += ["--meeting-dedupe", index]
             env = os.environ.copy()
@@ -271,10 +273,10 @@ class Runtime:
         # turn a crash-replay into an edited-note conflict.
         publication = root / "publication-manifest.json"
         if not publication.exists():
-            write_json(publication, self.speakers.render(job["id"], manifest, cfg.owner_name if meeting else None))
+            write_json(publication, self.speakers.render(job["id"], manifest, cfg.owner_name if kind == "meeting" else None))
         manifest = read_json(publication)
         self.queue.progress(job["id"], "publishing")
-        if meeting:
+        if kind == "meeting":
             notes = await asyncio.to_thread(publish_meeting, cfg.vault_path, cfg.meetings_vault_folder, job, manifest)
         else:
             notes = await asyncio.to_thread(

@@ -7,6 +7,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from .kinds import job_kind
 
 
 class Queue:
@@ -44,7 +45,7 @@ class Queue:
     def enqueue(self, path: Path, metadata: dict):
         with path.open("rb") as audio:
             digest = hashlib.file_digest(audio, "sha256").hexdigest()
-        if metadata.get("source") == "meeting":
+        if job_kind(metadata) == "meeting":
             identity = f"meeting:{metadata['capture_id']}:{digest}"
         else:
             identity = f"{metadata['device']}:{metadata['start_seq']}:{digest}"

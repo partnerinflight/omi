@@ -766,8 +766,8 @@ class RuntimeDedupeTests(unittest.TestCase):
         job = self.runtime.queue.claim()
         root = self.cfg.data_dir / "jobs" / job["id"]
         with mock.patch("second_brain.runtime.overlapping", side_effect=OSError("boom")):
-            self.assertIsNone(self.runtime.dedupe_index_or_none(job, root, False))
-        self.assertIsNone(self.runtime.dedupe_index_or_none(job, root, True))
+            self.assertIsNone(self.runtime.dedupe_index_or_none(job, root, "omi"))
+        self.assertIsNone(self.runtime.dedupe_index_or_none(job, root, "meeting"))
 
     def test_a_replay_from_a_saved_manifest_never_waits(self):
         self.marker("cd" * 16, "open")

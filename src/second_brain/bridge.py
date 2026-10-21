@@ -21,6 +21,7 @@ import urllib.request
 import uuid
 
 from .io import atomic_write
+from .kinds import job_kind
 from .router import ENTITY_FOLDERS, event_id, safe_name
 from .speaker_audio import useful_clip
 
@@ -35,9 +36,9 @@ def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def published_windows(manifest: dict, meeting: bool) -> list[dict]:
+def published_windows(manifest: dict, kind: str) -> list[dict]:
     """Windows the vault writer publishes (vault.publish / publish_meeting); filtered chatter stays local."""
-    if meeting:
+    if kind == "meeting":
         return [w for w in manifest["windows"] if not w.get("speaker_filter") and w.get("final_transcript", "").strip()]
     return [w for w in manifest["windows"] if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
 
@@ -97,15 +98,17 @@ class Bridge:
                 continue  # completed before publication manifests existed
             manifest = json.loads(path.read_text(encoding="utf-8"))
             metadata = json.loads(job["metadata"])
-            meeting = metadata.get("source") == "meeting"
+            kind = job_kind(metadata)
+            if kind == "lecture":
+                continue  # lectures stay in the vault's lectures folder only
             windows = [{
                 "id": w["id"], "start": w["start"], "end": w["end"],
                 "excerpt": w["final_transcript"].strip()[:EXCERPT_CHARS],
                 "conversation_type": w.get("memory_gate", {}).get("conversation_type"),
                 "speakers": w.get("speaker_identities", {}),
-            } for w in published_windows(manifest, meeting)]
+            } for w in published_windows(manifest, kind)]
             out.append((f"job:{job_id}", "source", job_id, {
-                "kind": "meeting" if meeting else "omi",
+                "kind": kind,
                 "recorded_at": metadata.get("first_utc"),
                 "source_sha256": job["sha256"],
                 "window_count": len(manifest["windows"]),

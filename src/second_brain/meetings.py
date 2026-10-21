@@ -10,6 +10,7 @@ import json
 import logging
 from pathlib import Path
 import time
+from .kinds import job_kind
 
 log = logging.getLogger("second_brain.meetings")
 
@@ -27,8 +28,8 @@ class Overlaps:
 
 def recording_span(metadata):
     """(start, end) epoch seconds of an Omi recording, or None when it cannot be placed in time."""
-    if metadata.get("source") == "meeting":
-        return None                              # a meeting is never deduped against meetings
+    if job_kind(metadata) != "omi":
+        return None                              # meetings and lectures are never deduped
     start = metadata.get("first_timestamp")
     if not isinstance(start, int) or start <= 0:
         return None                              # the device clock was never set
