@@ -46,6 +46,8 @@ class Config:
     meetings_enabled: bool = False
     meetings_vault_folder: str = "Omi/Meetings"
     owner_name: str = "Me"  # who speaks on a meeting capture's mic channel
+    # Omi lecture recordings (docs/superpowers/specs/2026-10-21-lecture-mode-design.md §3).
+    lectures_vault_folder: str = "Omi/Lectures"
     # Opt-in outbound export to the selfhosted server (docs/mobile/). Empty URL = off.
     bridge_url: str = ""
     bridge_token_file: str = ""  # absolute; separate from the Omi pairing key
@@ -77,6 +79,7 @@ class Config:
             raise ValueError("Invalid retry count or job timeout")
         check_folder("vault_folder", cfg.vault_folder)
         check_folder("meetings_vault_folder", cfg.meetings_vault_folder)
+        check_folder("lectures_vault_folder", cfg.lectures_vault_folder)
         owner = cfg.owner_name.strip()
         if not 1 <= len(owner) <= 80 or owner != cfg.owner_name or any(
             ord(c) < 32 or c in "[]<>\\|" for c in owner

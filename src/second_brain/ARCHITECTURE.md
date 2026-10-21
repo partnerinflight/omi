@@ -23,6 +23,9 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    For Omi jobs the service resolves capture overlap (`second_brain.meetings`) and passes the
    pipeline only a written index, so the pipeline holds no receiver-layout knowledge; dedupe runs
    between ASR and windowing.
+   Discovery stores each job's kind (`omi`, `meeting`, `lecture`; `second_brain.kinds`) in its
+   metadata; Omi recordings the receiver tagged `"mode": "lecture"` become lecture jobs, which run
+   the pipeline with --lecture (MOSS only, no Hermes scoring, no dedupe).
 3. Discovery places each recording in SQLite with source identity and SHA-256.
    One worker atomically claims jobs. Attempts use separate directories. The
    source hash is checked before processing, and a saved complete manifest is
@@ -39,6 +42,11 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    note. Retrying identical output is a no-op; different existing content is a
    conflict. Only kept windows are published. SQLite completion follows note
    publication; a crash in between safely repeats it.
+   Meetings and lectures publish every window with speech; speaker exclusions still apply.
+   A lecture's summary is a separate queue (`data/lectures.sqlite3`, RouterQueue backoff): the
+   Hermes map/reduce result is frozen in `jobs/<id>/lecture-summary.json`, then the summary note
+   is written. Finished sections are cached in `lecture-summary.partial.json`, so a retry or a
+   service stop resumes instead of starting over. Lectures are never routed or bridge-exported.
 
 ## Windows ownership
 

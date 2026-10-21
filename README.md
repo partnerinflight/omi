@@ -162,6 +162,19 @@ local mailbox. It cannot read the pairing key or stop the service.
   every `omi-local` Bluetooth connect), otherwise both notes keep the speech.
   `meetings_enabled`, `meetings_vault_folder` and `owner_name` survive a reinstall, and the
   installer grants the service write access to `meetings_vault_folder`.
+- **Lecture mode** (firmware triple-click, solid yellow LED). The receiver tags those recordings
+  `"mode": "lecture"`. The service transcribes them with MOSS only (no VibeVoice refinement, no
+  Hermes scoring, no meeting dedupe) and writes `<job>.md` under `lectures_vault_folder` (default
+  `Omi/Lectures`): the whole transcript with one `### m:ss` section per conversation window. The
+  memory gate never filters a lecture; `[AudioBook]` exclusions still apply, and a recording with
+  no speech publishes nothing. When Hermes is usable (`hermes_url` set and `no_hermes` off; the
+  knowledge router need not be enabled) the service also writes `<job> Summary.md`: Hermes
+  summarizes each section, then combines them. The result is saved in the job's
+  `lecture-summary.json` before the note, so replays are identical; a Hermes outage only delays
+  the summary, and `retry` requeues summaries that exhausted their attempts. Lectures recorded
+  while Hermes is off are summarized once it is enabled. Lectures never reach the knowledge
+  router, daily notes or the bridge export. Lecture audio is deleted after processing like other Omi
+  audio. The installer grants the service write access to `lectures_vault_folder`.
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
   default). Once a recording's note is published and its job is complete, the
   service deletes the original Omi recording, its sidecar and receipt, and all

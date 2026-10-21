@@ -8,9 +8,11 @@ public sealed record ReceiverInfo(bool Listening, int Port, int ActiveUploads, i
 
 public sealed record StatusEvent(DateTimeOffset Time, string Kind, string Detail);
 
-public sealed record JobInfo(string Id, string State, string Stage, int Attempts, string? Error, DateTimeOffset Updated)
+public sealed record JobInfo(string Id, string State, string Stage, int Attempts, string? Error, DateTimeOffset Updated, string Kind = "omi")
 {
     public string ShortId => Id.Length > 8 ? Id[..8] : Id;
+    // Ordinary Omi recordings carry no badge. Kind is metadata only, never content.
+    public string Badge => Kind switch { "lecture" => "Lecture", "meeting" => "Meeting", _ => "" };
 }
 
 public sealed record ServiceStatus(
@@ -85,7 +87,7 @@ public sealed record ServiceStatus(
             .Select(e => new StatusEvent(Time(e.GetProperty("time")), Text(e, "kind") ?? "", Text(e, "detail") ?? ""))
             .ToList();
         var jobs = Items(root, "recent")
-            .Select(j => new JobInfo(Text(j, "id") ?? "", Text(j, "state") ?? "", Text(j, "stage") ?? "", Int(j, "attempts"), Text(j, "error"), Time(j.GetProperty("updated"))))
+            .Select(j => new JobInfo(Text(j, "id") ?? "", Text(j, "state") ?? "", Text(j, "stage") ?? "", Int(j, "attempts"), Text(j, "error"), Time(j.GetProperty("updated")), Text(j, "kind") ?? "omi"))
             .ToList();
         string? discovery = Text(root, "discovery_error");
         int unidentified = 0, people = 0;

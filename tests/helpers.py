@@ -54,6 +54,16 @@ def records(count=20, marker=True):
     return data
 
 
+def mode_record(mode: int, timestamp: int = 1700000000) -> bytes:
+    """A recording-mode marker record (receiver plan 1): mode 0 = normal, 1 = lecture."""
+    return struct.pack(">I", timestamp) + (P.RECORD_MODE_MAGIC + bytes([mode])).ljust(P.AUDIO_PAYLOAD_BYTES, b"\0")
+
+
+def lecture_records(count=250):
+    """A lecture-mode marker, then `count` audio records and an end marker."""
+    return [mode_record(1)] + records(count)
+
+
 async def receive(reader):
     header = await reader.readexactly(U.HEADER_LEN)
     kind, length = U.parse_header(header)

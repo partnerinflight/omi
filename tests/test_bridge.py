@@ -274,6 +274,32 @@ class BridgeTests(unittest.TestCase):
         self.bridge.tick()
         self.assertEqual(self.server.clips, {})  # unchanged file is not resent
 
+    def test_lecture_speakers_and_clips_are_never_exported(self):
+        # Lectures stay in the vault's lectures folder only (owner decision, 2026-10-21); their
+        # speakers stay reviewable in the local tray.
+        queue = Queue(self.data / "queue.sqlite3")
+        audio = self.root / "lecture.opus"
+        audio.write_bytes(b"lecture audio")
+        lecture = queue.enqueue(audio, {"device": "dev", "start_seq": 2, "mode": "lecture", "kind": "lecture",
+                                        "first_utc": "2026-10-21T15:00:00Z"})
+        clip = self.data / "jobs" / lecture / "0.wav"
+        clip.parent.mkdir(parents=True)
+        with wave.open(str(clip), "wb") as f:
+            f.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            f.writeframes(b"\0" * 96000)
+        # Still processing: speakers are ingested before the job completes.
+        self.speakers.ingest({"id": lecture, "metadata": json.dumps({"kind": "lecture", "first_utc": "x"})}, {
+            "windows": [], "speaker_observations": [{"label": "c:S1", "clips": [
+                {"path": str(clip), "start": 0, "end": 3, "text": "lecture words", "quality": "clean turn"}]}]})
+        self.bridge.tick()
+        observations = [r["data"] for r in self.sent() if r["kind"] == "observation"]
+        self.assertEqual([o["source_id"] for o in observations], [self.job])
+        [(_, omi_obs)] = [k for k in self.server.records if k[0] == "observation"]
+        self.assertEqual(list(self.server.clips), [f"{omi_obs}:0"])
+        self.assertNotIn("lecture words", json.dumps(self.server.requests))
+        with self.speakers.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM observations WHERE job=?", (lecture,)).fetchone()[0], 1)
+
     def test_phone_clarification_updates_vault_note_once(self):
         eid = "0123456789abcdef"
         note = self.vault / "People/Alex.md"

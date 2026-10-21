@@ -11,6 +11,7 @@ import sqlite3
 import time
 import uuid
 from .io import write_json, atomic_write
+from .kinds import job_kind
 from .speaker_audio import useful_clip
 
 
@@ -145,8 +146,8 @@ class Speakers:
     def ingest(self, job, manifest):
         observations = manifest.get("speaker_observations", [])
         metadata = json.loads(job["metadata"])
-        # Every meeting becomes a note, so its speakers are worth naming whatever the gate said.
-        meeting = metadata.get("source") == "meeting"
+        # Every meeting and lecture becomes a note, so its speakers are worth naming whatever the gate said.
+        always_published = job_kind(metadata) != "omi"
         # Copy clips before committing rows; a replay repairs interrupted copies.
         for index, obs in enumerate(observations):
             key = hashlib.sha256((job["id"] + ":" + obs["label"]).encode()).hexdigest()
@@ -186,7 +187,7 @@ class Speakers:
                             )
                         ),
                         time.time(),
-                        *((1, conversation_value(manifest, obs["label"])[1]) if meeting
+                        *((1, conversation_value(manifest, obs["label"])[1]) if always_published
                           else conversation_value(manifest, obs["label"])),
                     ),
                 )

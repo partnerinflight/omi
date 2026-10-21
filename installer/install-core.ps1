@@ -61,7 +61,7 @@ $installerKeys = [ordered]@{
         ffmpeg_dir = $FfmpegDir; skip_vibe7 = [bool]$SkipVibe7
     }
     defaults = [ordered]@{
-        vault_folder = 'Omi/Conversations'; host = '0.0.0.0'
+        vault_folder = 'Omi/Conversations'; lectures_vault_folder = 'Omi/Lectures'; host = '0.0.0.0'
         poll_seconds = 2; retry_seconds = 60; max_attempts = 5; job_timeout_seconds = 14400
         no_hermes = $false
     }
@@ -116,6 +116,11 @@ try {
     $meetingsPath = Join-Path $Vault ($meetingsFolder -replace '/', '\')
     New-Item -ItemType Directory -Force $meetingsPath | Out-Null
     Run icacls.exe @($meetingsPath, '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
+    # Lecture transcript and summary notes publish here (lectures_vault_folder).
+    $lecturesFolder = if ($serviceConfig.lectures_vault_folder) { $serviceConfig.lectures_vault_folder } else { 'Omi/Lectures' }
+    $lecturesPath = Join-Path $Vault ($lecturesFolder -replace '/', '\')
+    New-Item -ItemType Directory -Force $lecturesPath | Out-Null
+    Run icacls.exe @($lecturesPath, '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
     # The knowledge router appends under "## Router Inbox" in these folders (router_enabled).
     foreach ($folder in @('People', 'Projects', 'Topics', 'Decisions', 'Ideas', 'Daily', 'System\Router')) {
         New-Item -ItemType Directory -Force "$Vault\$folder" | Out-Null

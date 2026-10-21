@@ -21,6 +21,7 @@ import urllib.request
 import uuid
 
 from .io import atomic_write
+from .kinds import job_kind
 from .router import ENTITY_FOLDERS, event_id, safe_name
 from .speaker_audio import useful_clip
 
@@ -35,9 +36,9 @@ def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def published_windows(manifest: dict, meeting: bool) -> list[dict]:
+def published_windows(manifest: dict, kind: str) -> list[dict]:
     """Windows the vault writer publishes (vault.publish / publish_meeting); filtered chatter stays local."""
-    if meeting:
+    if kind == "meeting":
         return [w for w in manifest["windows"] if not w.get("speaker_filter") and w.get("final_transcript", "").strip()]
     return [w for w in manifest["windows"] if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
 
@@ -86,6 +87,14 @@ class Bridge:
         with self.read_only("queue.sqlite3") as db:
             return {r["id"]: dict(r) for r in db.execute("SELECT id,sha256,metadata FROM jobs WHERE state='complete'")}
 
+    def lecture_jobs(self) -> set[str]:
+        """Lecture job IDs in any state: speakers are ingested before a job completes."""
+        if not (self.data_dir / "queue.sqlite3").exists():
+            return set()
+        with self.read_only("queue.sqlite3") as db:
+            return {r["id"] for r in db.execute("SELECT id,metadata FROM jobs")
+                    if job_kind(json.loads(r["metadata"])) == "lecture"}
+
     def sources(self, jobs: dict, done: set) -> list[tuple]:
         """Immutable once complete, so a job already exported is never read again."""
         out = []
@@ -97,15 +106,17 @@ class Bridge:
                 continue  # completed before publication manifests existed
             manifest = json.loads(path.read_text(encoding="utf-8"))
             metadata = json.loads(job["metadata"])
-            meeting = metadata.get("source") == "meeting"
+            kind = job_kind(metadata)
+            if kind == "lecture":
+                continue  # lectures stay in the vault's lectures folder only
             windows = [{
                 "id": w["id"], "start": w["start"], "end": w["end"],
                 "excerpt": w["final_transcript"].strip()[:EXCERPT_CHARS],
                 "conversation_type": w.get("memory_gate", {}).get("conversation_type"),
                 "speakers": w.get("speaker_identities", {}),
-            } for w in published_windows(manifest, meeting)]
+            } for w in published_windows(manifest, kind)]
             out.append((f"job:{job_id}", "source", job_id, {
-                "kind": "meeting" if meeting else "omi",
+                "kind": kind,
                 "recorded_at": metadata.get("first_utc"),
                 "source_sha256": job["sha256"],
                 "window_count": len(manifest["windows"]),
@@ -165,6 +176,7 @@ class Bridge:
         Voice vectors never leave the machine; clips go separately, only while unconfirmed."""
         if not (self.data_dir / "speakers.sqlite3").exists():
             return {}
+        lectures = self.lecture_jobs()
         with self.read_only("speakers.sqlite3") as db:
             people = db.execute("SELECT id,name FROM people").fetchall()
             observations = db.execute(
@@ -172,6 +184,8 @@ class Bridge:
                 "FROM observations").fetchall()
         out = {("person", p["id"]): {"name": p["name"]} for p in people}
         for o in observations:
+            if o["job"] in lectures:
+                continue  # lecture speakers stay local (tray review only), and so do their clips
             provenance = ("confirmed" if o["manual"] else "inferred") if o["person"] else ("cleared" if o["manual"] else None)
             clips = json.loads(o["clips"])
             out[("observation", o["id"])] = {
