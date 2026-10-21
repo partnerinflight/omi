@@ -12,6 +12,7 @@ uv run python -m unittest discover -s tests -t .   # needs Docker; starts postgr
 SB_DATABASE_URL=postgresql://... uv run python -m sb_server serve
 SB_DATABASE_URL=postgresql://... uv run python -m sb_server pair "Test phone"
 SB_DATABASE_URL=postgresql://... uv run python -m sb_server add-producer "Home PC"   # token for the Windows bridge
+SB_DATABASE_URL=postgresql://... PYTHONPATH=. uv run python scripts/seed_demo.py --follow  # local only: synthetic data for the app
 ```
 
 | Route | Notes |
