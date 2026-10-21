@@ -45,7 +45,8 @@ heartbeat writer. The receiver remains responsive while model subprocesses run.
    Meetings and lectures publish every window with speech; speaker exclusions still apply.
    A lecture's summary is a separate queue (`data/lectures.sqlite3`, RouterQueue backoff): the
    Hermes map/reduce result is frozen in `jobs/<id>/lecture-summary.json`, then the summary note
-   is written. Lectures are never routed.
+   is written. Finished sections are cached in `lecture-summary.partial.json`, so a retry or a
+   service stop resumes instead of starting over. Lectures are never routed or bridge-exported.
 
 ## Windows ownership
 

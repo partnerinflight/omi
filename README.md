@@ -171,8 +171,9 @@ local mailbox. It cannot read the pairing key or stop the service.
   knowledge router need not be enabled) the service also writes `<job> Summary.md`: Hermes
   summarizes each section, then combines them. The result is saved in the job's
   `lecture-summary.json` before the note, so replays are identical; a Hermes outage only delays
-  the summary, and `retry` requeues summaries that exhausted their attempts. Lectures never reach
-  the knowledge router or daily notes. Lecture audio is deleted after processing like other Omi
+  the summary, and `retry` requeues summaries that exhausted their attempts. Lectures recorded
+  while Hermes is off are summarized once it is enabled. Lectures never reach the knowledge
+  router, daily notes or the bridge export. Lecture audio is deleted after processing like other Omi
   audio. The installer grants the service write access to `lectures_vault_folder`.
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
   default). Once a recording's note is published and its job is complete, the

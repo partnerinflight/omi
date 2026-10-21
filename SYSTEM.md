@@ -175,12 +175,17 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    (`second_brain.kinds.job_kind`: `omi`, `meeting`, `lecture`). Lecture jobs run the pipeline
    with `--lecture`: MOSS tier forced, Hermes scoring off, `--meeting`/`--meeting-dedupe` refused,
    windows kept. They never wait for or dedupe against meetings. `vault.publish_lecture` writes
-   `<lectures_vault_folder>/<job>.md` (every spoken window, `### m:ss` sections). When
-   `summarizing()` allows it (no `no_hermes`, a `hermes_url`), the job is queued in
-   `data/lectures.sqlite3`; `summarize_lectures` maps each section and reduces through
-   `router.chat`, freezes `lecture-summary.json`, then writes `<job> Summary.md`. Lectures are
-   never routed and produce no daily notes; the job result's `filtered` is 0. The public status
-   carries each job's `kind` and `lecture_summaries` counts; the tray shows a badge.
+   `<lectures_vault_folder>/<job>.md` (every spoken window, `### m:ss` sections). Every
+   published lecture is queued in `data/lectures.sqlite3`. While `summarizing()` returns None
+   (`no_hermes` on or no `hermes_url`) `summarize_lectures` holds the queue without spending
+   attempts; otherwise it maps each section and reduces through `router.chat`, caching finished
+   sections in `lecture-summary.partial.json` (never published) so a retry or restart resumes,
+   then freezes `lecture-summary.json` and writes `<job> Summary.md`. A service stop interrupts
+   between Hermes calls without counting an attempt. Lectures are never routed, produce no daily
+   notes and are never exported by the bridge (neither sources nor speaker observations/clips;
+   their speakers stay reviewable in the tray). The job result's `filtered` counts only
+   speaker-excluded windows. The public status carries each job's `kind` and
+   `lecture_summaries` counts; the tray shows a badge.
 
 ## Adaptive processing and memory policy
 
@@ -540,10 +545,12 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   shows as a `coarse/c*.json` whose last segment ends well before the chunk's end while the
   audio continues. There is no per-mode setting; if it truncates, raise `moss_max_new` or lower
   `coarse_max_seconds` in pipeline.json (both affect every recording). Summary readability is
-  unjudged. Summaries are queued only when Hermes is usable at publication; enabling Hermes later
-  does not summarize earlier lectures. The example `hermes_url` placeholder counts as usable, so
-  with it and `no_hermes` off every summary fails visibly (`lecture_summaries.failed`) after its
-  backoff. A lecture overlapping a meeting capture is not deduped; both notes keep the speech.
+  unjudged, and Hermes's summary text is inserted verbatim into the summary note (it is
+  untrusted model output; only that note ever contains it). Lectures published while Hermes is
+  off stay queued and are summarized once Hermes is enabled. The example `hermes_url`
+  placeholder counts as usable, so with it and `no_hermes` off every summary fails after its
+  backoff; failures appear only in `status.json` under `lecture_summaries` (`failed`,
+  `last_error`), not in the tray. A lecture overlapping a meeting capture is not deduped; both notes keep the speech.
   Sections past one hour are headed `h:mm:ss`. Lecture windows still record the memory gate in
   the manifest; only the kind keeps them out of routing.
 - Keep changes on the feature branch; do not merge/push `main` without instruction.
