@@ -31,7 +31,9 @@
       "expo-secure-store",
       "expo-audio",
       "expo-asset",
-      "./plugins/withSceneLifecycle"
-    ]
+      "./plugins/withSceneLifecycle",
+      "expo-router"
+    ],
+    "scheme": "secondbrain"
   }
 }

@@ -3,6 +3,8 @@
 Expo SDK 57 / React Native 0.86 / TypeScript. Milestone 0 spike plus the
 milestone 1 todo sync engine ([implementation plan](../../docs/mobile/implementation-plan.md)).
 
+- `src/app/`: Expo Router native tabs (Todos, Memories, Speakers, Status); `src/ui.tsx`
+  holds the iOS building blocks the screens share.
 - `src/db.ts`: `server_todos` holds acknowledged server state, `outbox` holds
   unacknowledged edits; the list is server state with the outbox replayed on top.
 - `src/sync.ts`: pushes the oldest operation per entity (a conflict blocks later
@@ -14,9 +16,18 @@ milestone 1 todo sync engine ([implementation plan](../../docs/mobile/implementa
 npm install
 npm test && npm run typecheck && npx expo-doctor
 npm run test:sync           # two simulated phones against ../../server + Postgres (Docker, uv)
-npx expo run:ios            # simulator
+npx expo run:ios            # simulator (from Terminal.app; see below)
 npx expo run:ios --device   # physical iPhone (needs a signing team in Xcode)
 ```
+
+Local data for the simulator: run `../../server` against a local Postgres on
+localhost, then `PYTHONPATH=. uv run python scripts/seed_demo.py --follow` there (synthetic
+records, clips and todos; it also applies speaker commands as Windows would). Pair
+with `http://localhost:8000` and a code from `python -m sb_server pair`.
+
+Build from a normal terminal: inside a sandboxed agent shell SwiftPM's own
+`sandbox-exec` fails (`sandbox_apply: Operation not permitted`) and ExpoModulesJSI
+cannot build.
 
 Mac prerequisites: `sudo xcodebuild -runFirstLaunch` and the iOS simulator runtime
 matching Xcode (`xcodebuild -downloadPlatform iOS`).

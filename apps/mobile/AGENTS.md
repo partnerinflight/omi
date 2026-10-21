@@ -28,8 +28,12 @@ Run lint and typecheck before declaring any task done.
 - Read `../../docs/mobile/` first; the sync contract there is authoritative.
 - Build locally with Xcode (`npx expo run:ios`, `--device` for a phone). EAS cloud
   builds, Expo push and OTA hosting are not used.
-- The milestone 0 spike is a single screen. Adopt Expo Router (routes in
-  `src/app/`) when real navigation arrives.
+- Navigation is Expo Router with native tabs (`src/app/`: Todos, Memories, Speakers,
+  Status; each tab a native Stack with a large title). Shared state lives in
+  `src/AppState.tsx`; UI follows the HIG through `src/ui.tsx` (system colors, Dynamic
+  Type ramps, SF Symbols, inset grouped lists). Don't hard-code colors or point sizes.
+- Speaker and clarification screens mirror the Windows tray: voice matches are applied
+  by Windows, so the app lists them for correction, never asks to confirm them.
 - `npm test` runs the SQLite/outbox check under Node; `npm run typecheck` runs tsc.
   Synthetic data only: no real recordings, transcripts or credentials.
 

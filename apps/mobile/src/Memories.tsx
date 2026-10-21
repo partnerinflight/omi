@@ -1,16 +1,16 @@
 import { randomUUID } from 'expo-crypto';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Button } from './Connection';
+import { Alert, Pressable, View } from 'react-native';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { applyMemory, listMemories, type Db, type Memory, type MemoryOp, type MemoryState } from './db';
 import type { Sync } from './sync';
-import { MIN_TOUCH, useTheme } from './theme';
+import { Button, color, Empty, Field, Group, Icon, MIN_TOUCH, Note, Segmented, styles, T } from './ui';
 
-const TABS: { state: MemoryState; label: string }[] = [
-  { state: 'proposed', label: 'Inbox' },
-  { state: 'confirmed', label: 'Saved' },
-  { state: 'archived', label: 'Archived' },
+const TABS: { value: MemoryState; label: string }[] = [
+  { value: 'proposed', label: 'Inbox' },
+  { value: 'confirmed', label: 'Saved' },
+  { value: 'archived', label: 'Archived' },
 ];
 const ERRORS: Record<string, string> = {
   stale_revision: 'Changed on another device.',
@@ -21,11 +21,9 @@ const ERRORS: Record<string, string> = {
 // Extracted facts, decisions and ideas. Everything here reads the phone's cache, so search
 // works offline; edits queue and sync like todos. Saved memories are written to the vault's
 // Mobile/ notes by the Windows service.
-export function Memories({ sync, version, onEdit }: { sync: Sync; version: number; onEdit: () => void }) {
+export function Memories({ sync, version, query, onEdit }: { sync: Sync; version: number; query: string; onEdit: () => void }) {
   const db = useSQLiteContext() as unknown as Db;
-  const t = useTheme();
   const [tab, setTab] = useState<MemoryState>('proposed');
-  const [query, setQuery] = useState('');
   const [items, setItems] = useState<Memory[]>([]);
   const [open, setOpen] = useState<string | null>(null);
 
@@ -48,92 +46,128 @@ export function Memories({ sync, version, onEdit }: { sync: Sync; version: numbe
   };
 
   return (
-    <View style={{ gap: 8 }}>
-      <TextInput value={query} onChangeText={setQuery} placeholder="Search text, person, project or date"
-        placeholderTextColor={t.muted} accessibilityLabel="Search memories" autoCorrect={false} clearButtonMode="while-editing"
-        style={[styles.input, { color: t.text, borderColor: t.border, backgroundColor: t.card }]} />
-      <View style={{ flexDirection: 'row', gap: 8 }} accessibilityRole="tablist">
-        {TABS.map((x) => (
-          <Pressable key={x.state} onPress={() => setTab(x.state)} accessibilityRole="tab" accessibilityState={{ selected: tab === x.state }}
-            style={[styles.tab, { borderColor: tab === x.state ? t.accent : t.border }]}>
-            <Text style={{ color: tab === x.state ? t.accent : t.text }}>{x.label}</Text>
-          </Pressable>
-        ))}
-      </View>
-      {items.length === 0 && (
-        <Text style={{ color: t.muted }}>{query ? 'No matches on this phone.' : tab === 'proposed' ? 'Nothing to review.' : 'None yet.'}</Text>
+    <>
+      <Segmented options={TABS} value={tab} onChange={(v) => { setTab(v); setOpen(null); }} />
+      {items.length > 0 ? (
+        <Group>
+          {items.map((m) => (
+            <MemoryRow key={m.id} m={m} expanded={open === m.id} onToggle={() => setOpen(open === m.id ? null : m.id)}
+              onEdit={(op) => edit(m, op)} onResolve={resolve} />
+          ))}
+        </Group>
+      ) : query ? (
+        <Empty icon="magnifyingglass" title="No matches on this phone" detail="Search covers text, people, projects and dates." />
+      ) : tab === 'proposed' ? (
+        <Empty icon="tray" title="Inbox zero" detail="New facts, decisions and ideas from your conversations land here for review." />
+      ) : (
+        <Empty icon={tab === 'confirmed' ? 'bookmark' : 'archivebox'} title="None yet" />
       )}
-      {items.map((m) => (
-        <MemoryCard key={m.id} m={m} expanded={open === m.id} onToggle={() => setOpen(open === m.id ? null : m.id)}
-          onEdit={(op) => edit(m, op)} onResolve={resolve} />
-      ))}
-    </View>
+    </>
   );
 }
 
-function MemoryCard({ m, expanded, onToggle, onEdit, onResolve }: { m: Memory; expanded: boolean; onToggle: () => void;
+const SAVE: MemoryOp = { action: 'set_state', payload: { state: 'confirmed' } };
+const ARCHIVE: MemoryOp = { action: 'set_state', payload: { state: 'archived' } };
+
+function MemoryRow({ m, expanded, onToggle, onEdit, onResolve }: { m: Memory; expanded: boolean; onToggle: () => void;
   onEdit: (op: MemoryOp) => void; onResolve: (seq: number, choice: 'keep_mine' | 'discard') => void }) {
-  const t = useTheme();
   const [draft, setDraft] = useState<string | null>(null);
   const subject = m.entity_name ? `${m.kind} · ${m.entity_name}` : m.kind;
   const when = m.observed_at ? m.observed_at.slice(0, 10) : 'unknown date';
   const p = m.problem;
   const e = m.evidence;
+  const swipeable = !p && draft === null;
   return (
-    <View style={[styles.card, { backgroundColor: t.card, borderColor: p ? t.badge : t.border }]}>
-      <Pressable onPress={onToggle} accessibilityRole="button" accessibilityHint={expanded ? 'Hides evidence' : 'Shows evidence'}
-        style={{ minHeight: MIN_TOUCH, justifyContent: 'center' }}>
-        <Text style={{ color: t.text }}>{m.text}</Text>
-        <Text style={{ color: t.muted, fontSize: 13 }}>
-          {subject} · {when}{m.confidence !== null ? ` · confidence ${m.confidence}` : ''}{m.pending && !p ? ' · Queued' : ''}
-        </Text>
-      </Pressable>
-      {expanded && (
-        <View style={{ gap: 4 }}>
-          {m.text !== m.original_text && <Text style={{ color: t.muted }}>Extracted as: “{m.original_text}”</Text>}
-          <Text style={{ color: t.muted }}>
-            Recorded {e?.recorded_at ? new Date(e.recorded_at).toLocaleString() : 'at an unknown time'}
-            {e?.start !== undefined ? ` · ${e.start.toFixed(0)}–${e.end!.toFixed(0)} s` : ''}
-          </Text>
-          {e?.excerpt ? <Text style={{ color: t.text }}>“{e.excerpt}”</Text> : <Text style={{ color: t.muted }}>No excerpt available.</Text>}
-          {e?.note && <Text style={{ color: t.muted }} selectable>Vault: {e.note}</Text>}
-        </View>
-      )}
-      {p && (
-        <View style={{ gap: 4 }}>
-          <Text style={{ color: t.badge }}>{ERRORS[p.error] ?? p.error}</Text>
-          {p.server && <Text style={{ color: t.muted }}>Server: “{p.server.text}”, {p.server.state}</Text>}
-          <View style={styles.row}>
-            {p.outcome === 'conflict' && <Button title="Keep mine" color={t.accent} onPress={() => onResolve(p.seq, 'keep_mine')} />}
-            <Button title="Discard this change" color={t.muted} onPress={() => onResolve(p.seq, 'discard')} />
+    <Swipeable
+      enabled={swipeable}
+      friction={2}
+      overshootLeft={false}
+      overshootRight={false}
+      renderLeftActions={m.state === 'proposed' ? (_a, _b, s) => (
+        <SwipeAction icon="bookmark.fill" label="Save" tone={color.tint} onPress={() => { s.close(); onEdit(SAVE); }} />
+      ) : undefined}
+      renderRightActions={m.state !== 'archived' ? (_a, _b, s) => (
+        <SwipeAction icon="archivebox.fill" label="Archive" tone={color.neutral} onPress={() => { s.close(); onEdit(ARCHIVE); }} />
+      ) : undefined}
+    >
+      <View style={{ backgroundColor: color.cell }}>
+        <Pressable onPress={onToggle} accessibilityRole="button" accessibilityState={{ expanded }}
+          accessibilityHint={expanded ? 'Hides evidence' : 'Shows evidence'}
+          style={({ pressed }) => pressed && { backgroundColor: color.fill }}>
+          <View style={[styles.row, { alignItems: 'flex-start' }]}>
+            <View style={{ flex: 1, gap: 3 }}>
+              <T>{m.text}</T>
+              <T ramp="footnote" tone={color.secondary}>
+                {subject} · {when}{m.confidence !== null ? ` · confidence ${m.confidence}` : ''}
+              </T>
+            </View>
+            {m.pending > 0 && !p && <Icon name="clock" size={15} tint={color.secondary} style={{ width: 15, height: 15, marginTop: 4 }} />}
+            <Icon name={expanded ? 'chevron.up' : 'chevron.down'} size={13} tint={color.tertiary} weight="semibold"
+              style={{ width: 13, height: 13, marginTop: 6 }} />
           </View>
-        </View>
-      )}
-      {!p && draft !== null && (
-        <View style={styles.row}>
-          <TextInput value={draft} onChangeText={setDraft} accessibilityLabel="Corrected memory" autoFocus multiline={false}
-            style={[styles.input, { flex: 1, color: t.text, borderColor: t.border }]} />
-          <Button title="Save" color={t.accent} disabled={!draft.trim() || draft.trim() === m.text}
-            onPress={() => { onEdit({ action: 'set_text', payload: { text: draft.trim() } }); setDraft(null); }} />
-          <Button title="Cancel" color={t.muted} onPress={() => setDraft(null)} />
-        </View>
-      )}
-      {!p && draft === null && (
-        <View style={styles.row}>
-          {m.state === 'proposed' && <Button title="Save" color={t.accent} onPress={() => onEdit({ action: 'set_state', payload: { state: 'confirmed' } })} />}
-          {m.state !== 'archived' && <Button title="Correct" color={t.accent} onPress={() => setDraft(m.text)} />}
-          {m.state !== 'archived'
-            ? <Button title="Archive" color={t.muted} onPress={() => onEdit({ action: 'set_state', payload: { state: 'archived' } })} />
-            : <Button title="Restore" color={t.accent} onPress={() => onEdit({ action: 'set_state', payload: { state: 'confirmed' } })} />}
-        </View>
-      )}
-    </View>
+        </Pressable>
+
+        {(expanded || p || draft !== null) && (
+          <View style={{ paddingHorizontal: 16, paddingBottom: 14, gap: 10 }}>
+            {expanded && (
+              <View style={{ gap: 6, paddingLeft: 12, borderLeftWidth: 1, borderLeftColor: color.separator }}>
+                {e?.excerpt
+                  ? <T ramp="callout">“{e.excerpt}”</T>
+                  : <T ramp="callout" tone={color.secondary}>No excerpt available.</T>}
+                <T ramp="footnote" tone={color.secondary}>
+                  Recorded {e?.recorded_at ? new Date(e.recorded_at).toLocaleString() : 'at an unknown time'}
+                  {e?.start !== undefined ? ` · ${e.start.toFixed(0)}–${e.end!.toFixed(0)} s` : ''}
+                </T>
+                {m.text !== m.original_text && <T ramp="footnote" tone={color.secondary}>Extracted as “{m.original_text}”</T>}
+                {!!e?.note && <T ramp="footnote" tone={color.secondary} selectable>Vault: {e.note}</T>}
+              </View>
+            )}
+            {p && (
+              <>
+                <Note icon="exclamationmark.triangle.fill" text={ERRORS[p.error] ?? p.error} />
+                {p.server && <T ramp="footnote" tone={color.secondary}>On the server: “{p.server.text}”, {p.server.state}</T>}
+                <View style={actions}>
+                  {p.outcome === 'conflict' && <Button kind="tinted" title="Keep Mine" onPress={() => onResolve(p.seq, 'keep_mine')} />}
+                  <Button kind="tinted" tone={color.danger} title="Discard Change" onPress={() => onResolve(p.seq, 'discard')} />
+                </View>
+              </>
+            )}
+            {!p && draft !== null && (
+              <>
+                <View style={{ backgroundColor: color.fill, borderRadius: 10, paddingHorizontal: 12 }}>
+                  <Field value={draft} onChangeText={setDraft} accessibilityLabel="Corrected memory" autoFocus />
+                </View>
+                <View style={actions}>
+                  <Button kind="filled" title="Save" disabled={!draft.trim() || draft.trim() === m.text}
+                    onPress={() => { onEdit({ action: 'set_text', payload: { text: draft.trim() } }); setDraft(null); }} />
+                  <Button kind="tinted" tone={color.secondary} title="Cancel" onPress={() => setDraft(null)} />
+                </View>
+              </>
+            )}
+            {!p && draft === null && expanded && (
+              <View style={actions}>
+                {m.state === 'proposed' && <Button kind="filled" icon="bookmark.fill" title="Save" onPress={() => onEdit(SAVE)} />}
+                {m.state !== 'archived' && <Button kind="tinted" icon="pencil" title="Correct" onPress={() => setDraft(m.text)} />}
+                {m.state !== 'archived'
+                  ? <Button kind="tinted" tone={color.secondary} icon="archivebox" title="Archive" onPress={() => onEdit(ARCHIVE)} />
+                  : <Button kind="tinted" icon="arrow.uturn.backward" title="Restore" onPress={() => onEdit(SAVE)} />}
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+    </Swipeable>
   );
 }
 
-const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 16, flexWrap: 'wrap' },
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 12, paddingBottom: 8 },
-  input: { minHeight: MIN_TOUCH, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 12, fontSize: 17 },
-  tab: { minHeight: MIN_TOUCH, paddingHorizontal: 12, justifyContent: 'center', borderWidth: 1, borderRadius: 10 },
-});
+function SwipeAction({ icon, label, tone, onPress }: { icon: 'bookmark.fill' | 'archivebox.fill'; label: string; tone: typeof color.tint; onPress: () => void }) {
+  return (
+    <Pressable accessibilityElementsHidden onPress={onPress}
+      style={{ width: 88, minHeight: MIN_TOUCH, backgroundColor: tone, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+      <Icon name={icon} tint={color.onTint} size={20} />
+      <T ramp="caption1" tone={color.onTint} style={{ fontWeight: '600' }}>{label}</T>
+    </Pressable>
+  );
+}
+
+const actions = { flexDirection: 'row', gap: 8, flexWrap: 'wrap' } as const;
