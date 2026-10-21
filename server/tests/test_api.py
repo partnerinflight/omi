@@ -56,7 +56,7 @@ class Api(unittest.TestCase):
 
         from sb_server.db import migrate
         assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql", "004_memories.sql",
-                         "005_todo_authority.sql"]
+                         "005_todo_authority.sql", "006_clip_producer.sql"]
         assert migrate() == []  # idempotent
 
         port = free_port()
@@ -638,6 +638,41 @@ class Api(unittest.TestCase):
         kept = self.paired()
         self.cli("new-epoch", "--keep-credentials")
         self.assertEqual(self.http("GET", "/v1/bootstrap", kept["access_token"]).status_code, 200)
+
+    def _observation(self, token, oid="obs-shared"):
+        rec = {"kind": "observation", "id": oid, "hash": uuid.uuid4().hex,
+               "data": {"display": "Speaker 1", "recorded_at": "2026-10-21T10:00:00Z", "person_id": None,
+                        "provenance": None, "score": None, "published": 1, "clips": [0]}}
+        self.assertEqual(self.http("POST", "/v1/worker/events", token, json={"records": [rec], "status": {}}).status_code, 200)
+
+    def _clip(self, token, data, oid="obs-shared"):
+        import hashlib
+        return self.http("PUT", f"/v1/worker/clips/{oid}/0", token, content=data,
+                         headers={"X-Content-SHA256": hashlib.sha256(data).hexdigest()})
+
+    def test_clips_are_scoped_to_their_producer(self):
+        one, two = self.cli("add-producer", "pc-one").strip(), self.cli("add-producer", "pc-two").strip()
+        self._observation(one)
+        self.assertEqual(self._clip(one, b"RIFF-one").status_code, 204)
+        self.assertEqual(self._clip(two, b"RIFF-two").status_code, 404)  # not its observation
+        self._observation(two)
+        self.assertEqual(self._clip(two, b"RIFF-two").status_code, 204)
+        # pc-two clearing its observation's clips leaves pc-one's clip alone.
+        rec = {"kind": "observation", "id": "obs-shared", "hash": uuid.uuid4().hex, "data": None}
+        self.http("POST", "/v1/worker/events", two, json={"records": [rec], "status": {}})
+        phone = self.paired()["access_token"]
+        r = self.http("GET", "/v1/clips/obs-shared/0", phone)
+        self.assertEqual((r.status_code, r.content), (200, b"RIFF-one"))
+        self.cli("revoke-producer", "pc-one")
+        self.cli("revoke-producer", "pc-two")
+        self.assertEqual(self.http("GET", "/v1/clips/obs-shared/0", phone).status_code, 410)
+
+    def test_malformed_cursor_is_expired_not_a_server_error(self):
+        token = self.paired()["access_token"]
+        epoch = self.http("GET", "/v1/bootstrap", token).json()["cursor"].split(":")[0]
+        for bad in (f"{epoch}:²", f"{epoch}:" + "9" * 25, f"{epoch}:-1", f"{epoch}:"):
+            self.assertEqual(self.http("GET", "/v1/changes", token, params={"cursor": bad}).status_code, 410, bad)
+
 
 if __name__ == "__main__":
     unittest.main()

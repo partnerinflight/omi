@@ -75,7 +75,7 @@ Already fixed during the review (2026-10-21, uncommitted): `sb_server serve` bin
 - Clips keyed by producer: migration `006_clip_producer.sql` adds `producer_id` to `clips`
   (primary key `(producer_id, observation_id, n)`); upload, delete and download scope by it
   (download joins the observation's producer) (Low 10).
-- Cursor parsing: `re.fullmatch(r"\d{1,18}", seq)`; anything else is 400 (Low 11).
+- Cursor parsing: `re.fullmatch(r"\d{1,18}", seq)`; anything else is 410 `cursor_expired` (the existing contract: the phone bootstraps again), never a 500 (Low 11).
 - Network: `proxy_secondbrain` becomes `internal: true`, so the container has no internet
   egress; Traefik reaches it on that network as now (Low 12).
 
@@ -99,7 +99,7 @@ not visible from this repo.
 - `new-epoch` revokes everything; `--keep-credentials` does not.
 - `/docs`, `/redoc`, `/openapi.json` return 404.
 - Clips from one producer cannot be overwritten, deleted or read through another's ids.
-- Bad cursors (`²`, 25 digits) give 400.
+- Bad cursors (`²`, 25 digits) give 410, not 500.
 The deploy-side items (Traefik labels, `mem_limit`, pg_hba, internal network) are checked
 by a compose lint in CI (`docker compose config` on the file with dummy env) and by the
 README's verification steps on the real host; the owner runs those, and this spec does not

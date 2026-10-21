@@ -154,7 +154,7 @@ def bootstrap(_: Device, conn: Db):
 def changes(_: Device, conn: Db, cursor_: Annotated[str, Query(alias="cursor")], limit: int = Query(200, ge=1, le=MAX_PAGE)):
     epoch, _, seq = cursor_.partition(":")
     meta = conn.execute("SELECT epoch FROM meta").fetchone()
-    if epoch != str(meta["epoch"]) or not seq.isdigit():
+    if epoch != str(meta["epoch"]) or not re.fullmatch(r"\d{1,18}", seq):
         raise HTTPException(410, "cursor_expired")  # different server epoch: bootstrap again
     rows = conn.execute(
         "SELECT seq, entity_type, data FROM change_log WHERE seq > %s ORDER BY seq LIMIT %s", (int(seq), limit + 1)
@@ -476,7 +476,7 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
             # Clips exist only to name a speaker: drop them once confirmed, discarded or forgotten.
             if r.kind == "observation" and (r.data is None or r.data.get("provenance") == "confirmed"
                                             or not r.data.get("clips")):
-                conn.execute("DELETE FROM clips WHERE observation_id = %s", (r.id,))
+                conn.execute("DELETE FROM clips WHERE producer_id = %s AND observation_id = %s", (producer_id, r.id))
             import_memory(conn, meta, producer_id, r)
         conn.execute("DELETE FROM clips WHERE created_at < now() - interval '30 days'")
         conn.execute("UPDATE producers SET last_seen_at = now(), status = %s WHERE id = %s",
@@ -532,15 +532,16 @@ async def worker_clip(observation_id: str, n: int, request: Request, producer_id
     if not conn.execute("""SELECT 1 FROM worker_records WHERE producer_id = %s AND kind = 'observation' AND id = %s
                            AND deleted_at IS NULL""", (producer_id, observation_id)).fetchone():
         raise HTTPException(404, "unknown_observation")
-    conn.execute("""INSERT INTO clips (observation_id, n, sha256, bytes) VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (observation_id, n) DO UPDATE SET sha256 = EXCLUDED.sha256, bytes = EXCLUDED.bytes,
-                    created_at = now()""", (observation_id, n, x_content_sha256, body))
+    conn.execute("""INSERT INTO clips (producer_id, observation_id, n, sha256, bytes) VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (producer_id, observation_id, n) DO UPDATE SET sha256 = EXCLUDED.sha256,
+                    bytes = EXCLUDED.bytes, created_at = now()""", (producer_id, observation_id, n, x_content_sha256, body))
 
 
 @app.get("/v1/clips/{observation_id}/{n}")
 def clip(observation_id: str, n: int, _: Device, conn: Db):
     # ponytail: whole-file response, no range requests; clips are a few hundred KB.
-    row = conn.execute("SELECT sha256, bytes FROM clips WHERE observation_id = %s AND n = %s",
+    row = conn.execute("""SELECT c.sha256, c.bytes FROM clips c JOIN producers p ON p.id = c.producer_id AND p.revoked_at IS NULL
+                          WHERE c.observation_id = %s AND c.n = %s ORDER BY c.created_at DESC LIMIT 1""",
                        (observation_id, n)).fetchone()
     if not row:
         raise HTTPException(410, "clip_unavailable")
