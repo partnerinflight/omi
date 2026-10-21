@@ -416,6 +416,15 @@ class LectureSummaryTests(unittest.TestCase):
         write_json(runtime.cfg.pipeline_config, dict(pipeline, hermes_url=""))
         self.assertIsNone(runtime.summarizing(), "no hermes_url")
 
+    def test_a_status_refresh_reads_and_logs_a_broken_pipeline_config_once(self):
+        runtime = self.runtime(no_hermes=False)
+        runtime.cfg.pipeline_config.write_text("{broken")
+        with self.assertLogs("second_brain", "ERROR") as logs:
+            runtime.status()
+        self.assertEqual(len([r for r in logs.records if "Pipeline config unreadable" in r.getMessage()]), 1)
+        status = json.loads(runtime.cfg.status_file.read_text())
+        self.assertEqual((status["router"]["enabled"], status["lecture_summaries"]["enabled"]), (False, False))
+
     def test_summary_is_frozen_before_the_note_and_replays_identically(self):
         from second_brain import router
         runtime = self.runtime()
@@ -451,6 +460,102 @@ class LectureSummaryTests(unittest.TestCase):
             runtime.summaries.done(item["id"], runtime.summarize_lecture({}, item))
         self.assertEqual(runtime.summaries.snapshot()["done"], 1)
         self.assertTrue((runtime.cfg.vault_path / "Omi" / "Lectures" / f"{JOB} Summary.md").is_file())
+
+    def attempts(self, runtime):
+        with runtime.summaries.connect() as db:
+            return db.execute("SELECT state,attempts,error FROM routes").fetchone()
+
+    def test_an_interrupted_summary_stays_pending_without_spending_an_attempt(self):
+        from second_brain import lectures, router
+        runtime = self.runtime(no_hermes=False)
+        runtime.summaries.enqueue(JOB, "2026-10-21T15:00:00Z")
+        root = runtime.cfg.data_dir / "jobs" / JOB
+        calls = []
+
+        def stop_after_first_section(cfg, system, user):
+            calls.append(system)
+            runtime.stop.set()  # the service begins stopping while Hermes answers
+            return {"summary": "Section 1."}
+
+        with patch.object(router, "chat", stop_after_first_section):
+            asyncio.run(asyncio.wait_for(runtime.summarize_lectures(), 10))
+        self.assertEqual(calls, [lectures.SECTION_PROMPT], "the second section is never requested")
+        self.assertEqual(tuple(self.attempts(runtime)), ("pending", 0, None))
+        self.assertEqual(json.loads((root / "lecture-summary.partial.json").read_text()), {"w0000": "Section 1."})
+        self.assertFalse((root / "lecture-summary.json").exists())
+        self.assertFalse((runtime.cfg.vault_path / "Omi" / "Lectures").exists())
+        # After the restart only the remaining section and the combination are requested.
+        runtime.stop.clear()
+        fake = FakeSummarizer()
+        with patch.object(router, "chat", fake):
+            runtime.summarize_lecture({}, runtime.summaries.claim())
+        self.assertEqual([system for system, _ in fake.calls], [lectures.SECTION_PROMPT, lectures.COMBINE_PROMPT])
+        self.assertIn("Any questions?", fake.calls[0][1])
+        frozen = json.loads((root / "lecture-summary.json").read_text())
+        self.assertEqual([s["summary"] for s in frozen["sections"]], ["Section 1.", "Section 1."])
+        self.assertFalse((root / "lecture-summary.partial.json").exists(), "the partial is removed once frozen")
+
+    def test_a_failed_section_is_retried_from_that_section(self):
+        from second_brain import lectures, router
+        runtime = self.runtime()
+        item = {"id": JOB, "job": JOB, "observed_at": "2026-10-21T15:00:00Z"}
+        seen = []
+
+        def fail_on_second_section(cfg, system, user):
+            seen.append(user)
+            if len(seen) == 2:
+                raise OSError("Hermes down")
+            return {"summary": "Section 1."}
+
+        with patch.object(router, "chat", fail_on_second_section):
+            with self.assertRaises(OSError):
+                runtime.summarize_lecture({}, item)
+        fake = FakeSummarizer()
+        with patch.object(router, "chat", fake):
+            self.assertEqual(runtime.summarize_lecture({}, item), {"notes": 1})
+        self.assertEqual([system for system, _ in fake.calls], [lectures.SECTION_PROMPT, lectures.COMBINE_PROMPT])
+        self.assertIn("Any questions?", fake.calls[0][1])
+        self.assertNotIn("Today we define entropy.", "".join(user for _, user in fake.calls))
+
+    def test_summaries_wait_without_spending_attempts_until_hermes_is_usable(self):
+        from second_brain import router
+        runtime = self.runtime()  # no_hermes
+        runtime.summaries.enqueue(JOB, "2026-10-21T15:00:00Z")
+
+        async def run_until(condition):
+            runtime.stop = asyncio.Event()  # one per event loop
+            task = asyncio.create_task(runtime.summarize_lectures())
+            for _ in range(100):
+                if condition():
+                    break
+                await asyncio.sleep(0.05)
+            runtime.stop.set()
+            await asyncio.wait_for(task, 10)
+
+        polls = iter(range(5))
+        asyncio.run(run_until(lambda: next(polls, None) is None))  # a few polls with Hermes off
+        self.assertEqual(tuple(self.attempts(runtime)), ("pending", 0, None))
+        # Enabling Hermes later summarizes the lecture queued while it was off.
+        runtime.cfg = dataclasses.replace(runtime.cfg, no_hermes=False)
+        with patch.object(router, "chat", FakeSummarizer()):
+            asyncio.run(run_until(lambda: runtime.summaries.snapshot()["done"]))
+        self.assertEqual(runtime.summaries.snapshot()["done"], 1)
+        self.assertTrue((runtime.cfg.vault_path / "Omi" / "Lectures" / f"{JOB} Summary.md").is_file())
+
+    def test_a_published_lecture_is_always_queued_and_counts_excluded_windows_as_filtered(self):
+        runtime = self.runtime()  # no_hermes: the summary waits in the queue until Hermes is usable
+        audio = runtime.cfg.incoming_dir / "lecture.opus"
+        audio.write_bytes(b"lecture audio")
+        runtime.queue.enqueue(audio, {"device": "112233445566", "start_seq": 1, "mode": "lecture",
+                                      "kind": "lecture", "first_utc": "2026-10-21T15:00:00Z"})
+        job = runtime.queue.claim()
+        root = runtime.cfg.data_dir / "jobs" / job["id"]
+        write_json(root / "manifest.json", lecture_manifest())  # a replay: no pipeline run
+        result = asyncio.run(runtime.process(job))
+        # Only the [AudioBook] window is excluded; the gate's memory_keep=False never filters a lecture.
+        self.assertEqual((result["notes"], result["filtered"], result["windows"]), (1, 1, 4))
+        self.assertEqual(runtime.summaries.snapshot()["pending"], 1)
+        self.assertEqual(runtime.summaries.claim()["job"], job["id"])
 
     def test_cli_retry_requeues_failed_summaries(self):
         from second_brain.lectures import SummaryQueue
@@ -547,7 +652,10 @@ class LectureEndToEndTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_complete()
         folder = self.cfg.vault_path / "Omi" / "Lectures"
         [note] = list(folder.glob("*.md"))
-        self.assertEqual(self.runtime.summaries.snapshot()["pending"], 0)  # Hermes off: no summary queued
+        # Hermes off: the summary is queued and waits without spending attempts.
+        self.assertEqual(self.runtime.summaries.snapshot()["pending"], 1)
+        with self.runtime.summaries.connect() as db:
+            self.assertEqual(db.execute("SELECT attempts FROM routes").fetchone()[0], 0)
         text = note.read_text(encoding="utf-8")
         self.assertIn('type: "omi-lecture"', text)
         self.assertIn(f"[[{note.stem} Summary]]", text)

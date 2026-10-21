@@ -23,6 +23,7 @@ from .clarifications import Clarifications
 from . import bridge
 
 log = logging.getLogger("second_brain")
+_READ = object()  # routing()/summarizing(): read the pipeline config themselves
 STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
 MEETING_WAIT_SECONDS = 300  # recheck an Omi job whose meeting is still uploading
 AUDIO_SUFFIXES = {".opus", ".m4a", ".caf", ".wav", ".ogg", ".mp3", ".flac"}
@@ -66,26 +67,29 @@ class Runtime:
         self.clarifications = Clarifications(cfg.data_dir, cfg.review_dir, cfg.vault_path)
         self.bridge_status = {"enabled": bool(cfg.bridge_url), "last_success": None, "error": None}
 
-    def routing(self):
-        """The pipeline config when the knowledge router should run, else None."""
+    def pipeline_or_none(self):
+        """The pipeline config, or None (logged) when it is unreadable."""
         try:
-            pipeline = self.cfg.pipeline()
+            return self.cfg.pipeline()
         except (OSError, ValueError):
-            log.exception("Pipeline config unreadable; routing paused")
+            log.exception("Pipeline config unreadable; routing and lecture summaries paused")
             return None
-        if not pipeline.get("router_enabled") or self.cfg.no_hermes or not pipeline.get("hermes_url"):
+
+    def routing(self, pipeline=_READ):
+        """The pipeline config when the knowledge router should run, else None. Pass an already
+        read config (or None) to avoid reading and logging it twice."""
+        if pipeline is _READ:
+            pipeline = self.pipeline_or_none()
+        if pipeline is None or not pipeline.get("router_enabled") or self.cfg.no_hermes or not pipeline.get("hermes_url"):
             return None
         return pipeline
 
-    def summarizing(self):
+    def summarizing(self, pipeline=_READ):
         """The pipeline config when lecture summaries can run, else None. Unlike routing this
         needs no router_enabled: lecture content never reaches the knowledge router."""
-        try:
-            pipeline = self.cfg.pipeline()
-        except (OSError, ValueError):
-            log.exception("Pipeline config unreadable; lecture summaries paused")
-            return None
-        if self.cfg.no_hermes or not pipeline.get("hermes_url"):
+        if pipeline is _READ:
+            pipeline = self.pipeline_or_none()
+        if pipeline is None or self.cfg.no_hermes or not pipeline.get("hermes_url"):
             return None
         return pipeline
 
@@ -305,8 +309,9 @@ class Runtime:
             )
         if kind == "lecture":
             # Lectures stay in the lectures folder: never routed, so never in daily notes either.
-            # Idempotent, so a crash-replay of this job enqueues nothing twice.
-            if notes and self.summarizing():
+            # Always queued, so enabling Hermes later still summarizes it; summarize_lectures holds
+            # the item without spending attempts while Hermes is off. Idempotent on crash-replay.
+            if notes:
                 self.summaries.enqueue(job["id"], metadata.get("first_utc", "unknown-time"))
         elif self.routing():
             # Idempotent, so a crash-replay of this job enqueues nothing twice.
@@ -316,8 +321,9 @@ class Runtime:
         return {
             "notes": len(notes),
             "warnings": len(manifest.get("fallbacks", [])),
-            # A lecture is published whole: nothing is filtered.
-            "filtered": 0 if kind == "lecture" else sum(w.get("memory_keep") is not True for w in manifest["windows"]),
+            # A lecture ignores the memory gate: only speaker exclusions ([AudioBook]) filter windows.
+            "filtered": sum(bool(w.get("speaker_filter")) for w in manifest["windows"]) if kind == "lecture"
+            else sum(w.get("memory_keep") is not True for w in manifest["windows"]),
             "windows": len(manifest["windows"]),
             **({"deduped": manifest["dedupe"]["dropped_count"],
                 "alignment_failed": manifest["dedupe"]["alignment_failed"]}
@@ -381,8 +387,11 @@ class Runtime:
         so a crash replay writes byte-identical content and never asks Hermes again."""
         root = self.cfg.data_dir / "jobs" / item["job"]
         frozen = root / "lecture-summary.json"
+        partial = root / "lecture-summary.partial.json"  # finished sections; never published
         if not frozen.exists():
-            write_json(frozen, summarize(pipeline, read_json(root / "publication-manifest.json")))
+            write_json(frozen, summarize(pipeline, read_json(root / "publication-manifest.json"),
+                                         partial, self.stop.is_set))
+        partial.unlink(missing_ok=True)
         notes = publish_lecture_summary(self.cfg.vault_path, self.cfg.lectures_vault_folder, item["job"],
                                         item["observed_at"], read_json(frozen))
         return {"notes": len(notes)}
@@ -401,6 +410,8 @@ class Runtime:
                     continue
             except asyncio.CancelledError:
                 raise
+            except InterruptedError:
+                break  # the service is stopping: the item stays pending and keeps its attempts
             except Exception as e:
                 log.exception("Lecture summary failed for %s", item["id"] if item else "the summarizer")
                 if item:
@@ -446,6 +457,7 @@ class Runtime:
                 pass
 
     def status(self, state="running"):
+        pipeline = self.pipeline_or_none()  # once per refresh, so a broken config logs once
         result = self.queue.snapshot()
         result.update(
             version=1,
@@ -463,8 +475,8 @@ class Runtime:
             discovery_error=self.last_scan_error,
             speakers=self.speakers.summary(),
             clarifications=self.clarifications.count(),
-            router=dict(self.router.snapshot(), enabled=self.routing() is not None),
-            lecture_summaries=dict(self.summaries.snapshot(), enabled=self.summarizing() is not None),
+            router=dict(self.router.snapshot(), enabled=self.routing(pipeline) is not None),
+            lecture_summaries=dict(self.summaries.snapshot(), enabled=self.summarizing(pipeline) is not None),
             bridge=self.bridge_status,
         )
         write_json(self.cfg.status_file, result)

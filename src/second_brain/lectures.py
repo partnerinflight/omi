@@ -3,8 +3,11 @@
 it only ever lands in the lecture's own summary note."""
 
 from __future__ import annotations
+import json
 import time
+from pathlib import Path
 from . import router
+from .io import write_json
 from .router import RouterQueue
 from .vault import _clock, spoken_windows
 
@@ -34,16 +37,35 @@ def _summary(reply: dict) -> str:
     return text.strip()
 
 
-def summarize(cfg: dict, manifest: dict) -> dict:
-    """Map every spoken section, then reduce. Any Hermes failure raises, so the queue retries the
-    whole summary; nothing partial is ever published."""
+def _cached(partial: Path | None) -> dict:
+    """Section summaries an earlier attempt finished, by window id; unreadable means none."""
+    try:
+        value = json.loads(partial.read_text(encoding="utf-8")) if partial else {}
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(v, str) and v.strip()} if isinstance(value, dict) else {}
+
+
+def summarize(cfg: dict, manifest: dict, partial: Path | None = None, stopping=lambda: False) -> dict:
+    """Map every spoken section, then reduce. Any Hermes failure raises, so the queue retries;
+    nothing partial is ever published. Finished sections are cached in `partial`, so a retry
+    asks Hermes only for the rest. `stopping()` is checked before each Hermes call and raises
+    InterruptedError, so a service stop never waits for a whole lecture."""
+    done = _cached(partial)
     sections = []
     for w in spoken_windows(manifest):
-        user = f"SECTION: {_clock(w['start'])}–{_clock(w['end'])}\n\nTRANSCRIPT:\n{w['final_transcript'].strip()}\n"
-        sections.append({"id": w["id"], "start": w["start"], "end": w["end"],
-                         "summary": _summary(router.chat(cfg, SECTION_PROMPT, user))})
+        if w["id"] not in done:
+            if stopping():
+                raise InterruptedError("Service is stopping")
+            user = f"SECTION: {_clock(w['start'])}–{_clock(w['end'])}\n\nTRANSCRIPT:\n{w['final_transcript'].strip()}\n"
+            done[w["id"]] = _summary(router.chat(cfg, SECTION_PROMPT, user))
+            if partial:
+                write_json(partial, done)
+        sections.append({"id": w["id"], "start": w["start"], "end": w["end"], "summary": done[w["id"]]})
     if not sections:
         raise ValueError("Lecture has no transcript to summarize")
+    if stopping():
+        raise InterruptedError("Service is stopping")
     user = "SECTION SUMMARIES:\n\n" + "\n\n".join(f"[{_clock(s['start'])}] {s['summary']}" for s in sections) + "\n"
     return {"version": 1, "summary": _summary(router.chat(cfg, COMBINE_PROMPT, user)), "sections": sections}
 
