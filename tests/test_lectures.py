@@ -139,5 +139,88 @@ class QueueKindTests(unittest.TestCase):
             self.assertNotIn("private-device-name", json.dumps(snapshot))
 
 
+def make_recording(path: Path, seconds: int = 10) -> Path:
+    """Mono Opus like an Omi recording: one steady tone, so nothing is a long silence."""
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
+         "-i", f"sine=frequency=440:sample_rate=16000:duration={seconds}",
+         "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", str(path)],
+        check=True,
+    )
+    return path
+
+
+def lecture_pipeline_config(root: Path) -> Path:
+    cfg = json.loads((ROOT / "config/pipeline.example.json").read_text())
+    cfg.update(
+        moss_command=[sys.executable, str(ROOT / "tests/fixtures/fake_moss.py")],
+        scan_vault_for_novelty=False, long_silence_seconds=999, memory_gate_min_words=1,
+        conversation_max_seconds=6.0,  # fake_moss's two 5 s turns become two sections
+        work_root=str(root / "work"),
+        # Outside lecture mode these send every window to VibeVoice 7B (a missing interpreter, so the
+        # run would fail) and to Hermes scoring (a closed port, so every window would log a fallback).
+        vibe7_rescue_uncertainty_threshold=0, vibe_python=str(root / "no-such-python"),
+        hermes_scoring_enabled=True, hermes_url="http://127.0.0.1:9/v1/chat/completions",
+    )
+    path = root / "pipeline.json"
+    path.write_text(json.dumps(cfg))
+    return path
+
+
+def run_pipeline(root: Path, *flags):
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")]))
+    return subprocess.run(
+        [sys.executable, "-m", "second_brain.adaptive.pipeline", "--audio", str(root / "recording.opus"),
+         "--config", str(lecture_pipeline_config(root)), "--output-dir", str(root / "run"), *flags],
+        capture_output=True, text=True, env=env,
+    )
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
+class LecturePipelineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        make_recording(cls.root / "recording.opus")
+        proc = run_pipeline(cls.root, "--lecture")  # no --no-hermes: --lecture alone must stop scoring
+        if proc.returncode:
+            raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+        cls.manifest = json.loads((cls.root / "run" / "manifest.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_windows_become_timestamped_sections(self):
+        self.assertEqual([(w["id"], w["start"]) for w in self.manifest["windows"]], [("w0000", 0.0), ("w0001", 5.0)])
+
+    def test_lectures_stay_on_moss_and_never_reach_vibevoice(self):
+        self.assertEqual({w["asr_tier"] for w in self.manifest["windows"]}, {"moss"})
+        self.assertEqual({w["final_engine"] for w in self.manifest["windows"]}, {"moss"})
+        self.assertFalse((self.root / "run" / "refined" / "vibe7-jobs.json").exists())
+
+    def test_lectures_are_never_scored_by_hermes(self):
+        self.assertFalse(self.manifest["config"]["hermes_scoring_enabled"])
+        self.assertEqual([w["hermes_scores"] for w in self.manifest["windows"]], [None, None])
+        self.assertEqual([f for f in self.manifest["fallbacks"] if f["from"] == "hermes"], [])
+
+    def test_publication_fields_are_still_set(self):
+        for w in self.manifest["windows"]:
+            self.assertTrue(w["final_transcript"].strip())
+            self.assertEqual(w["final_segments"], w["moss_segments"])
+        self.assertNotIn("dedupe", self.manifest)
+
+
+class LecturePipelineArgumentTests(unittest.TestCase):
+    def test_lecture_refuses_meeting_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for flags in (["--lecture", "--meeting"], ["--lecture", "--meeting-dedupe", str(root / "index.json")]):
+                proc = run_pipeline(root, *flags)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn("--lecture cannot be combined", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

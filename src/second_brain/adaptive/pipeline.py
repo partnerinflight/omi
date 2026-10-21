@@ -1234,13 +1234,18 @@ def main():
     ap.add_argument("--progress-file")
     ap.add_argument("--meeting", action="store_true", help="stereo meeting capture: L mic (owner), R remote")
     ap.add_argument("--meeting-dedupe", help="JSON index of overlapping meeting captures (service-written)")
+    ap.add_argument("--lecture", action="store_true",
+                    help="verbatim lecture: MOSS only, no Hermes scoring, no meeting dedupe")
     args = ap.parse_args()
+    if args.lecture and (args.meeting or args.meeting_dedupe):
+        ap.error("--lecture cannot be combined with --meeting or --meeting-dedupe")
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
     global PROGRESS_FILE, COMMAND_TIMEOUT
     PROGRESS_FILE = Path(args.progress_file) if args.progress_file else None
     COMMAND_TIMEOUT = float(cfg.get("command_timeout_seconds", 14400))
-    if args.no_hermes:
+    # A lecture is published whole, so per-window Hermes scores would decide nothing.
+    if args.no_hermes or args.lecture:
         cfg["hermes_scoring_enabled"] = False
 
     audio = str(Path(args.audio).resolve())
@@ -1369,9 +1374,11 @@ def main():
             cfg, llm, *evaluate_memory_gate(cfg, preliminary_memory_gate, importance, words)
         )
 
+        # Meetings: 7B refinement works on a mono mix. Lectures: MOSS text stays verbatim, and a
+        # 90-minute lecture stays well inside the attempt deadline.
         tier = (
             "vibe7"
-            if not args.meeting
+            if not (args.meeting or args.lecture)
             and should_escalate_to_vibe7(cfg, importance, uncertainty, heuristic, preliminary_memory_gate)
             else "moss"
         )
