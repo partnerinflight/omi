@@ -160,3 +160,9 @@ A short button click pauses/resumes recording: paused means microphone power
 off and a brief red flash every 3 seconds; sound cannot resume it. Each pause
 ends the current file. No receiver update beyond the `.9` boundary support is
 needed. See [VOX behavior](../../PROVISIONING.md#sound-activated-recordings-vox).
+
+A recording-mode marker (`"\0OMIMOD\1"` + mode byte: 0 normal, 1 lecture, zero padding)
+ends any open recording and sets the mode of the recordings that follow. The sidecar
+JSON carries `"mode"`, and the Ogg file an `OMI_MODE` comment. The last mode seen is kept
+per device in `state.json`. Unknown mode bytes are treated as normal; receivers older
+than this change ignore the marker.

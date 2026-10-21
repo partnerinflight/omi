@@ -54,6 +54,8 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   SD stores 444-byte records, not independently playable files. Records contain
   a timestamp and packed complete Opus frames. A full ring drops new audio;
   unread records are not overwritten. Track dropped counts.
+  A recording-mode marker ("\0OMIMOD\1" + mode byte) starts lecture or normal
+  recordings; the receiver writes "mode" into the sidecar.
 - VOX: `.15`: level measured
   after 250 Hz high-pass / 3.4 kHz low-pass, threshold **200**, continuous silence
   **30,000 ms**; the timer resets only when at least 3 of the last 5 100 ms blocks
