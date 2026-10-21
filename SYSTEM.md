@@ -170,6 +170,17 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    The client is `mac/SecondBrainCapture` (menu-bar app; see its README). It opens a
    short connection per operation, sends CAPTURE_OPEN when a meeting starts, and uploads
    stereo Opus CAF (L = owner mic, R = meeting app) after the meeting ends.
+7. Lecture mode (2026-10-21, spec `docs/superpowers/specs/2026-10-21-lecture-mode-design.md`):
+   the receiver writes `"mode"` into each Omi sidecar, and discovery stores the job kind
+   (`second_brain.kinds.job_kind`: `omi`, `meeting`, `lecture`). Lecture jobs run the pipeline
+   with `--lecture`: MOSS tier forced, Hermes scoring off, `--meeting`/`--meeting-dedupe` refused,
+   windows kept. They never wait for or dedupe against meetings. `vault.publish_lecture` writes
+   `<lectures_vault_folder>/<job>.md` (every spoken window, `### m:ss` sections). When
+   `summarizing()` allows it (no `no_hermes`, a `hermes_url`), the job is queued in
+   `data/lectures.sqlite3`; `summarize_lectures` maps each section and reduces through
+   `router.chat`, freezes `lecture-summary.json`, then writes `<job> Summary.md`. Lectures are
+   never routed and produce no daily notes; the job result's `filtered` is 0. The public status
+   carries each job's `kind` and `lecture_summaries` counts; the tray shows a badge.
 
 ## Adaptive processing and memory policy
 
@@ -239,7 +250,8 @@ are authoritative; explain deliberate policy changes.
   kept windows get `router_queue` artifacts. Audio of completed Omi recordings
   (original, sidecar, receipt, working WAVs) is deleted after publication when
   `delete_audio_after_processing` is on (default); text artifacts are kept, and a
-  startup sweep completes interrupted deletions. Meeting captures are exempt until
+  startup sweep completes interrupted deletions. Lecture recordings are Omi recordings and are
+  deleted the same way. Meeting captures are exempt until
   meeting processing/dedupe defines their retention. Legacy `router_*` threshold settings remain
   in the example but `should_route()` does not control the current final gate.
 
@@ -350,6 +362,9 @@ Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brai
   and gate reason. Deterministic, atomic creation; identical replay is a no-op,
   conflicting human edits raise `NoteConflict`. No existing-note semantic edits.
   Later speaker corrections update review/future notes, not already published notes.
+- Lecture output: `Omi/Lectures/<job-id>.md` (`type: omi-lecture`, link to the summary) and
+  `Omi/Lectures/<job-id> Summary.md` (`type: omi-lecture-summary`, link back). Same atomic,
+  conflict-raising writer; the summary renders only from the frozen `lecture-summary.json`.
 
 ## Deployment and operations
 
@@ -423,6 +438,7 @@ Default machine state (`service.json` may override paths):
 | `data/service.log` | Rotating receiver/discovery/worker errors |
 | `data/jobs/<id>/attempt-N/pipeline.log`, `progress.json` | Detailed stage/model output; may contain transcripts |
 | `data/jobs/<id>/manifest.json`, `publication-manifest.json` | Processing and publication recovery boundaries |
+| `data/lectures.sqlite3`, `data/jobs/<id>/lecture-summary.json` | Lecture summary queue and frozen Hermes summary |
 | `status/status.json` | Sanitized heartbeat, counts/current/recent/events, receiver status |
 | `review/catalog.json`, `clips/`, `requests/`, `responses/` | Private speaker-review UI contract |
 
@@ -518,6 +534,18 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   `second_brain.install_config` (defaults < existing < installer-managed) and grants Modify on
   `vault_folder` and `meetings_vault_folder`. The Windows smoke test reinstalls the real service
   and checks that edited settings survive and the meetings folder is writable.
+- Lecture mode, known limits (2026-10-21): verified only with fixtures (fake MOSS, fake Hermes).
+  Unverified: real MOSS on long, dense lecture speech, in particular truncation by
+  `moss_max_new` (2048 new tokens) per `coarse_max_seconds` (240 s) chunk. A truncated chunk
+  shows as a `coarse/c*.json` whose last segment ends well before the chunk's end while the
+  audio continues. There is no per-mode setting; if it truncates, raise `moss_max_new` or lower
+  `coarse_max_seconds` in pipeline.json (both affect every recording). Summary readability is
+  unjudged. Summaries are queued only when Hermes is usable at publication; enabling Hermes later
+  does not summarize earlier lectures. The example `hermes_url` placeholder counts as usable, so
+  with it and `no_hermes` off every summary fails visibly (`lecture_summaries.failed`) after its
+  backoff. A lecture overlapping a meeting capture is not deduped; both notes keep the speech.
+  Sections past one hour are headed `h:mm:ss`. Lecture windows still record the memory gate in
+  the manifest; only the kind keeps them out of routing.
 - Keep changes on the feature branch; do not merge/push `main` without instruction.
   Preserve durability boundaries, v3 gates, edited notes, and third-party licenses.
   Add tests at real failure boundaries. Never present mocked model tests or a
