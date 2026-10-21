@@ -410,9 +410,9 @@ class Runtime:
                     continue
             except asyncio.CancelledError:
                 raise
-            except InterruptedError:
-                break  # the service is stopping: the item stays pending and keeps its attempts
             except Exception as e:
+                if isinstance(e, InterruptedError) and self.stop.is_set():
+                    break  # the service is stopping: the item stays pending and keeps its attempts
                 log.exception("Lecture summary failed for %s", item["id"] if item else "the summarizer")
                 if item:
                     self.summaries.fail(item, f"{type(e).__name__}; see private service log")
