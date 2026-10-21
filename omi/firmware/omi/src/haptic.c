@@ -15,8 +15,6 @@ static const struct gpio_dt_spec haptic_pin = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(m
 // Haptic Off Work Item
 static struct k_work_delayable haptic_off_work;
 
-#define HAPTIC_PULSE_ON_MS 80
-#define HAPTIC_PULSE_GAP_MS 120
 static struct k_work_delayable pulse_work;
 static uint8_t pulses_left;
 static bool pulse_on;

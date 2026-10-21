@@ -639,6 +639,10 @@ static void enter_lecture(void)
         if (!is_connected && !wifi_upload_active())
             sd_request_power(false);
     } else if (paused) {
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+        /* Never power the mic rail while the motor runs; exit_manual_pause adds its settle margin. */
+        k_msleep(HAPTIC_PULSES_MS(2));
+#endif
         atomic_clear(&manual_pause_requested);
         exit_manual_pause();
     } else {

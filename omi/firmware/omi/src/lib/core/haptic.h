@@ -23,6 +23,11 @@ int haptic_init(void);
  */
 void play_haptic_milli(uint32_t duration);
 
+#define HAPTIC_PULSE_ON_MS 80
+#define HAPTIC_PULSE_GAP_MS 120
+/* How long play_haptic_pulses(n) keeps the motor busy (n >= 1). */
+#define HAPTIC_PULSES_MS(n) ((n) * HAPTIC_PULSE_ON_MS + ((n) - 1) * HAPTIC_PULSE_GAP_MS)
+
 /**
  * @brief Play `count` (1-3) 80 ms pulses, 120 ms apart, without blocking.
  */

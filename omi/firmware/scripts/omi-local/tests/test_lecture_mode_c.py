@@ -8,6 +8,9 @@ SRC = Path(__file__).resolve().parents[3] / 'omi' / 'src'
 def function(path, name):
     text = path.read_text(); start = text.index(name)
     return text[start:text.index('\n}\n', start) + 3]
+# The production pulse timing, so the motor-before-rail check uses the real pattern length.
+HAPTIC = ''.join(l + '\n' for l in (SRC/'lib/core/haptic.h').read_text().splitlines()
+                 if l.startswith('#define HAPTIC_PULSE'))
 NAMES = ['int mic_toggle_manual_pause(void)', 'int mic_toggle_lecture(void)', 'bool mic_in_lecture(void)',
          'static void lecture_timer_expired(struct k_timer *timer)\n{', 'static void exit_hw_aad(void)',
          'static void enter_manual_pause(void)', 'static void exit_manual_pause(void)',
@@ -48,6 +51,7 @@ static bool running=true,rail=true,irq,sd=true,timer_on;
 static int end_error,mark_error,buzzes,timer_ms;
 static char calls[64];
 static jmp_buf stop;static int steps;
+static bool motor_pending;static int motor_wait;  /* owner sleeps since the last pulses */
 static void note(const char *s){assert(strlen(calls)+strlen(s)<sizeof(calls));strcat(calls,s);}
 int atomic_get(int *p){return *p;}
 void atomic_set(int *p,int v){*p=v;}
@@ -56,13 +60,14 @@ void atomic_xor(int *p,int v){*p^=v;}
 bool atomic_cas(int *p,int a,int b){if(*p!=a)return false;*p=b;return true;}
 void k_sem_give(int *s){(void)s;}
 void k_sem_take(int *s,int t){(void)s;(void)t;if(steps++)longjmp(stop,1);}
-void k_msleep(int ms){assert(ms==150 || ms==20);}
+void k_msleep(int ms){assert(ms==150 || ms==20 || ms==HAPTIC_PULSES_MS(2));if(motor_pending)motor_wait+=ms;}
 uint32_t k_uptime_get_32(void){return now;}
 void k_timer_start(struct k_timer *t,int d,int p){assert(t==&lecture_timer && p==0);timer_on=true;timer_ms=d;}
 void k_timer_stop(struct k_timer *t){assert(t==&lecture_timer);timer_on=false;}
 void aad_wake_irq(bool on){irq=on;}
 void pdm_hw_disable(void){assert(!running);}
-void t5838_aad_power(bool on){rail=on;}
+/* The mic rail never powers while the motor runs: wait out the pulses plus the settle margin. */
+void t5838_aad_power(bool on){if(on && motor_pending)assert(motor_wait>=HAPTIC_PULSES_MS(2)+MANUAL_RESUME_MOTOR_SETTLE_MS);rail=on;}
 void t5838_aad_release_clk(void){}
 void t5838_aad_enter(void){assert(!running);}
 void sd_request_power(bool on){sd=on;}
@@ -71,19 +76,20 @@ int mic_pause(void){running=false;note("P");return 0;}
 int codec_end_recording(void){assert(!running && sd);note("E");return end_error;}
 int codec_mark_mode(uint8_t mode){assert(!running && sd);note(mode==RECORDING_MODE_LECTURE?"L":"N");return mark_error;}
 int mic_resume(void){assert(mic_discard_blocks==5 && rail);mic_discard_blocks=0;running=true;note("R");return 0;}
-void play_haptic_pulses(uint8_t n){assert(n==2 && !running);note("2");}
+void play_haptic_pulses(uint8_t n){assert(n==2 && !running);note("2");motor_pending=true;motor_wait=0;}
 void play_haptic_milli(int ms){assert(ms==80);buzzes++;}
 void enter_hw_aad(void){running=false;aad_in_sleep=1;if(!is_connected && !upload)sd=false;note("Z");}
 '''
 HELPERS = r'''
-static void step(void){steps=0;if(!setjmp(stop))aad_thread_fn(NULL,NULL,NULL);}
+static void step(void){steps=0;motor_pending=false;  /* owner wakes are user-paced */
+ if(!setjmp(stop))aad_thread_fn(NULL,NULL,NULL);}
 static void expect(const char *want){assert(!strcmp(calls,want));calls[0]=0;}
 '''
 
 @unittest.skipUnless(shutil.which('cc'), 'native C compiler required')
 class LectureModeTests(unittest.TestCase):
     def run_main(self, body):
-        source = (PRELUDE + '\n'.join(function(SRC/'mic.c', n) for n in NAMES) + HELPERS
+        source = (HAPTIC + PRELUDE + '\n'.join(function(SRC/'mic.c', n) for n in NAMES) + HELPERS
                   + 'int main(void){\n' + body + '\n return 0;\n}\n')
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp); (p/'test.c').write_text(source)
