@@ -82,12 +82,12 @@ class MatchingTests(unittest.TestCase):
             dict(start=7, end=12, speaker="c:S3", text="real words here"),
             dict(start=12.5, end=13.2, speaker="c:S3", text="ok"),
             dict(start=14, end=19, speaker="c:S4", text=" … "),
-            dict(start=20, end=33, speaker="c:S5", text="a long turn with a short tail"),
+            dict(start=20, end=51, speaker="c:S5", text="a long turn with a short tail"),
         ]
         groups = {g["label"]: g["clips"] for g in candidates({"windows": [dict(id="w", final_segments=segments)]})}
         self.assertEqual(sorted(groups), ["c:S3", "c:S5"])
         self.assertEqual([(c["start"], c["end"]) for c in groups["c:S3"]], [(7.0, 12.0)])
-        self.assertEqual([(c["start"], c["end"]) for c in groups["c:S5"]], [(20.0, 32.0)], "1 s tail chunk dropped")
+        self.assertEqual([(c["start"], c["end"]) for c in groups["c:S5"]], [(20.0, 50.0)], "1 s tail chunk dropped")
 
     def test_vibe_times_are_bounded_and_marked_approximate(self):
         ref = dict(context_start=10, segments=[dict(approx_start=0, approx_end=10, speaker=0, text="words")])
@@ -97,9 +97,9 @@ class MatchingTests(unittest.TestCase):
 
     def test_long_turn_supplies_several_nonoverlapping_clips(self):
         groups = candidates(
-            {"windows": [dict(id="w", final_segments=[dict(start=0, end=30, speaker="c:S1", text="long turn")])]}
+            {"windows": [dict(id="w", final_segments=[dict(start=0, end=70, speaker="c:S1", text="long turn")])]}
         )
-        self.assertEqual([(c["start"], c["end"]) for c in groups[0]["clips"]], [(0, 12), (12, 24), (24, 30)])
+        self.assertEqual([(c["start"], c["end"]) for c in groups[0]["clips"]], [(0, 30), (30, 60), (60, 70)])
         self.assertTrue(all(c["eligible"] for c in groups[0]["clips"]))
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")

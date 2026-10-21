@@ -351,7 +351,7 @@ registration; the Wednesday meeting example is registered during this update.
 Sources: [speaker guide](docs/speakers.md), [speaker extraction](src/second_brain/speaker_audio.py),
 [identity store](src/second_brain/speakers.py), [vault writer](src/second_brain/vault.py).
 
-- Tray offers up to five clips per speaker observation, each ≤12 seconds; user
+- Tray offers up to five clips per speaker observation, each ≤30 seconds; user
   assigns/renames/clears/forgets people through a restricted local mailbox.
 - `speaker_python` + `speaker_model` enable offline SpeechBrain ECAPA embeddings.
   Null values still allow diarization/manual review, but no future voice matching.

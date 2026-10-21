@@ -15,6 +15,9 @@ from .io import write_json
 # Clips shorter than this, or whose turn text has no words ("...", ""), cannot identify a
 # voice and are not worth listening to; they are left out of speaker review entirely.
 MIN_REVIEW_SECONDS = 2.0
+# Review clips are cut inside one speaker's diarized turn; 30 s (~960 KB as 16 kHz PCM16)
+# gives enough to recognise a voice and stays under the 2 MB upload limit.
+CLIP_SECONDS = 30
 WORD = re.compile(r"\w")
 
 
@@ -43,9 +46,9 @@ def candidates(manifest):
             segments.append(s)
             channels[label] = s.get("channel")
     for s in segments:
-        for index in range(min(5, math.ceil((s["end"] - s["start"]) / 12))):
-            start = s["start"] + index * 12
-            end = min(s["end"], start + 12)
+        for index in range(min(5, math.ceil((s["end"] - s["start"]) / CLIP_SECONDS))):
+            start = s["start"] + index * CLIP_SECONDS
+            end = min(s["end"], start + CLIP_SECONDS)
             if not useful_clip(dict(start=start, end=end, text=s.get("text"))):
                 continue
             overlaps = any(t["speaker"] != s["speaker"] and t["start"] < end and t["end"] > start for t in segments)

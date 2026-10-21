@@ -10,7 +10,7 @@ or recording date.
 
 Select a speaker and play one of up to five clips with its play button or
 **Space**; a progress bar shows playback and Space stops it again. Clips are at
-most 12 seconds; long turns can provide several clips. The text under a clip is
+most 30 seconds; long turns can provide several clips. The text under a clip is
 the turn transcript, which may extend beyond that clip. Type a name or choose an
 existing person under **Who is this?** and press **Enter** (or **Assign**). In the
 Unidentified view the next unnamed speaker opens automatically, so a backlog can

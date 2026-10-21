@@ -27,8 +27,8 @@ Already fixed during the review (2026-10-21, uncommitted): `sb_server serve` bin
   `PUT /v1/worker/clips/*` 2.1 MB; `POST /v1/worker/events` 7 MB (100 records × 64 KB);
   `POST /v1/migration/todos` 4 MB; `POST /v1/operations` 1.1 MB (100 × 10 KB payloads);
   everything else 256 KB. A `Content-Length` above the cap is refused without reading.
-  The clip cap rests on `speaker_audio.candidates`: clips are at most 12 s of 16 kHz mono
-  PCM16 (~385 KB) whatever the recording length, uploaded one per request; the existing
+  The clip cap rests on `speaker_audio.candidates`: clips are at most 30 s of 16 kHz mono
+  PCM16 (~960 KB) whatever the recording length, uploaded one per request; the existing
   2 MB `MAX_CLIP_BYTES` (server and bridge) stays, and the bridge skips a larger file.
 - **Container**: `mem_limit: 256m`, `cpus: 1.0` (plus the existing `pids_limit`), so the worst
   case is this container restarting, never the host OOM-killing Home Assistant.

@@ -26,7 +26,7 @@ an extracted suggestion from a user-confirmed commitment and an inferred speaker
 from a human-confirmed identity. Manual items may have no recording source.
 
 Speaker review is a short one-handed loop: listen, choose person, confirm, next.
-Offer up to the existing five clips of at most 12 seconds; do not autoplay a
+Offer up to the existing five clips of at most 30 seconds; do not autoplay a
 backlog. Clearing and skipping are different; skip leaves the item for later.
 Discard/forget must explain loss of references and retained historical attribution.
 Current `[AudioBook]` exclusion semantics remain available; do not silently turn
