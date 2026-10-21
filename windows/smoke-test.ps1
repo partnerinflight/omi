@@ -77,6 +77,12 @@ try {
         ($_.FileSystemRights -band $modify) -eq $modify
     }
     if (-not $writable) { throw 'The service cannot write meeting notes (no Modify on Omi\Meetings)' }
+    $lecturesWritable = (Get-Acl "$root\vault\Omi\Lectures").Access | Where-Object {
+        $_.IdentityReference.Value -in @($account, $sid) -and
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        ($_.FileSystemRights -band $modify) -eq $modify
+    }
+    if (-not $lecturesWritable) { throw 'The service cannot write lecture notes (no Modify on Omi\Lectures)' }
     $deadline = (Get-Date).AddSeconds(60)
     do {
         Start-Sleep -Milliseconds 500

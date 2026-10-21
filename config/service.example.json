@@ -13,6 +13,7 @@
   "delete_audio_after_processing": true,
   "meetings_enabled": false,
   "meetings_vault_folder": "Omi/Meetings",
+  "lectures_vault_folder": "Omi/Lectures",
   "owner_name": "Me",
   "poll_seconds": 2,
   "retry_seconds": 60,

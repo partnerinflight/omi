@@ -222,5 +222,32 @@ class LecturePipelineArgumentTests(unittest.TestCase):
                 self.assertIn("--lecture cannot be combined", proc.stderr)
 
 
+class LectureConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_lecture_folder_defaults_and_loads(self):
+        from second_brain.config import Config
+        from tests.test_meetings import write_config
+        self.assertEqual(Config.load(write_config(self.root)).lectures_vault_folder, "Omi/Lectures")
+        self.assertEqual(Config.load(write_config(self.root, lectures_vault_folder="School/Lectures"))
+                         .lectures_vault_folder, "School/Lectures")
+
+    def test_unsafe_lecture_folder_is_rejected(self):
+        from second_brain.config import Config
+        from tests.test_meetings import write_config
+        for folder in ("../x", "/abs", "a/./b", "C:x", ""):
+            with self.assertRaisesRegex(ValueError, "lectures_vault_folder must be a safe relative folder"):
+                Config.load(write_config(self.root, lectures_vault_folder=folder))
+
+    def test_example_service_config_lists_the_lecture_folder(self):
+        from second_brain.config import Config
+        example = json.loads((ROOT / "config/service.example.json").read_text())
+        self.assertEqual(example["lectures_vault_folder"], "Omi/Lectures")
+        self.assertLessEqual(example.keys(), set(Config.__dataclass_fields__))
+
+
 if __name__ == "__main__":
     unittest.main()
