@@ -12,9 +12,12 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
 from . import auth
+from .limits import BodyLimit
 from .db import connect
 
-app = FastAPI(title="Second Brain", version="1")
+# No interactive docs or schema on the public host.
+app = FastAPI(title="Second Brain", version="1", docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(BodyLimit)
 pairing_failures = auth.FailureLimiter()
 
 MAX_BATCH = 100

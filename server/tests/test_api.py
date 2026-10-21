@@ -70,8 +70,8 @@ class Api(unittest.TestCase):
         cls.server.should_exit = True
         subprocess.run(["docker", "rm", "-f", cls.container], capture_output=True)
 
-    def http(self, method, path, token=None, **kw):
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
+    def http(self, method, path, token=None, headers=None, **kw):
+        headers = {**({"Authorization": f"Bearer {token}"} if token else {}), **(headers or {})}
         return httpx.request(method, self.base + path, headers=headers, timeout=10, **kw)
 
     def cli(self, *args):
@@ -536,6 +536,34 @@ class Api(unittest.TestCase):
         self.assertEqual((again["created"], again["updated"]), (0, 0))  # nothing duplicated, nothing lost
         self.assertEqual(sum(t["title"] == "Made on the phone" for t in bootstrap().values()), 1)
 
+
+    def test_oversized_bodies_get_413_before_auth(self):
+        big = b"{" + b" " * 300_000 + b"}"
+        # No token at all: the cap answers first, not the 401.
+        self.assertEqual(self.http("POST", "/v1/pair", content=big,
+                                   headers={"Content-Type": "application/json"}).status_code, 413)
+        self.assertEqual(self.http("POST", "/v1/operations", content=b"x" * 1_200_000).status_code, 413)
+
+        def chunks():  # no Content-Length: Transfer-Encoding: chunked
+            for _ in range(40):
+                yield b" " * 10_000
+        r = httpx.post(self.base + "/v1/pair", content=chunks(), headers={"Content-Type": "application/json"}, timeout=10)
+        self.assertEqual(r.status_code, 413)
+        # Normal requests still work.
+        self.assertEqual(self.http("POST", "/v1/pair", json={"code": "WRONGCODE1"}).status_code, 401)
+
+    def test_route_caps_allow_real_payloads(self):
+        from sb_server.limits import cap_for
+        self.assertEqual(cap_for("PUT", "/v1/worker/clips/obs-1/0"), 2_100_000)
+        self.assertEqual(cap_for("POST", "/v1/worker/events"), 7_000_000)
+        self.assertEqual(cap_for("POST", "/v1/migration/todos"), 4_000_000)
+        self.assertEqual(cap_for("POST", "/v1/operations"), 1_100_000)
+        self.assertEqual(cap_for("POST", "/v1/pair"), 256_000)
+        self.assertEqual(cap_for("GET", "/v1/bootstrap"), 256_000)
+
+    def test_api_docs_are_not_served(self):
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            self.assertEqual(self.http("GET", path).status_code, 404, path)
 
 if __name__ == "__main__":
     unittest.main()
