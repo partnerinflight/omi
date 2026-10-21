@@ -80,10 +80,10 @@ def approx_seconds(packets: int) -> float:
 class SessionWriter:
     """Turns the record stream into one playable .opus (+ .json) file per session.
 
-    A session ends on an explicit recording-end or recording-mode marker, when a record is not
-    the successor of the previous one, when
-    the clock state flips (unknown <-> known), or when the timestamp jumps by
-    more than `gap_s` (the mic was in hardware sleep or the device was off).
+    A session ends on an explicit recording-end or recording-mode marker, when
+    a record is not the successor of the previous one, when the clock state
+    flips (unknown <-> known), or when the timestamp jumps by more than `gap_s`
+    (the mic was in hardware sleep or the device was off).
     """
 
     def __init__(self, dest: Path, device_id: str, state: DeviceState, store: StateStore, gap_s: int = 60,
@@ -121,6 +121,7 @@ class SessionWriter:
         self._writer = OggOpusWriter(self._fp, serial=0, resume_state=MuxState.from_dict(of.mux))
         sidecar = path.with_suffix(".json")
         self._cur = dict(of.metadata) if of.metadata else (json.loads(sidecar.read_text()) if sidecar.exists() else {"file": str(path)})
+        self._cur.setdefault("mode", "normal")  # files from before lecture mode
         self._prev = P.Record(of.last_seq, of.last_timestamp, ())
         if self.keep_raw:
             self._raw_fp = open(path.with_suffix(".omiring"), "ab")

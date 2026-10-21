@@ -117,7 +117,7 @@ Sources: [receiver library](omi/firmware/scripts/omi-local/omi_local/server.py),
    metadata. It fsyncs audio and atomically checkpoints sequence/file length
    before ACK. Resume truncates any uncommitted tail. Pairing key and existing
    incoming directory must survive migration from standalone `omi-local serve`.
-2. End markers close recordings; legacy timestamp/sequence boundaries also
+2. End markers and recording-mode markers close recordings; legacy timestamp/sequence boundaries also
    split them. Upload DONE only finishes a transfer snapshot. The final open
    recording may remain pending across multiple uploads.
 3. Closed, checkpointed files produce `.ready/*.json` receipts. Startup recovers

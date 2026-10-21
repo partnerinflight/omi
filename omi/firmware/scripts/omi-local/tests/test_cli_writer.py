@@ -4,6 +4,7 @@ import tempfile
 import struct
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from omi_local import protocol as P
 from omi_local.cli import SessionWriter, build_parser, cmd_verify
@@ -203,6 +204,61 @@ class SessionWriterTests(unittest.TestCase):
             w.add(0, self._mode(ts, 1) + make_record(1, ts))
             w.finish(final=True)
             self.assertIn(b'OMI_MODE=lecture', next(dest.glob('*.opus')).read_bytes())
+
+    def test_resumed_pre_upgrade_open_file_gets_normal_mode(self):
+        ts = 1_700_000_000
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(0, make_record(0, ts))
+            w.finish(final=False)
+            sidecar = next(dest.glob('*.json'))
+            meta = json.loads(sidecar.read_text())
+            meta.pop('mode')
+            sidecar.write_text(json.dumps(meta))
+            raw = json.loads((dest / '.omi-local' / 'state.json').read_text())
+            raw['dev']['open_file']['metadata'].pop('mode')
+            (dest / '.omi-local' / 'state.json').write_text(json.dumps(raw))
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(1, make_record(1, ts))
+            w.finish(final=True)
+            self.assertEqual([m['mode'] for m in self._sidecars(dest)], ['normal'])
+
+    def test_failed_chunk_with_mode_marker_replays_cleanly(self):
+        ts = 1_700_000_000
+        chunk = self._end(ts) + self._mode(ts, 1) + make_record(2, ts)
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            with patch.object(store, 'put', side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):
+                    w.add(0, chunk)
+            w.finish(final=False)
+            store = StateStore(dest)
+            self.assertEqual(store.get('dev').mode, 'normal')
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(0, chunk)
+            w.finish(final=True)
+            metas = self._sidecars(dest)
+            self.assertEqual([(m['start_seq'], m['end_seq'], m['mode'], m['complete']) for m in metas],
+                             [(2, 3, 'lecture', True)])
+            self.assertEqual(len(list(dest.glob('*.opus'))), 1)
+            self.assertEqual(StateStore(dest).get('dev').mode, 'lecture')
+
+    def test_boot_normal_marker_resets_mode_after_power_loss_in_lecture(self):
+        ts = 1_700_000_000
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            later = ts + 1000  # power was off longer than gap_s
+            w.add(0, self._mode(ts, 1) + make_record(1, ts) + self._mode(later, 0) + make_record(3, later))
+            w.finish(final=True)
+            self.assertEqual([(m['start_seq'], m['mode'], m['complete']) for m in self._sidecars(dest)],
+                             [(1, 'lecture', True), (3, 'normal', True)])
 
     def test_verify_command(self):
         ring = self._ring()
