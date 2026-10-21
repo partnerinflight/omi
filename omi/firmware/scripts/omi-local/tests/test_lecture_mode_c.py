@@ -125,6 +125,32 @@ class LectureModeTests(unittest.TestCase):
  mic_toggle_lecture();mic_toggle_lecture();step();expect("");assert(!mic_in_lecture());
 ''')
 
+    def test_pause_inside_lecture_and_entry_or_exit_from_pause(self):
+        self.run_main(r'''
+ now=1000;assert(!mic_toggle_lecture());step();expect("PEL2R");
+ /* Pause inside a lecture ends the recording but keeps lecture mode. */
+ assert(!mic_toggle_manual_pause());step();expect("PE");
+ assert(manual_paused && mic_in_lecture() && lecture_marker_pending && !rail && !sd && !irq);
+ /* Resume re-marks the lecture before any audio. */
+ assert(!mic_toggle_manual_pause());step();expect("LR");
+ assert(!manual_paused && running && mic_in_lecture() && !lecture_marker_pending);
+ /* Exit while paused: normal marker and pulses only; the mic stays paused. */
+ assert(!mic_toggle_manual_pause());step();expect("PE");
+ assert(!mic_toggle_lecture());step();expect("N2");
+ assert(manual_paused && !rail && !sd && !mic_in_lecture() && !lecture_marker_pending && !timer_on);
+ /* The next resume is normal: no marker. */
+ assert(!mic_toggle_manual_pause());step();expect("R");assert(running && !manual_paused);
+ /* Entry from pause starts the mic after the marker and the pulses. */
+ assert(!mic_toggle_manual_pause());step();expect("PE");
+ assert(!mic_toggle_lecture());step();expect("L2R");
+ assert(!manual_paused && !manual_pause_requested && running && rail && mic_in_lecture() && timer_on);
+ assert(!mic_toggle_lecture());step();expect("PEN2R");
+ /* A pause whose end marker failed retries it before the lecture marker. */
+ end_error=-EIO;assert(!mic_toggle_manual_pause());step();expect("PE");assert(manual_end_pending);
+ end_error=0;assert(!mic_toggle_lecture());step();expect("EL2R");
+ assert(!manual_end_pending && mic_in_lecture() && running);
+''')
+
 
 if __name__ == '__main__':
     unittest.main()

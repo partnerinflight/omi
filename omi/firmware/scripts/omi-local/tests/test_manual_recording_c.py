@@ -27,6 +27,7 @@ class ManualRecordingTests(unittest.TestCase):
 #include <errno.h>
 #include <setjmp.h>
 #include <stddef.h>
+#include "lib/core/record_packer.h"
 #define CONFIG_OMI_ENABLE_T5838_AAD 1
 #define CONFIG_OMI_ENABLE_HAPTIC 1
 #define K_FOREVER 0
@@ -47,6 +48,8 @@ static jmp_buf stop;static int steps;
 static int lecture_requested,lecture_active;
 static void enter_lecture(void){assert(0);}
 static void exit_lecture(void){assert(0);}
+static bool lecture_marker_pending;
+int codec_mark_mode(uint8_t mode){(void)mode;assert(0);return 0;}
 int atomic_get(int *p){return *p;}
 void atomic_set(int *p,int v){*p=v;}
 void atomic_clear(int *p){*p=0;}

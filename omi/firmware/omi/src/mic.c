@@ -547,6 +547,7 @@ static void enter_manual_pause(void)
     atomic_clear(&aad_in_sleep);
     atomic_clear(&aad_wake_pending);
     atomic_clear(&aad_req_sleep);
+    lecture_marker_pending = atomic_get(&lecture_active); /* resume stays a lecture */
     manual_pause_started_ms = k_uptime_get_32();
     atomic_set(&manual_paused, 1);
     if (!is_connected && !wifi_upload_active())
@@ -564,6 +565,16 @@ static void exit_manual_pause(void)
             return;
         }
         manual_end_pending = false;
+    }
+    if (lecture_marker_pending) {
+        /* Mark the lecture again so the resumed recording is a lecture too. */
+        int ret = codec_mark_mode(RECORDING_MODE_LECTURE);
+        if (ret) {
+            atomic_set(&manual_pause_requested, 1);
+            LOG_ERR("Manual resume blocked by lecture marker (%d)", ret);
+            return;
+        }
+        lecture_marker_pending = false;
     }
     k_msleep(MANUAL_RESUME_MOTOR_SETTLE_MS);
     t5838_aad_power(true);
