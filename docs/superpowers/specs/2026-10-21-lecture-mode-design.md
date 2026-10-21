@@ -57,7 +57,9 @@ recorded and still published, only as a lecture).
     writes the lecture marker again before audio.
 - **Auto-exit:** after `CONFIG_OMI_LECTURE_MAX_MS` (default 4 h) the device exits exactly
   as if triple-clicked, with the double vibration.
-- **Not persistent:** a reboot or power-off returns to normal mode.
+- **Not persistent:** a reboot or power-off returns to normal mode. At every boot the
+  firmware writes a `normal` mode marker before the first audio record, so a lecture cut
+  short by power loss never leaves the receiver tagging later recordings as lectures.
 - **Vibration in the audio:** the confirmation vibration falls at the end of the previous
   recording (entry) or the end of the lecture (exit). Accepted; it is not discarded.
 
