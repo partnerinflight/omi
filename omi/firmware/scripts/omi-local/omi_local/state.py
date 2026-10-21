@@ -66,6 +66,7 @@ class DeviceState:
     write_seq_seen: int = 0
     open_file: OpenFile | None = None
     files: list[dict] = field(default_factory=list)
+    mode: str = "normal"  # last recording-mode marker seen from this device
 
 
 class StateStore:
@@ -88,6 +89,7 @@ class StateStore:
             write_seq_seen=int(d.get("write_seq_seen", 0)),
             open_file=OpenFile(**of) if of else None,
             files=list(d.get("files", [])),
+            mode=str(d.get("mode", "normal")),
         )
 
     def put(self, st: DeviceState) -> None:

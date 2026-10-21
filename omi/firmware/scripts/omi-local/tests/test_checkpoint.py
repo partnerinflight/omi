@@ -47,3 +47,22 @@ class CheckpointTests(unittest.TestCase):
             final = StateStore(Path(d))
             self.assertEqual(final.get('a').downloaded_through, 10)
             self.assertEqual(final.get('b').downloaded_through, 20)
+
+
+class DeviceModeStateTests(unittest.TestCase):
+    def test_mode_defaults_to_normal_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = StateStore(Path(d))
+            st = store.get("dev")
+            self.assertEqual(st.mode, "normal")
+            st.mode = "lecture"
+            store.put(st)
+            self.assertEqual(StateStore(Path(d)).get("dev").mode, "lecture")
+
+    def test_state_written_before_lecture_mode_loads_as_normal(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = StateStore(Path(d))
+            store.dir.mkdir(parents=True)
+            store.path.write_text('{"dev": {"downloaded_through": 7}}')
+            st = StateStore(Path(d)).get("dev")
+            self.assertEqual((st.downloaded_through, st.mode), (7, "normal"))
