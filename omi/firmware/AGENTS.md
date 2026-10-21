@@ -65,13 +65,16 @@ while the mic is stopped, and starts the mic from pause or acoustic sleep; the 5
 startup discard applies. Exit writes an end marker, the normal-mode marker and 2 pulses.
 During a lecture VOX never requests acoustic sleep; manual pause still ends the recording
 and resume re-marks the lecture before audio. `CONFIG_OMI_LECTURE_MAX_MS` (4 h) exits the
-same way; a failed exit retries every minute. Not persistent across reboot: every boot
-writes the normal-mode marker through the same path before the mic starts
-(`start_audio_pipeline` in `main.c`, retried while the SD ring mounts), so a lecture cut
-short by power loss never tags later recordings.
+same way; a failed exit retries every minute. Not persistent across reboot.
+Every recording starts with its mode marker: the pusher (`transport.c`) keeps the current
+mode (normal at boot, updated by each mode marker it writes) and owes a marker at boot and
+after every end marker. Before the first audio frame of a recording it writes the owed
+marker; while the SD refuses it (e.g. the ring is still mounting at boot) the frames are
+dropped and the next frame retries. A lecture cut short by power loss therefore never
+tags later recordings, and a marker lost after acceptance is repaired at the next
+recording. Boot does not wait for the SD card.
 `test_button_taps_c.py`, `test_lecture_mode_c.py`, `test_pusher_markers_c.py`,
-`test_boot_mode_marker_c.py`, `test_record_packer_c.py` and `test_led_state_c.py` execute
-the production code.
+`test_record_packer_c.py` and `test_led_state_c.py` execute the production code.
 
 Recorded PCM passes a 100 Hz 4th-order Butterworth high-pass (`mic_highpass.c`,
 `CONFIG_OMI_MIC_HIGHPASS`) before VOX and the codec; discarded startup blocks still run

@@ -85,7 +85,8 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   an end marker and a recording-mode marker (`"\0OMIMOD\1"` + mode byte) and vibrate
   twice; VOX never sleeps during a lecture; dim solid yellow LED below setup, transfer,
   pause and warning indications; auto-exit after `CONFIG_OMI_LECTURE_MAX_MS` (4 h); not
-  persistent: every boot writes a normal-mode marker before the first audio record.
+  persistent. Every recording starts with its mode marker: the pusher owes one at boot
+  (normal) and after every end marker, and writes it before the recording's first audio.
   Triple-click reliability on the real button, motor feel, LED colour and
   brightness, and the battery cost of 4 hours without acoustic sleep are not validated
   on hardware.

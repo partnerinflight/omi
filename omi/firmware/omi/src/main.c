@@ -11,7 +11,6 @@
 #include "lib/core/led.h"
 #include "lib/core/lib/battery/battery.h"
 #include "lib/core/mic.h"
-#include "lib/core/record_packer.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "lib/core/monitor.h"
 #endif
@@ -246,54 +245,6 @@ void set_led_state()
     set_led_red(red);
 }
 
-/* Every boot starts in normal mode: lecture mode is not persistent, and a lecture cut
- * short by power loss or a reboot must not leave the receiver tagging later recordings
- * as lectures. The SD ring mounts asynchronously and drops records until it is ready,
- * so retry for a few seconds; boot continues without the marker if the card never
- * accepts it (then no audio is stored either). */
-#define BOOT_MODE_MARKER_ATTEMPTS 50
-#define BOOT_MODE_MARKER_RETRY_MS 100
-static int mark_boot_mode(void)
-{
-    int ret = 0;
-    for (int attempt = 0; attempt < BOOT_MODE_MARKER_ATTEMPTS; attempt++) {
-        ret = codec_mark_mode(RECORDING_MODE_NORMAL);
-        if (!ret)
-            return 0;
-        k_msleep(BOOT_MODE_MARKER_RETRY_MS);
-    }
-    LOG_ERR("Boot normal-mode marker not written (%d)", ret);
-    return ret;
-}
-
-/* Codec, then the boot mode marker, then the microphone: the marker is queued through
- * the ordered codec -> TX queue -> pusher path before any PCM exists, so it precedes
- * the first audio record. */
-static int start_audio_pipeline(void)
-{
-    LOG_INF("Initializing codec...\n");
-    set_codec_callback(codec_handler);
-    set_codec_mode_callback(transport_mark_mode);
-    int ret = codec_start();
-    if (ret) {
-        LOG_ERR("Failed to start codec: %d", ret);
-        error_codec();
-        return ret;
-    }
-
-    (void) mark_boot_mode();
-
-    LOG_INF("Initializing microphone...\n");
-    set_mic_callback(mic_handler);
-    ret = mic_start();
-    if (ret) {
-        LOG_ERR("Failed to start microphone: %d", ret);
-        error_microphone();
-        return ret;
-    }
-    return 0;
-}
-
 static int suspend_unused_modules(void)
 {
     int err = flash_off();
@@ -443,8 +394,26 @@ int main(void)
         return transportErr;
     }
 
-    ret = start_audio_pipeline();
+    // Initialize codec
+    LOG_INF("Initializing codec...\n");
+
+    // Set codec callback; the pusher writes the boot normal-mode marker before any audio
+    set_codec_callback(codec_handler);
+    set_codec_mode_callback(transport_mark_mode);
+    ret = codec_start();
     if (ret) {
+        LOG_ERR("Failed to start codec: %d", ret);
+        error_codec();
+        return ret;
+    }
+
+    // Initialize microphone
+    LOG_INF("Initializing microphone...\n");
+    set_mic_callback(mic_handler);
+    ret = mic_start();
+    if (ret) {
+        LOG_ERR("Failed to start microphone: %d", ret);
+        error_microphone();
         return ret;
     }
     // Hardware AAD (T5838) is started inside mic_start().

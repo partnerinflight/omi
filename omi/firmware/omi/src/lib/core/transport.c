@@ -1040,6 +1040,26 @@ bool write_to_storage(void)
 #endif
     return accepted;
 }
+
+/* Pusher-only. Every recording starts with its mode marker: one is owed at boot (lecture
+ * mode is not persistent, so a lecture cut short by power loss never tags later
+ * recordings) and after every end marker. The owner's explicit markers still pass
+ * through; one written right before audio settles the debt, and a duplicate marker with
+ * no audio between only sets the mode again. A refused marker leaves both unchanged,
+ * matching the owner, which stays in its previous mode when a transition fails. */
+static uint8_t current_mode = RECORDING_MODE_NORMAL;
+static bool mode_owed = true;
+
+/* Before the first frame of a recording. False while the SD refuses the marker: the
+ * frame would be refused too, so it is dropped and the next frame retries. */
+static bool write_owed_mode(void)
+{
+    if (mode_owed &&
+        record_packer_mode(
+            storage_temp_data, sizeof(storage_temp_data), &buffer_offset, current_mode, emit_recording_end))
+        mode_owed = false;
+    return !mode_owed;
+}
 #endif
 
 /* Local-only recorder: every encoded frame is appended to the SD ring,
@@ -1058,15 +1078,21 @@ void pusher(void)
             if (!tx_buffer_size || tx_buffer_size == TX_ENTRY_MODE_MARKER) {
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
                 /* Both markers flush the partial record first, so they follow every earlier frame. */
-                bool written = is_sd_on() && (tx_buffer_size ? record_packer_mode(storage_temp_data,
-                                                                                  sizeof(storage_temp_data),
-                                                                                  &buffer_offset,
-                                                                                  tx_buffer[RING_BUFFER_HEADER_SIZE],
-                                                                                  emit_recording_end)
-                                                             : record_packer_end(storage_temp_data,
-                                                                                 sizeof(storage_temp_data),
-                                                                                 &buffer_offset,
-                                                                                 emit_recording_end));
+                bool mode_marker = tx_buffer_size == TX_ENTRY_MODE_MARKER;
+                uint8_t mode = tx_buffer[RING_BUFFER_HEADER_SIZE];
+                bool written =
+                    is_sd_on() &&
+                    (mode_marker
+                         ? record_packer_mode(
+                               storage_temp_data, sizeof(storage_temp_data), &buffer_offset, mode, emit_recording_end)
+                         : record_packer_end(
+                               storage_temp_data, sizeof(storage_temp_data), &buffer_offset, emit_recording_end));
+                if (written && mode_marker) {
+                    current_mode = mode;
+                    mode_owed = false;
+                } else if (written) {
+                    mode_owed = true; /* the next recording starts with its mode marker */
+                }
                 recording_end_result = written ? 0 : -EIO;
 #else
                 recording_end_result = -ENOTSUP;
@@ -1076,6 +1102,10 @@ void pusher(void)
             }
             if (is_sd_on()) {
                 storage_unavailable_warned = false;
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                if (!write_owed_mode())
+                    continue; /* SD not accepting records yet: drop the frame, retry with the next */
+#endif
                 write_to_storage();
             } else if (!storage_unavailable_warned) {
                 LOG_WRN("Offline storage unavailable, audio frame dropped");
