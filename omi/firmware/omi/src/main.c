@@ -389,6 +389,7 @@ int main(void)
 
     // Set codec callback
     set_codec_callback(codec_handler);
+    set_codec_mode_callback(transport_mark_mode);
     ret = codec_start();
     if (ret) {
         LOG_ERR("Failed to start codec: %d", ret);

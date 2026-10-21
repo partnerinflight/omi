@@ -20,10 +20,16 @@ LOG_MODULE_REGISTER(codec, CONFIG_LOG_DEFAULT_LEVEL);
 //
 
 static volatile codec_callback _callback = NULL;
+static volatile codec_mode_callback _mode_callback = NULL;
 
 void set_codec_callback(codec_callback callback)
 {
     _callback = callback;
+}
+
+void set_codec_mode_callback(codec_mode_callback callback)
+{
+    _mode_callback = callback;
 }
 
 //
@@ -35,11 +41,20 @@ struct ring_buf codec_ring_buf;
 K_SEM_DEFINE(codec_data_sem, 0, NETWORK_RING_BUF_SIZE);
 static K_SEM_DEFINE(codec_end_done, 0, 1);
 static atomic_t codec_end_requested;
+static atomic_t codec_mode_requested; /* mode + 1; 0 = none */
 static int codec_end_result;
 
 int codec_end_recording(void)
 {
     atomic_set(&codec_end_requested, 1);
+    k_sem_give(&codec_data_sem);
+    k_sem_take(&codec_end_done, K_FOREVER);
+    return codec_end_result;
+}
+
+int codec_mark_mode(uint8_t mode)
+{
+    atomic_set(&codec_mode_requested, (atomic_val_t) mode + 1);
     k_sem_give(&codec_data_sem);
     k_sem_take(&codec_end_done, K_FOREVER);
     return codec_end_result;
@@ -114,6 +129,12 @@ void codec_entry()
             if (!codec_end_result)
                 opus_encoder_ctl(m_opus_state, OPUS_RESET_STATE);
 #endif
+            k_sem_give(&codec_end_done);
+        }
+        /* After any drain above, so the mode marker follows every earlier frame. */
+        atomic_val_t mode = atomic_set(&codec_mode_requested, 0);
+        if (mode) {
+            codec_end_result = _mode_callback ? _mode_callback((uint8_t) (mode - 1)) : -ENODEV;
             k_sem_give(&codec_end_done);
         }
     }

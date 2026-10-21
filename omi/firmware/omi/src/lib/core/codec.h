@@ -6,12 +6,17 @@
 /* len == 0 is an ordered recording-end marker, not an Opus packet. */
 typedef int (*codec_callback)(uint8_t *data, size_t len);
 void set_codec_callback(codec_callback callback);
+/* Ordered recording-mode marker (record_packer.h RECORDING_MODE_*). */
+typedef int (*codec_mode_callback)(uint8_t mode);
+void set_codec_mode_callback(codec_mode_callback callback);
 
 // Integration
 
 int codec_receive_pcm(int16_t *data, size_t len);
 /* Call only after pausing the PCM producer. Drains audio before the marker. */
 int codec_end_recording(void);
+/* Same contract: call with the PCM producer paused; returns once the marker is written. */
+int codec_mark_mode(uint8_t mode);
 
 /**
  * @brief Initialize the Codec
