@@ -15,6 +15,7 @@
 #include "lib/core/codec.h"
 #include "lib/core/haptic.h"
 #include "lib/core/mic_highpass.h"
+#include "lib/core/record_packer.h"
 #include "lib/core/settings.h"
 #include "lib/core/vox_filter.h"
 
@@ -76,7 +77,7 @@ extern bool is_connected; /* from main.c: keep SD up while a phone can sync */
 static const struct gpio_dt_spec aad_wake = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(pdm_wake_pin), gpios, {0});
 static struct gpio_callback aad_wake_cb;
 
-#define AAD_THREAD_STACK_SIZE 1024
+#define AAD_THREAD_STACK_SIZE 1280 /* lecture transitions nest one call deeper */
 #define AAD_THREAD_PRIORITY 5
 static K_THREAD_STACK_DEFINE(aad_stack, AAD_THREAD_STACK_SIZE);
 static struct k_thread aad_thread_data;
@@ -100,6 +101,16 @@ static atomic_t manual_pause_requested;
 static atomic_t manual_paused;
 static uint32_t manual_pause_started_ms;
 static bool manual_end_pending; /* owner-only: retry failed boundary before resume */
+/* Lecture mode (triple-click): one recording, no acoustic sleep, ends after
+ * CONFIG_OMI_LECTURE_MAX_MS. Not saved; a reboot returns to normal mode. */
+static atomic_t lecture_requested;  /* button / timer: wanted state */
+static atomic_t lecture_active;     /* owner: applied state */
+static atomic_t lecture_expired;    /* timer: auto-exit (or its retry) is due */
+static bool lecture_marker_pending; /* owner-only: re-mark lecture before resumed audio */
+#define LECTURE_EXIT_RETRY_MS 60000 /* a failed exit retries every minute */
+BUILD_ASSERT(IS_ENABLED(CONFIG_TIMEOUT_64BIT), "the lecture timer needs 64-bit kernel timeouts");
+static void lecture_timer_expired(struct k_timer *timer);
+static K_TIMER_DEFINE(lecture_timer, lecture_timer_expired, NULL);
 
 static void aad_track_silence(const int16_t *buf, size_t n);
 static int aad_hw_start(void);
@@ -371,6 +382,28 @@ int mic_toggle_manual_pause(void)
 #endif
 }
 
+int mic_toggle_lecture(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (!aad_thread_started)
+        return -EAGAIN;
+    atomic_xor(&lecture_requested, 1);
+    k_sem_give(&aad_sem);
+    return 0;
+#else
+    return -ENOTSUP;
+#endif
+}
+
+bool mic_in_lecture(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    return atomic_get(&lecture_active) != 0;
+#else
+    return false;
+#endif
+}
+
 bool mic_is_manually_paused(void)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -390,6 +423,15 @@ bool mic_manual_pause_led_on(void)
 }
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+
+/* Auto-exit: behaves exactly like a triple-click that leaves lecture mode. It has its own
+ * flag so a triple-click racing the timer cannot toggle the exit back into a lecture. */
+static void lecture_timer_expired(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+    atomic_set(&lecture_expired, 1);
+    k_sem_give(&aad_sem);
+}
 
 /* Force-disable the PDM hardware so the CLK/DIN pins revert to GPIO control.
  * dmic STOP alone does not reliably release the CLK pin for FAKE2C bit-banging. */
@@ -507,6 +549,7 @@ static void enter_manual_pause(void)
     atomic_clear(&aad_in_sleep);
     atomic_clear(&aad_wake_pending);
     atomic_clear(&aad_req_sleep);
+    lecture_marker_pending = atomic_get(&lecture_active); /* resume stays a lecture */
     manual_pause_started_ms = k_uptime_get_32();
     atomic_set(&manual_paused, 1);
     if (!is_connected && !wifi_upload_active())
@@ -524,6 +567,16 @@ static void exit_manual_pause(void)
             return;
         }
         manual_end_pending = false;
+    }
+    if (lecture_marker_pending) {
+        /* Mark the lecture again so the resumed recording is a lecture too. */
+        int ret = codec_mark_mode(RECORDING_MODE_LECTURE);
+        if (ret) {
+            atomic_set(&manual_pause_requested, 1);
+            LOG_ERR("Manual resume blocked by lecture marker (%d)", ret);
+            return;
+        }
+        lecture_marker_pending = false;
     }
     k_msleep(MANUAL_RESUME_MOTOR_SETTLE_MS);
     t5838_aad_power(true);
@@ -545,6 +598,110 @@ static void exit_manual_pause(void)
     atomic_clear(&manual_paused);
 }
 
+/* Lecture transitions also run only on the owner. Markers need the SD card even
+ * from pause or acoustic sleep; a later POWER_OFF drains queued writes first. */
+static void enter_lecture(void)
+{
+    bool paused = atomic_get(&manual_paused);
+    bool asleep = atomic_get(&aad_in_sleep);
+    bool recording = !paused && !asleep;
+    int ret = 0;
+
+    sd_request_power(true);
+    if (recording) {
+        ret = mic_pause(); /* stop PCM so the end marker follows every frame */
+        if (!ret)
+            ret = codec_end_recording();
+    } else if (paused && manual_end_pending) {
+        ret = codec_end_recording();
+        if (!ret)
+            manual_end_pending = false;
+    }
+    if (!ret)
+        ret = codec_mark_mode(RECORDING_MODE_LECTURE);
+    if (ret) {
+        /* No vibration: the user sees it failed. This overwrites any triple-click that
+         * arrived during the transition, so the wanted state matches the applied one;
+         * the user triple-clicks again. */
+        atomic_clear(&lecture_requested);
+        LOG_ERR("Lecture mode unavailable (%d)", ret);
+    } else {
+        atomic_clear(&lecture_expired); /* an expiry from an earlier lecture is stale */
+        atomic_set(&lecture_active, 1);
+        atomic_clear(&aad_req_sleep);
+        lecture_marker_pending = false;
+        k_timer_start(&lecture_timer, K_MSEC(CONFIG_OMI_LECTURE_MAX_MS), K_NO_WAIT);
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+        play_haptic_pulses(2); /* mic is stopped; the startup discard covers the rest */
+#endif
+    }
+
+    if (recording) {
+        atomic_set(&aad_woke, 1);
+        atomic_set(&mic_discard_blocks, MIC_START_DISCARD_BLOCKS);
+        if (mic_resume())
+            LOG_ERR("Mic restart after lecture boundary failed");
+    } else if (ret) {
+        if (!is_connected && !wifi_upload_active())
+            sd_request_power(false);
+    } else if (paused) {
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+        /* Never power the mic rail while the motor runs; exit_manual_pause adds its settle margin. */
+        k_msleep(HAPTIC_PULSES_MS(2));
+#endif
+        atomic_clear(&manual_pause_requested);
+        exit_manual_pause();
+    } else {
+        aad_sleep_started_ms = k_uptime_get_32(); /* the double pulse replaces the wake buzz */
+        exit_hw_aad();
+    }
+}
+
+static void exit_lecture(void)
+{
+    bool paused = atomic_get(&manual_paused);
+    bool asleep = atomic_get(&aad_in_sleep);
+    bool recording = !paused && !asleep;
+    int ret = 0;
+
+    sd_request_power(true);
+    if (recording) {
+        ret = mic_pause();
+        if (!ret)
+            ret = codec_end_recording();
+    } else if (paused && manual_end_pending) {
+        ret = codec_end_recording();
+        if (!ret)
+            manual_end_pending = false;
+    }
+    if (!ret)
+        ret = codec_mark_mode(RECORDING_MODE_NORMAL);
+    if (ret) {
+        /* Stay in lecture mode; another triple-click or the retry timer tries again. This
+         * overwrites any triple-click that arrived during the transition (wanted state =
+         * applied state); the retry timer's expiry still forces the exit. */
+        atomic_set(&lecture_requested, 1);
+        k_timer_start(&lecture_timer, K_MSEC(LECTURE_EXIT_RETRY_MS), K_NO_WAIT);
+        LOG_ERR("Lecture exit blocked by recording boundary (%d)", ret);
+    } else {
+        k_timer_stop(&lecture_timer);
+        atomic_clear(&lecture_active);
+        lecture_marker_pending = false;
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+        play_haptic_pulses(2);
+#endif
+    }
+
+    if (recording) {
+        atomic_set(&aad_woke, 1); /* restart the VOX silence timer */
+        atomic_set(&mic_discard_blocks, MIC_START_DISCARD_BLOCKS);
+        if (mic_resume())
+            LOG_ERR("Mic restart after lecture boundary failed");
+    } else if (!is_connected && !wifi_upload_active()) {
+        sd_request_power(false); /* paused or asleep: back to idle storage */
+    }
+}
+
 static void aad_thread_fn(void *p1, void *p2, void *p3)
 {
     ARG_UNUSED(p1);
@@ -557,6 +714,16 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
          * stays asleep and adds no idle CPU wakeups. */
         k_sem_take(&aad_sem, K_FOREVER);
 
+        /* Auto-exit leaves the lecture whatever a racing triple-click did to
+         * lecture_requested; an expiry left from a lecture already exited is ignored. */
+        if (atomic_cas(&lecture_expired, 1, 0) && atomic_get(&lecture_active))
+            atomic_clear(&lecture_requested);
+        bool lecture = atomic_get(&lecture_requested);
+        if (lecture && !atomic_get(&lecture_active))
+            enter_lecture();
+        else if (!lecture && atomic_get(&lecture_active))
+            exit_lecture();
+
         bool requested = atomic_get(&manual_pause_requested);
         if (requested && !atomic_get(&manual_paused))
             enter_manual_pause();
@@ -568,7 +735,7 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
             continue;
         }
 
-        if (atomic_cas(&aad_req_sleep, 1, 0) && !atomic_get(&aad_in_sleep)) {
+        if (atomic_cas(&aad_req_sleep, 1, 0) && !atomic_get(&aad_in_sleep) && !atomic_get(&lecture_active)) {
             enter_hw_aad();
         }
 
@@ -602,7 +769,8 @@ static void aad_track_silence(const int16_t *buf, size_t n)
      * BLE link stays up (only the mic + PDM sleep); sound resumes streaming.
      * BUT never sleep while a BLE sync transfer is running: the AAD entry +
      * conn-param low-power would stall the sync. Defer sleep until it finishes. */
-    if (!atomic_get(&aad_in_sleep) && !storage_transfer_active() &&
+    /* Lecture mode never sleeps: one lecture is one recording. */
+    if (!atomic_get(&aad_in_sleep) && !atomic_get(&lecture_active) && !storage_transfer_active() &&
         (now - aad_last_voice_ms) >= CONFIG_OMI_VAD_HOLD_MS) {
         atomic_set(&aad_req_sleep, 1);
         k_sem_give(&aad_sem);

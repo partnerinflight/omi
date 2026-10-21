@@ -32,6 +32,8 @@ int transport_off();
 int broadcast_audio_packets(uint8_t *buffer, size_t size);
 /* Ordered flush/recording-end marker, called by the codec's sole producer. */
 int transport_end_recording(void);
+/* Ordered recording-mode marker (record_packer.h RECORDING_MODE_*), codec thread only. */
+int transport_mark_mode(uint8_t mode);
 
 /**
  * @brief Get the current BLE connection

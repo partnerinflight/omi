@@ -30,7 +30,7 @@ class VoxTests(unittest.TestCase):
 #define CONFIG_OMI_VAD_WINDOW_BLOCKS 5
 #define CONFIG_OMI_VAD_HOLD_MS 30000
 #define PI 3.14159265358979
-static int aad_woke,aad_in_sleep,aad_req_sleep,aad_sem;
+static int aad_woke,aad_in_sleep,aad_req_sleep,aad_sem,lecture_active;
 static int64_t aad_last_voice_ms,now;
 static bool syncing;
 static struct vox_filter vox;
@@ -64,6 +64,9 @@ int main(void){
  aad_req_sleep=0; /* the first loud block after the long silence asked for sleep */
  syncing=true; block(quiet,200000); assert(!aad_req_sleep);
  syncing=false; block(quiet,200100); assert(aad_req_sleep);
+ /* Lecture mode never asks for acoustic sleep, even after hours of silence. */
+ aad_req_sleep=0; lecture_active=1; block(quiet,300000); block(quiet,14400000); assert(!aad_req_sleep);
+ lecture_active=0; block(quiet,14400100); assert(aad_req_sleep);
  return 0;
 }
 ''')
@@ -81,7 +84,8 @@ int main(void){
 #define OPUS_RESET_STATE 99
 #define K_FOREVER 0
 static jmp_buf stop;
-static int codec_data_sem,codec_end_done,codec_end_requested,codec_end_result;
+typedef int atomic_val_t;
+static int codec_data_sem,codec_end_done,codec_end_requested,codec_mode_requested,codec_end_result;
 static int codec_ring_buf,m_opus_state,resets,callbacks,ends,fail_encode,fail_end,takes;
 static uint8_t pcm[12],codec_output_bytes[8];
 static size_t left;
@@ -89,11 +93,13 @@ static int16_t codec_input_samples[4];
 void k_sem_take(int *s,int t){(void)s;(void)t;if(takes++)longjmp(stop,1);}
 void k_sem_give(int *s){assert(s==&codec_end_done);}
 bool atomic_cas(int *p,int a,int b){if(*p!=a)return false;*p=b;return true;}
+atomic_val_t atomic_set(int *p,atomic_val_t v){atomic_val_t o=*p;*p=v;return o;}
 size_t ring_buf_size_get(int *r){(void)r;return left;}
 size_t ring_buf_get(int *r,uint8_t *out,size_t n){(void)r;assert(n<=left);memcpy(out,pcm+12-left,n);left-=n;return n;}
 uint16_t execute_codec(void){if(fail_encode)return 0;if(left==0)assert(codec_input_samples[2]==0 && codec_input_samples[3]==0);return 3;}
 int callback(uint8_t *data,size_t len){(void)data;if(len){assert(!ends);callbacks++;}else{assert(left==0);ends++;}return fail_end?-EIO:0;}
 static int (*_callback)(uint8_t *,size_t)=callback;
+static int (*_mode_callback)(uint8_t)=NULL;
 void opus_encoder_ctl(int s,int op){(void)s;assert(op==99);resets++;}
 ''' + function(SRC/'lib/core/codec.c','void codec_entry()') + r'''
 int main(void){
@@ -106,6 +112,57 @@ int main(void){
  takes=callbacks=ends=0;left=8;codec_end_requested=0;fail_encode=1;
  if(!setjmp(stop))codec_entry();
  assert(callbacks==0 && ends==0 && left==0);return 0;
+}
+''')
+    def test_mode_marker_follows_drained_audio_and_end_marker(self):
+        self.compile_run(r'''
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <string.h>
+#include <errno.h>
+#include <assert.h>
+#include <setjmp.h>
+#define CODEC_PACKAGE_SAMPLES 4
+#define CODEC_OPUS 1
+#define OPUS_RESET_STATE 99
+#define K_FOREVER 0
+typedef int atomic_val_t;
+static jmp_buf stop;
+static int codec_data_sem,codec_end_done,codec_end_requested,codec_mode_requested,codec_end_result;
+static int codec_ring_buf,m_opus_state,takes,gives,fail_mode;
+static uint8_t pcm[12],codec_output_bytes[8];
+static size_t left;
+static int16_t codec_input_samples[4];
+static char order[16];
+void k_sem_take(int *s,int t){(void)s;(void)t;if(takes++)longjmp(stop,1);}
+void k_sem_give(int *s){assert(s==&codec_end_done);gives++;}
+bool atomic_cas(int *p,int a,int b){if(*p!=a)return false;*p=b;return true;}
+atomic_val_t atomic_set(int *p,atomic_val_t v){atomic_val_t o=*p;*p=v;return o;}
+size_t ring_buf_size_get(int *r){(void)r;return left;}
+size_t ring_buf_get(int *r,uint8_t *out,size_t n){(void)r;assert(n<=left);memcpy(out,pcm+12-left,n);left-=n;return n;}
+uint16_t execute_codec(void){return 3;}
+int callback(uint8_t *data,size_t len){(void)data;strcat(order,len?"a":"e");return 0;}
+int mode_callback(uint8_t mode){assert(left==0);strcat(order,mode==1?"L":"N");return fail_mode?-EIO:0;}
+static int (*_callback)(uint8_t *,size_t)=callback;
+static int (*_mode_callback)(uint8_t)=mode_callback;
+void opus_encoder_ctl(int s,int op){(void)s;assert(op==99);}
+''' + function(SRC/'lib/core/codec.c','void codec_entry()') + r'''
+static void run(void){takes=0;if(!setjmp(stop))codec_entry();}
+int main(void){
+ /* Drained audio, then the end marker, then the lecture marker. */
+ memset(pcm,1,sizeof(pcm));left=12;codec_end_requested=1;codec_mode_requested=1+1;
+ run();assert(!strcmp(order,"aaeL") && gives==2 && codec_end_result==0 && !codec_mode_requested);
+ /* A mode marker alone (resume inside a lecture): no audio, no end marker. */
+ order[0]=0;gives=0;codec_mode_requested=0+1;run();
+ assert(!strcmp(order,"N") && gives==1 && codec_end_result==0);
+ /* Its failure reaches the caller. */
+ order[0]=0;gives=0;fail_mode=1;codec_mode_requested=1+1;run();
+ assert(!strcmp(order,"L") && gives==1 && codec_end_result==-EIO);
+ /* Without a mode callback the request fails instead of hanging. */
+ _mode_callback=NULL;gives=0;codec_mode_requested=1+1;run();
+ assert(gives==1 && codec_end_result==-ENODEV);
+ return 0;
 }
 ''')
     def test_partial_record_then_marker_and_failed_emit_retry(self):

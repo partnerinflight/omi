@@ -13,6 +13,7 @@
 #include <zephyr/sys/poweroff.h>
 
 #include "button_hold.h"
+#include "button_taps.h"
 #include "haptic.h"
 #include "imu.h"
 #include "led.h"
@@ -150,9 +151,6 @@ static inline void notify_long_tap()
 #define BUTTON_PRESSED 1
 #define BUTTON_RELEASED 0
 
-#define TAP_THRESHOLD 300     // 300 ms for single tap
-#define DOUBLE_TAP_WINDOW 600 // 600 ms maximum for double-tap
-
 typedef enum {
     BUTTON_EVENT_NONE,
     BUTTON_EVENT_SINGLE_TAP,
@@ -164,8 +162,7 @@ typedef enum {
 static uint32_t current_time = 0;
 static uint32_t btn_press_start_time;
 static uint8_t hold_level_played;
-static uint32_t btn_release_time;
-static uint32_t btn_last_tap_time;
+static struct button_taps btn_taps; /* short-press sequence: tap, double tap, lecture triple-click */
 static bool btn_is_pressed;
 static uint32_t btn_last_pressed_time; /* last poll that saw the button down: what the user felt */
 
@@ -182,6 +179,26 @@ void check_button_level(struct k_work *work_item)
     if (btn_state == BUTTON_PRESSED)
         btn_last_pressed_time = current_time;
 
+    /* Taps are reported only once their 600 ms window closes: a triple-click never
+     * sends a double tap first, and a fourth tap or a hold cancels the sequence. */
+    switch (button_taps_update(&btn_taps, current_time, btn_state == BUTTON_PRESSED)) {
+    case TAPS_SINGLE:
+        event = BUTTON_EVENT_SINGLE_TAP;
+        break;
+    case TAPS_DOUBLE:
+        event = BUTTON_EVENT_DOUBLE_TAP;
+        break;
+    case TAPS_TRIPLE:
+        if (!is_off) {
+            int ret = mic_toggle_lecture();
+            if (ret)
+                LOG_WRN("Lecture toggle unavailable (%d)", ret);
+        }
+        break;
+    case TAPS_NONE:
+        break;
+    }
+
     // Debouncing pressed state
     if (btn_state == BUTTON_PRESSED && !btn_is_pressed) {
         btn_is_pressed = true;
@@ -189,10 +206,7 @@ void check_button_level(struct k_work *work_item)
         hold_level_played = 0;
     } else if (btn_state == BUTTON_RELEASED && btn_is_pressed) {
         btn_is_pressed = false;
-        btn_release_time = current_time;
 
-        // Check for double tap
-        uint32_t press_duration = (btn_release_time - btn_press_start_time);
         /* Every gesture is hold-then-release; the vibration while held said which. */
         /* Act on the last hold the pulses could have signalled, not the release poll. */
         uint32_t felt_duration = btn_last_pressed_time - btn_press_start_time;
@@ -216,26 +230,12 @@ void check_button_level(struct k_work *work_item)
         case HOLD_NONE:
             break;
         }
-        if (press_duration < TAP_THRESHOLD) {
-            if (btn_last_tap_time > 0 && (current_time - btn_last_tap_time) < DOUBLE_TAP_WINDOW) {
-                event = BUTTON_EVENT_DOUBLE_TAP;
-                btn_last_tap_time = 0; // Reset double-tap / single-tap detection
-            } else {
-                btn_last_tap_time = current_time;
-            }
-        }
     }
 
-    // Check for single tap
-    if (btn_state == BUTTON_RELEASED && !btn_is_pressed) {
-        uint32_t press_duration = (btn_release_time - btn_press_start_time);
-        if (press_duration < TAP_THRESHOLD && btn_last_tap_time > 0 &&
-            (current_time - btn_press_start_time) > TAP_THRESHOLD) {
-            event = BUTTON_EVENT_SINGLE_TAP;
-            btn_last_tap_time = 0;
-        } else if ((current_time - btn_press_start_time) > TAP_THRESHOLD) {
-            event = BUTTON_EVENT_RELEASE;
-        }
+    /* One release notification once a gesture, including any tap sequence, is over. */
+    if (event == BUTTON_EVENT_NONE && !btn_is_pressed && !button_taps_pending(&btn_taps) &&
+        (current_time - btn_press_start_time) > BUTTON_TAP_MAX_MS) {
+        event = BUTTON_EVENT_RELEASE;
     }
 
 #ifdef CONFIG_OMI_ENABLE_HAPTIC
@@ -270,10 +270,7 @@ void check_button_level(struct k_work *work_item)
         notify_unpress();
 
         // Reset
-
         btn_press_start_time = 0;
-        btn_release_time = 0;
-        btn_last_tap_time = 0;
     }
     if (event == BUTTON_EVENT_RELEASE) {
         current_button_state = GRACE;

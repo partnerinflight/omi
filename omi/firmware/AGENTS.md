@@ -32,14 +32,14 @@ Zero-length codec callbacks are ordered end markers, never Opus encode errors.
 Native VOX tests and receiver tests cover the 30-second timer, marker ordering,
 resume across upload sessions, and closing audio durably before acknowledging.
 
-Normal recording uses no LEDs; acoustic sleep uses solid red. Preserve the
+Normal recording uses no LEDs; acoustic sleep uses solid red; lecture mode uses dim solid yellow (`CONFIG_OMI_LECTURE_LED_PWM`). Preserve the
 higher-priority setup/upload/storage/clock warnings. `test_led_state_c.py`
 executes the production selector across charging, connection and warning states.
 
 Every button gesture is hold-then-release (`button_hold.h`): release at 3–5 s toggles
 manual pause (1 pulse at 3 s), 10–15 s powers off (2 pulses at 10 s), and 20 s or more
 opens Wi-Fi setup (3 pulses at 20 s; Wi-Fi build only, the BLE-only build caps at 2
-pulses). Short clicks and releases in the 5–10 s / 15–20 s dead bands do nothing. The
+pulses). A triple-click toggles lecture mode (below); single and double clicks and releases in the 5–10 s / 15–20 s dead bands do nothing. The
 action is decided by the hold length at the last poll the button was seen pressed, so it
 matches the pulse the user felt. Pulses play while held, so resume waits 150 ms for the
 motor before powering the mic; the 500 ms startup discard
@@ -51,10 +51,30 @@ solid green with blinking blue. When they finish or stop, paused red feedback re
 without resuming the microphone. Charging or a BLE connection alone does not override pause.
 Resume failures stay paused. Acoustic wake vibrates for 80 ms only after a successful mic
 start and at least `CONFIG_OMI_AAD_WAKE_HAPTIC_MIN_SLEEP_MS` (5 min) of acoustic sleep.
-Short taps still send the BLE tap/double-tap notifications. `test_wifi_config_c.py` and
+Single and double taps still send the BLE tap/double-tap notifications, but only after the 600 ms tap window closes (`button_taps.h`). `test_wifi_config_c.py` and
 `test_manual_recording_c.py` execute the production policy, handler and owner paths;
 `test_disconnect_power_c.py` covers SD ownership during BLE disconnect, including manual
 pause. Keep the portal help in sync.
+
+Lecture mode (`.20`): a triple-click (three presses, each released within 300 ms, at
+most 600 ms from a release to the next press; a fourth tap or a hold cancels) flips an
+atomic for the microphone owner, like manual pause. Entry drains an end marker for an
+open recording, writes a recording-mode marker (`"\0OMIMOD\1"` + mode byte, zero padding,
+`record_packer.h`) through codec → TX queue (header `0xFFFF`) → pusher, plays 2 pulses
+while the mic is stopped, and starts the mic from pause or acoustic sleep; the 500 ms
+startup discard applies. Exit writes an end marker, the normal-mode marker and 2 pulses.
+During a lecture VOX never requests acoustic sleep; manual pause still ends the recording
+and resume re-marks the lecture before audio. `CONFIG_OMI_LECTURE_MAX_MS` (4 h) exits the
+same way; a failed exit retries every minute. Not persistent across reboot.
+Every recording starts with its mode marker: the pusher (`transport.c`) keeps the current
+mode (normal at boot, updated by each mode marker it writes) and owes a marker at boot and
+after every end marker. Before the first audio frame of a recording it writes the owed
+marker; while the SD refuses it (e.g. the ring is still mounting at boot) the frames are
+dropped and the next frame retries. A lecture cut short by power loss therefore never
+tags later recordings, and a marker lost after acceptance is repaired at the next
+recording. Boot does not wait for the SD card.
+`test_button_taps_c.py`, `test_lecture_mode_c.py`, `test_pusher_markers_c.py`,
+`test_record_packer_c.py` and `test_led_state_c.py` execute the production code.
 
 Recorded PCM passes a 100 Hz 4th-order Butterworth high-pass (`mic_highpass.c`,
 `CONFIG_OMI_MIC_HIGHPASS`) before VOX and the codec; discarded startup blocks still run

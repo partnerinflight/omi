@@ -646,3 +646,36 @@ NCS 2.9.0 Wi-Fi sysbuild passed on Windows; both OTA image signatures verified O
 Archive: `C:\ncs\build\Omi_CV1_OTA_3.0.22-localwifi.19.zip`.
 ZIP SHA-256: `f5d7b0c5904b59c338353ea8b3b01b35001fc5888607d083f22fd2ccb3dbd432`.
 App digest: `174212e260eca36133d98fba38cf019b2055b3a54423326105cad45c52ddfcc1`.
+
+## Firmware 3.0.22-localwifi.20: lecture mode — 2026-10-21
+
+Triple-click toggles lecture mode: end marker, recording-mode marker
+(`"\0OMIMOD\1"` + mode byte), two pulses, dim solid yellow LED, no acoustic sleep,
+auto-exit after `CONFIG_OMI_LECTURE_MAX_MS` (4 h). Every recording starts with its
+mode marker: the pusher owes one at boot (normal) and after every end marker, so boot
+does not wait for the SD card. Single/double BLE tap notifications now wait for the
+600 ms tap window. Hold gestures are unchanged. Entry from pause waits for the two
+pulses (280 ms) plus the 150 ms settle before powering the mic rail. The AAD owner
+stack is 1280 bytes.
+
+Native C tests execute the production tap logic and button handler, the owner
+transitions (entry/exit from recording, pause and acoustic sleep; pause inside a
+lecture; auto-exit, including a triple-click racing it; failed markers; motor finished
+before the rail powers), the codec/TX-queue/pusher marker order, the pusher's owed mode
+marker (boot while the SD ring mounts, a lost marker repaired at the next recording,
+lecture and normal recordings after end markers), VOX suppression and the LED selector.
+Host suite: Ran 164 tests, OK.
+NCS 2.9.0 Wi-Fi sysbuild: app FLASH 875016 B of 949760 B (92.13%) / RAM 429240 B of
+440 KB (95.27%).
+Both OTA images pass MCUboot signature verification (`verify_zip.py`).
+Archive: `~/omi-firmware/Omi_CV1_OTA_3.0.22-localwifi.20.zip`.
+ZIP SHA-256: `51fe60d0cb7d09278556dc8cf1fad41574ed7cfda1bcb917149a2cc4317c25f8`.
+App digest: `ccab436a6b8cf1cc39378324d0407690c71c5eff707e4d73e6232ed3515f4a42`.
+Network digest: `d03a75a1bc9ece94b10dbd67448c9fde9b92a353bbe0bce5c10fdd677847c287`.
+
+Not flashed. Not validated on hardware: triple-click reliability on the real button
+(`was_pressed` comes from an undebounced GPIO interrupt sampled every 40 ms, so a bounce
+can add a tap, turning a triple-click into a cancelled fourth tap or a double click into
+a triple), motor feel, yellow colour and brightness at 10 % PWM, battery cost of a
+4-hour lecture without acoustic sleep, AAD owner stack headroom at 1280 bytes, and how
+many frames are dropped at boot while the SD ring mounts.

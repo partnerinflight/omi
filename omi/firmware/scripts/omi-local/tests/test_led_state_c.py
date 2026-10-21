@@ -19,16 +19,22 @@ class LedStateTests(unittest.TestCase):
 #define CONFIG_OMI_ENABLE_BATTERY 1
 #define CONFIG_OMI_ENABLE_HAPTIC 1
 #define BATTERY_FULL_THRESHOLD_PERCENT 100
+#define CONFIG_OMI_LECTURE_LED_PWM 10
+typedef enum { LED_RED, LED_GREEN, LED_BLUE } led_color_t;
 static bool is_off,is_charging,is_connected,blink_toggle,storage_full_notified;
 static bool setup,upload,ble_transfer,full,clock_valid=true,recording,silent;
 static bool red,green,blue;
-static bool manual_pause,pause_flash;
+static bool manual_pause,pause_flash,lecture;
+static int red_level,green_level;
 static uint8_t battery_percentage;
 static int buzzes;
-void set_led_red(bool v){red=v;}
-void set_led_green(bool v){green=v;}
+void set_led_red(bool v){red=v;red_level=v?100:0;}
+void set_led_green(bool v){green=v;green_level=v?100:0;}
 void set_led_blue(bool v){blue=v;}
-void led_off(void){red=green=blue=false;}
+void set_led_pwm(led_color_t c,uint8_t level){
+ if(c==LED_RED){red=level>0;red_level=level;}else if(c==LED_GREEN){green=level>0;green_level=level;}else blue=level>0;}
+void led_off(void){red=green=blue=false;red_level=green_level=0;}
+bool mic_in_lecture(void){return lecture;}
 bool wifi_upload_provisioning(void){return setup;}
 bool wifi_upload_active(void){return upload;}
 bool storage_transfer_active(void){return ble_transfer;}
@@ -73,6 +79,27 @@ int main(void){
  pause_flash=true;set_led_state();assert(red && !green && !blue);
  pause_flash=false;set_led_state();assert(!red && !green && !blue);
  is_off=true;pause_flash=true;set_led_state();assert(!red && !green && !blue);
+ /* Lecture: dim solid yellow in the recording slot, whatever charging/connection say. */
+ is_off=false;manual_pause=pause_flash=false;full=false;clock_valid=true;lecture=true;
+ for(int charging=0;charging<2;charging++)for(int connected=0;connected<2;connected++)
+ for(int state=0;state<3;state++){
+  is_charging=charging;is_connected=connected;battery_percentage=100;
+  recording=state==0;silent=state==1;   /* state 2: mic stopped, still in lecture mode */
+  blue=true;set_led_state();assert(red && green && !blue && red_level==10 && green_level==10);
+ }
+ recording=true;silent=false;
+ /* Pause feedback stays above lecture mode. */
+ manual_pause=pause_flash=true;set_led_state();assert(red && !green && !blue && red_level==100);
+ pause_flash=false;set_led_state();assert(!red && !green && !blue);manual_pause=false;
+ /* Setup, transfers, storage-full and clock warnings stay visible during a lecture. */
+ setup=true;blink_toggle=true;set_led_state();assert(blue && !red && !green);setup=false;
+ upload=true;blink_toggle=true;set_led_state();assert(green && blue && !red);upload=false;
+ ble_transfer=true;blink_toggle=true;set_led_state();assert(green && blue && !red);ble_transfer=false;
+ full=true;blink_toggle=true;set_led_state();assert(red && !blue && red_level==100);full=false;
+ clock_valid=false;blink_toggle=true;set_led_state();assert(red && !blue && red_level==100);clock_valid=true;
+ /* Leaving lecture mode returns to dark recording; off stays dark. */
+ lecture=false;set_led_state();assert(!red && !green && !blue);
+ lecture=true;is_off=true;set_led_state();assert(!red && !green && !blue);
  return 0;
 }
 '''

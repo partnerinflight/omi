@@ -79,6 +79,17 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   20 s or more (3 pulses at 20 s) enters setup (Wi-Fi build only; BLE-only has no
   setup). Short clicks and 5–10 s / 15–20 s releases do nothing.
   **The 20-second action opens setup; it is not a reboot.**
+- Lecture mode, prepared in `.20` (built, not flashed): a triple-click (three presses
+  under 300 ms, at most 600 ms apart; a fourth tap or a hold cancels) toggles it.
+  Single/double BLE tap notifications now wait for the tap window. Entry and exit write
+  an end marker and a recording-mode marker (`"\0OMIMOD\1"` + mode byte) and vibrate
+  twice; VOX never sleeps during a lecture; dim solid yellow LED below setup, transfer,
+  pause and warning indications; auto-exit after `CONFIG_OMI_LECTURE_MAX_MS` (4 h); not
+  persistent. Every recording starts with its mode marker: the pusher owes one at boot
+  (normal) and after every end marker, and writes it before the recording's first audio.
+  Triple-click reliability on the real button, motor feel, LED colour and
+  brightness, and the battery cost of 4 hours without acoustic sleep are not validated
+  on hardware.
 - Setup: temporary `OMI-Setup-XXXX`, HTTP `192.168.4.1`; configure SSID/password,
   receiver hostname/IPv4/port, and existing 64-hex-character pairing key. Portal
   expires after five minutes; configured boot does not expose it automatically.
