@@ -136,8 +136,8 @@ recorded and still published, only as a lecture).
   - Frontmatter `type: omi-lecture`.
   - A link to the summary note.
   - `## Transcript` with a `### m:ss` heading per section and speaker-labelled lines.
-  - The memory gate never filters it. Recordings with no speech publish nothing, like
-    meetings.
+  - The memory gate never filters it. A lecture with no speech publishes no note
+    (unlike meetings, which write a "No speech was transcribed." note).
 - **Summary note** `<job> Summary.md`:
   - Frontmatter `type: omi-lecture-summary`.
   - A link back to the transcript note.
@@ -154,7 +154,7 @@ recorded and still published, only as a lecture).
 
 - Add `kind` to the queue snapshot and the tray's `JobInfo`, and show lecture jobs with a
   badge. `kind` is metadata only, never content.
-- Add `lecture` to the bridge export `kind`.
+- The bridge export skips lecture jobs: lecture content stays in the lectures folder.
 
 ### Tests
 

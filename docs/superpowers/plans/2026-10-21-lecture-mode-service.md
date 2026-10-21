@@ -201,23 +201,22 @@ class LectureKindWiringTests(unittest.TestCase):
         with speakers.connect() as db:
             self.assertEqual(db.execute("SELECT published FROM observations").fetchone()[0], 1)
 
-    def test_bridge_exports_a_lecture_with_every_spoken_window(self):
+    def test_bridge_never_exports_a_lecture(self):
+        # Lectures stay in the vault's lectures folder only (owner decision, 2026-10-21).
         from second_brain.bridge import Bridge
         job_id = "e" * 64
         write_json(self.cfg.data_dir / "jobs" / job_id / "publication-manifest.json", {"windows": [
-            {"id": "w0000", "start": 0, "end": 30, "final_transcript": "Entropy is defined.", "memory_keep": False},
-            {"id": "w0001", "start": 30, "end": 60, "final_transcript": "  ", "memory_keep": False}]})
+            {"id": "w0000", "start": 0, "end": 30, "final_transcript": "Entropy is defined.", "memory_keep": True,
+             "route_to_knowledge_router": True}]})
         bridge = Bridge(self.cfg.data_dir, self.cfg.vault_path, "http://127.0.0.1:9", "token")
-        [(key, record, ident, data)] = bridge.sources({job_id: {"sha256": "0" * 64, "metadata": json.dumps(
-            {"kind": "lecture", "first_utc": "2026-10-21T15:00:00Z"})}}, set())
-        self.assertEqual((key, record, ident, data["kind"]), (f"job:{job_id}", "source", job_id, "lecture"))
-        self.assertEqual([w["id"] for w in data["windows"]], ["w0000"])
+        self.assertEqual(bridge.sources({job_id: {"sha256": "0" * 64, "metadata": json.dumps(
+            {"kind": "lecture", "first_utc": "2026-10-21T15:00:00Z"})}}, set()), [])
 ```
 
 - [ ] **Step 2: Run to verify failure**
 
 Run: `python3 -m unittest tests.test_lectures.LectureKindWiringTests -v`
-Expected: 4 FAIL/ERROR — `KeyError: 'kind'` (discovery), `AssertionError: Tuples differ` on the lecture's captures, `AssertionError: 0 != 1` (speakers), `AssertionError` on `'omi' != 'lecture'` (bridge).
+Expected: 4 FAIL/ERROR — `KeyError: 'kind'` (discovery), `AssertionError: Tuples differ` on the lecture's captures, `AssertionError: 0 != 1` (speakers), `AssertionError: Lists differ` (bridge exports the lecture).
 
 - [ ] **Step 3: Implement**
 
@@ -302,17 +301,18 @@ In `src/second_brain/bridge.py` add `from .kinds import job_kind` after line 23,
 
 ```python
 def published_windows(manifest: dict, kind: str) -> list[dict]:
-    """Windows the vault writer publishes (vault.publish / publish_meeting / publish_lecture);
-    filtered chatter stays local."""
-    if kind in ("meeting", "lecture"):
+    """Windows the vault writer publishes (vault.publish / publish_meeting); filtered chatter stays local."""
+    if kind == "meeting":
         return [w for w in manifest["windows"] if not w.get("speaker_filter") and w.get("final_transcript", "").strip()]
     return [w for w in manifest["windows"] if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
 ```
 
-and in `sources` replace lines 100 and 106-108:
+and in `sources` replace line 100 and lines 106-108:
 
 ```python
             kind = job_kind(metadata)
+            if kind == "lecture":
+                continue  # lectures stay in the vault's lectures folder only
 ```
 
 ```python
@@ -1707,12 +1707,12 @@ Expected: only the user's pre-existing changes (for example `.nodeterm/project.j
 - **Job kind (§3):** Task 1 (`job_kind`, `with_kind`), Task 2 (runtime, queue, meetings, speakers, bridge). `speaker_audio.py:32` checks the mic channel, not metadata, and is intentionally unchanged. Audio retention unchanged and tested (Task 7).
 - **Pipeline `--lecture` (§3):** Task 4 forces MOSS, disables Hermes scoring, refuses dedupe flags, keeps windows and `final_transcript`/`final_segments`. The `moss_max_new` check is a SYSTEM.md known gap (Task 11) because no per-mode setting exists and fixtures cannot measure it.
 - **Vault (§3):** config/example/installer/ACL in Task 5; transcript note in Task 6 (type, summary link, `## Transcript`, `### m:ss`, speaker-labelled lines from the frozen publication manifest, never gated, nothing for no speech); summary note in Task 8 (type, back link, map then reduce via `router.chat`); freezing, retry like routing, Hermes-disabled behavior in Task 9; never routed and no daily notes in Tasks 7 and 9.
-- **Tray (§3):** `kind` in the queue snapshot (Task 3), `JobInfo.Kind`/`Badge` (Task 10), bridge export `lecture` (Task 2).
+- **Tray (§3):** `kind` in the queue snapshot (Task 3), `JobInfo.Kind`/`Badge` (Task 10), lectures never exported by the bridge (Task 2).
 - **Tests (§3):** pipeline run (Task 4), note templates, idempotent republish, `NoteConflict` (Tasks 6, 8), summary freezing and replay with a fake Hermes (Tasks 8, 9), end to end with exactly one note pair, nothing in Conversations, nothing routed (Tasks 7, 9), config validation (Task 5).
 - **Rollout (§4):** this plan follows plan 1 and ships before firmware `.20`; docs move with the code (Task 11).
 - **Names used consistently:** `job_kind`, `with_kind`, `spoken_windows`, `publish_lecture`, `publish_lecture_summary`, `SummaryQueue`, `SECTION_PROMPT`, `COMBINE_PROMPT`, `summarize`, `summarizing`, `summarize_lecture`, `summarize_lectures`, `lectures_vault_folder`, `lecture-summary.json`, `data/lectures.sqlite3`, status key `lecture_summaries`.
 - **Deliberate choices where the spec is silent or loose:**
-  - The spec says "no speech publishes nothing, like meetings", but meetings publish a "No speech was transcribed." note. This plan follows "publishes nothing".
+  - A lecture with no speech publishes no note (owner decision, 2026-10-21), unlike meetings, which write a "No speech was transcribed." note.
   - "Hermes disabled" means `no_hermes` is on or `hermes_url` is empty. `router_enabled` is not required.
   - Summaries are queued only when Hermes is usable at publication time, as routing does.
   - The pipeline test runs `--lecture` without `--no-hermes`, with scoring enabled against a closed port. That proves `--lecture` alone stops scoring, which is stronger than the spec's `--lecture --no-hermes`.
