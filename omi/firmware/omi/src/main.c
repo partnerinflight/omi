@@ -199,6 +199,16 @@ void set_led_state()
     }
 #endif
 
+    /* Lecture mode: dim solid yellow, in place of the normal recorder indication.
+     * Pause feedback and the warnings above stay visible; a low PWM duty keeps
+     * hours of light cheap. */
+    if (mic_in_lecture()) {
+        set_led_blue(false);
+        set_led_pwm(LED_RED, CONFIG_OMI_LECTURE_LED_PWM);
+        set_led_pwm(LED_GREEN, CONFIG_OMI_LECTURE_LED_PWM);
+        return;
+    }
+
     /* Normal recorder indication overrides charging/connection colours.
      * Setup, upload and warnings above retain their existing priority. */
     bool silent = mic_in_aad_sleep();
