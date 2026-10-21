@@ -1,4 +1,4 @@
-"""Publish only gate-approved windows; never overwrite a human-edited note."""
+"""Publish gate-approved Omi windows, and whole meeting and lecture notes; never overwrite a human-edited note."""
 
 from __future__ import annotations
 import hashlib
