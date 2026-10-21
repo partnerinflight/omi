@@ -46,7 +46,7 @@ static bool storage_unavailable_warned,sd_on=true;
 static int sd_not_ready,lose;  /* writes refused (SD ring not mounted), writes accepted but lost */
 uint32_t ring_buf_put(struct ring_buf *r,const uint8_t *d,uint32_t n){if(r->head+n>sizeof(r->data))return 0;memcpy(r->data+r->head,d,n);r->head+=n;return n;}
 uint32_t ring_buf_get(struct ring_buf *r,uint8_t *d,uint32_t n){if(r->tail+n>r->head)return 0;memcpy(d,r->data+r->tail,n);r->tail+=n;
- if(r->tail==r->head)r->tail=r->head=0;return n;}
+ if(r->tail==r->head){r->tail=r->head=0;}return n;}
 void k_sem_give(int *s){if(s==&recording_end_done)results[markers++]=recording_end_result;}
 void k_sem_take(int *s,int t){(void)s;(void)t;if(takes++)pusher_stop_flag=1;}
 void k_msleep(int ms){(void)ms;}
@@ -98,7 +98,7 @@ class PusherMarkerTests(unittest.TestCase):
     def test_boot_marker_precedes_first_audio_even_while_sd_mounts(self):
         records = self.run_pusher(r'''
  sd_not_ready=3;                                 /* three refused marker attempts */
- for(uint8_t i=1;i<=5;i++)A(30,i);END();RUN();
+ for(uint8_t i=1;i<=5;i++){A(30,i);}END();RUN();
  assert(markers==1 && !results[0] && !sd_not_ready);
 ''')
         # Frames 1-3 are dropped with their failed marker attempts; nothing precedes the marker.
