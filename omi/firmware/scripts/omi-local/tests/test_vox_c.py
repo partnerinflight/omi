@@ -30,7 +30,7 @@ class VoxTests(unittest.TestCase):
 #define CONFIG_OMI_VAD_WINDOW_BLOCKS 5
 #define CONFIG_OMI_VAD_HOLD_MS 30000
 #define PI 3.14159265358979
-static int aad_woke,aad_in_sleep,aad_req_sleep,aad_sem;
+static int aad_woke,aad_in_sleep,aad_req_sleep,aad_sem,lecture_active;
 static int64_t aad_last_voice_ms,now;
 static bool syncing;
 static struct vox_filter vox;
@@ -64,6 +64,9 @@ int main(void){
  aad_req_sleep=0; /* the first loud block after the long silence asked for sleep */
  syncing=true; block(quiet,200000); assert(!aad_req_sleep);
  syncing=false; block(quiet,200100); assert(aad_req_sleep);
+ /* Lecture mode never asks for acoustic sleep, even after hours of silence. */
+ aad_req_sleep=0; lecture_active=1; block(quiet,300000); block(quiet,14400000); assert(!aad_req_sleep);
+ lecture_active=0; block(quiet,14400100); assert(aad_req_sleep);
  return 0;
 }
 ''')
