@@ -138,6 +138,72 @@ class SessionWriterTests(unittest.TestCase):
         await c.open()
         await c.pull(a, b, w.add, chunk_packets=10)
 
+    @staticmethod
+    def _end(ts):
+        return struct.pack('>I', ts) + P.RECORD_END_MAGIC + bytes(P.AUDIO_PAYLOAD_BYTES - len(P.RECORD_END_MAGIC))
+
+    @staticmethod
+    def _mode(ts, mode):
+        payload = P.RECORD_MODE_MAGIC + bytes([mode])
+        return struct.pack('>I', ts) + payload + bytes(P.AUDIO_PAYLOAD_BYTES - len(payload))
+
+    def _sidecars(self, dest):
+        return [json.loads(p.read_text()) for p in sorted(dest.glob('*.json'))]
+
+    def test_mode_marker_tags_following_recordings(self):
+        ts = 1_700_000_000
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            # normal audio, end, lecture marker, lecture audio, end, normal marker, audio
+            w.add(0, make_record(0, ts) + self._end(ts) + self._mode(ts, 1) + make_record(3, ts + 1)
+                  + self._end(ts + 1) + self._mode(ts + 1, 0) + make_record(6, ts + 2))
+            w.finish(final=True)
+            self.assertEqual([(m['start_seq'], m['mode']) for m in self._sidecars(dest)],
+                             [(0, 'normal'), (3, 'lecture'), (6, 'normal')])
+
+    def test_mode_marker_closes_an_open_recording(self):
+        ts = 1_700_000_000
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(0, make_record(0, ts) + self._mode(ts, 1) + make_record(2, ts))
+            w.finish(final=True)
+            metas = self._sidecars(dest)
+            self.assertEqual([(m['start_seq'], m['complete'], m['mode']) for m in metas],
+                             [(0, True, 'normal'), (2, True, 'lecture')])
+
+    def test_mode_survives_an_upload_that_ends_after_the_marker(self):
+        ts = 1_700_000_000
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(0, self._end(ts) + self._mode(ts, 1))
+            w.finish(final=False)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(2, make_record(2, ts))
+            w.finish(final=False)  # file stays open across uploads
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(3, make_record(3, ts) + self._end(ts))
+            w.finish(final=False)
+            metas = self._sidecars(dest)
+            self.assertEqual([(m['start_seq'], m['end_seq'], m['mode']) for m in metas], [(2, 4, 'lecture')])
+
+    def test_ogg_comment_carries_mode(self):
+        ts = 1_700_000_000
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            store = StateStore(dest)
+            w = SessionWriter(dest, 'dev', store.get('dev'), store)
+            w.add(0, self._mode(ts, 1) + make_record(1, ts))
+            w.finish(final=True)
+            self.assertIn(b'OMI_MODE=lecture', next(dest.glob('*.opus')).read_bytes())
+
     def test_verify_command(self):
         ring = self._ring()
         with tempfile.TemporaryDirectory() as d:

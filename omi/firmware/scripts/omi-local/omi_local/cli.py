@@ -80,7 +80,7 @@ def approx_seconds(packets: int) -> float:
 class SessionWriter:
     """Turns the record stream into one playable .opus (+ .json) file per session.
 
-    A session ends on an explicit recording-end marker, when a record is not
+    A session ends on an explicit recording-end or recording-mode marker, when a record is not
     the successor of the previous one, when
     the clock state flips (unknown <-> known), or when the timestamp jumps by
     more than `gap_s` (the mic was in hardware sleep or the device was off).
@@ -139,13 +139,15 @@ class SessionWriter:
         self._writer = OggOpusWriter(
             self._fp, serial=serial, sample_rate=P.OPUS_SAMPLE_RATE, channels=P.OPUS_CHANNELS,
             comments=[f"ENCODER=omi-local {__version__}", f"OMI_DEVICE={self.device_id}",
-                      f"OMI_START_SEQ={rec.seq}", f"OMI_START_UTC={fmt_ts(rec.timestamp)}"],
+                      f"OMI_START_SEQ={rec.seq}", f"OMI_START_UTC={fmt_ts(rec.timestamp)}",
+                      f"OMI_MODE={self.state.mode}"],
         )
         self._cur = {
             "file": str(path), "device": self.device_id, "start_seq": rec.seq, "end_seq": rec.seq,
             "first_timestamp": rec.timestamp, "last_timestamp": rec.timestamp,
             "first_utc": fmt_ts(rec.timestamp), "last_utc": fmt_ts(rec.timestamp),
             "packets": 0, "frames": 0, "audio_seconds": 0.0, "complete": False,
+            "mode": self.state.mode,
         }
         if self.keep_raw:
             self._raw_fp = open(path.with_suffix(".omiring"), "wb")
@@ -187,6 +189,13 @@ class SessionWriter:
             if rec.recording_end:
                 self._close_file(eos=True)
                 self.state.open_file = None
+                self._prev = None
+                continue
+            if rec.mode is not None:
+                # A mode change always starts a new recording.
+                self._close_file(eos=True)
+                self.state.open_file = None
+                self.state.mode = rec.mode
                 self._prev = None
                 continue
             if P.session_boundary(self._prev, rec, self.gap_s):
