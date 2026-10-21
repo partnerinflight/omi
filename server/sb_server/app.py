@@ -491,7 +491,9 @@ def pipeline(_: Device, conn: Db):
     producers = conn.execute(
         "SELECT name, last_seen_at, status FROM producers WHERE revoked_at IS NULL ORDER BY name").fetchall()
     counts = conn.execute(
-        "SELECT kind, count(*) AS n FROM worker_records WHERE deleted_at IS NULL GROUP BY kind").fetchall()
+        """SELECT w.kind, count(*) AS n FROM worker_records w
+           JOIN producers p ON p.id = w.producer_id AND p.revoked_at IS NULL
+           WHERE w.deleted_at IS NULL GROUP BY w.kind""").fetchall()
     oldest = conn.execute("SELECT min(created_at) AS t FROM commands WHERE state = 'pending_worker'").fetchone()["t"]
     return {"workers": [{"name": p["name"], "status": p["status"],
                          "last_seen_at": p["last_seen_at"].isoformat() if p["last_seen_at"] else None} for p in producers],
@@ -503,8 +505,10 @@ def pipeline(_: Device, conn: Db):
 def pipeline_records(_: Device, conn: Db, kind: Literal["source", "item", "person", "observation", "clarification"],
                      limit: int = Query(50, ge=1, le=MAX_PAGE)):
     rows = conn.execute(
-        """SELECT id, hash, data, updated_at FROM worker_records WHERE kind = %s AND deleted_at IS NULL
-           ORDER BY updated_at DESC, id LIMIT %s""", (kind, limit)).fetchall()
+        """SELECT w.id, w.hash, w.data, w.updated_at FROM worker_records w
+           JOIN producers p ON p.id = w.producer_id AND p.revoked_at IS NULL
+           WHERE w.kind = %s AND w.deleted_at IS NULL
+           ORDER BY w.updated_at DESC, w.id LIMIT %s""", (kind, limit)).fetchall()
     return {"records": [{"id": r["id"], "hash": r["hash"], "data": r["data"], "updated_at": r["updated_at"].isoformat()}
                         for r in rows]}
 

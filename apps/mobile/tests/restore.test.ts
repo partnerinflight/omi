@@ -150,10 +150,15 @@ async function drill() {
   docker('network', 'connect', '--alias', 'postgres-db', net, names.pgB); // the API reconnects per request
   await healthy();
   assert.match(sb('new-epoch'), /^epoch: /);
+  // new-epoch revoked every credential: both phones see sign-in expired, keep their queued
+  // edits, and pair again with the same server (the drill uses no worker token after this).
+  assert.equal((await a.sync.sync(true)).state, 'auth_required');
+  await a.sync.pair(url, sb('pair', 'a').split(/\s+/)[0]);
 
   // Both phones held the lost acknowledgments and queue them again. B loses its connection
   // right after bootstrapping, so A's copies land first and B's identical ones must not conflict.
   b.net.offline = false;
+  await b.sync.pair(url, sb('pair', 'b').split(/\s+/)[0]); // b was offline through the restore
   b.net.dropAfterBootstrap = true;
   assert.equal((await b.sync.sync(true)).state, 'offline');
   let s = await a.sync.sync(true);

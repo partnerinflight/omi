@@ -219,7 +219,8 @@ class Api(unittest.TestCase):
             db.execute("DELETE FROM done_files")
         self.assertEqual(bridge.tick()["sent"], 1)
         # Restored server (new epoch): the worker resends everything once, then goes quiet.
-        self.cli("new-epoch")
+        # Credentials kept so the same worker token carries on; revocation has its own test.
+        self.cli("new-epoch", "--keep-credentials")
         self.assertEqual(bridge.tick()["sent"], 1)
         self.assertEqual(bridge.tick()["sent"], 0)
 
@@ -601,6 +602,42 @@ class Api(unittest.TestCase):
         self.assertIsNotNone(lim.reserve("a"))
         lim = FailureLimiter(per_key=10, window=600, total=3, total_window=3600)
         self.assertEqual([lim.reserve(k) is not None for k in "abcd"], [True, True, True, False])
+
+    def test_devices_list_and_revoke_cut_off_a_live_session(self):
+        tokens = self.http("POST", "/v1/pair", json={"code": self.pairing_code("stolen phone")}).json()
+        listing = self.cli("devices")
+        self.assertIn("stolen phone", listing)
+        self.assertIn("device", listing)
+        self.cli("revoke-device", "stolen phone")
+        self.assertEqual(self.http("GET", "/v1/bootstrap", tokens["access_token"]).status_code, 401)
+        self.assertEqual(self.http("POST", "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).status_code, 401)
+        self.assertIn("revoked", self.cli("devices"))
+
+    def test_expired_codes_and_tokens_are_refused(self):
+        code = self.pairing_code()
+        with psycopg.connect(os.environ["SB_DATABASE_URL"], autocommit=True) as c:
+            c.execute("UPDATE pairing_codes SET expires_at = now() - interval '1 second' WHERE used_at IS NULL")
+        self.assertEqual(self.http("POST", "/v1/pair", json={"code": code}).status_code, 401)
+        token = self.paired()["access_token"]
+        with psycopg.connect(os.environ["SB_DATABASE_URL"], autocommit=True) as c:
+            c.execute("UPDATE tokens SET expires_at = now() - interval '1 second' WHERE kind = 'access'")
+        self.assertEqual(self.http("GET", "/v1/bootstrap", token).status_code, 401)
+
+    def test_new_epoch_revokes_every_credential_unless_kept(self):
+        phone = self.paired()
+        worker = self.cli("add-producer", "epoch-pc").strip()
+        out = self.cli("new-epoch")
+        self.assertTrue(out.startswith("epoch: "))
+        self.assertIn("revoked:", out)
+        self.assertEqual(self.http("GET", "/v1/bootstrap", phone["access_token"]).status_code, 401)
+        self.assertEqual(self.http("POST", "/v1/auth/refresh", json={"refresh_token": phone["refresh_token"]}).status_code, 401)
+        self.assertEqual(self.http("GET", "/v1/worker/commands", worker).status_code, 401)
+        # Worker data from a revoked producer is no longer shown.
+        fresh = self.paired()["access_token"]
+        self.assertNotIn("epoch-pc", [w["name"] for w in self.http("GET", "/v1/pipeline", fresh).json()["workers"]])
+        kept = self.paired()
+        self.cli("new-epoch", "--keep-credentials")
+        self.assertEqual(self.http("GET", "/v1/bootstrap", kept["access_token"]).status_code, 200)
 
 if __name__ == "__main__":
     unittest.main()

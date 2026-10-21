@@ -1,5 +1,5 @@
-"""Admin CLI: python -m sb_server {migrate|pair NAME|add-producer NAME|revoke-producer NAME|
-                                   add-integration NAME|authority [cutover|rollback]|new-epoch|serve}."""
+"""Admin CLI: python -m sb_server {migrate|pair NAME|devices|revoke-device NAME_OR_ID|add-producer NAME|revoke-producer NAME|
+                                   add-integration NAME|authority [cutover|rollback]|new-epoch [--keep-credentials]|serve}."""
 import argparse
 import os
 import secrets
@@ -15,6 +15,9 @@ def main():
     sub.add_parser("migrate")
     pair = sub.add_parser("pair", help="print a single-use pairing code for a new device")
     pair.add_argument("device_name")
+    sub.add_parser("devices", help="list phones, integrations and Windows workers")
+    revoke_device = sub.add_parser("revoke-device", help="cut off a phone or integration now")
+    revoke_device.add_argument("device", help="name or id, as shown by 'devices'")
     producer = sub.add_parser("add-producer", help="print a token for a Windows worker (shown once)")
     producer.add_argument("name")
     revoke = sub.add_parser("revoke-producer")
@@ -23,7 +26,10 @@ def main():
     integration.add_argument("name")
     authority = sub.add_parser("authority", help="show or switch who owns imported todos")
     authority.add_argument("change", nargs="?", choices=["cutover", "rollback"])
-    sub.add_parser("new-epoch", help="run after restoring a backup: devices must bootstrap again")
+    epoch = sub.add_parser("new-epoch", help="run after restoring a backup: devices bootstrap again and every "
+                                             "credential is revoked (pair phones, reconnect Windows)")
+    epoch.add_argument("--keep-credentials", action="store_true",
+                       help="only for a restore you know predates no revocation")
     sub.add_parser("serve")
     args = parser.parse_args()
 
@@ -65,9 +71,38 @@ def main():
             elif args.change == "rollback":
                 row = conn.execute("UPDATE authority SET mode = 'legacy', switched_at = now() WHERE domain = 'todos' RETURNING *").fetchone()
         print(f"todos: {row['mode']} (migration {row['migration_id'] or 'none'}, switched {row['switched_at'] or 'never'})")
-    elif args.command == "new-epoch":
+    elif args.command == "devices":
         with connect() as conn:
+            rows = conn.execute(
+                """SELECT 'device' AS kind, d.id, d.name, d.created_at, d.revoked_at,
+                          (SELECT max(t.expires_at) FROM tokens t WHERE t.device_id = d.id AND t.used_at IS NULL) AS expires
+                   FROM devices d
+                   UNION ALL
+                   SELECT 'producer', p.id, p.name, p.created_at, p.revoked_at, NULL FROM producers p
+                   ORDER BY created_at""").fetchall()
+        for r in rows:
+            state = f"revoked {r['revoked_at']:%Y-%m-%d}" if r["revoked_at"] else (
+                f"active until {r['expires']:%Y-%m-%d}" if r["expires"] else "active")
+            print(f"{r['kind']:8} {r['id']}  {r['name']}  (added {r['created_at']:%Y-%m-%d}, {state})")
+    elif args.command == "revoke-device":
+        with connect() as conn, conn.transaction():
+            rows = conn.execute("SELECT id, name FROM devices WHERE revoked_at IS NULL AND (id::text = %s OR name = %s)",
+                                (args.device, args.device)).fetchall()
+            if len(rows) != 1:
+                raise SystemExit(f"{len(rows)} active devices match {args.device!r}; use an id from 'devices'")
+            conn.execute("UPDATE devices SET revoked_at = now() WHERE id = %s", (rows[0]["id"],))
+            conn.execute("DELETE FROM tokens WHERE device_id = %s", (rows[0]["id"],))
+        print(f"revoked: {rows[0]['name']} ({rows[0]['id']})")
+    elif args.command == "new-epoch":
+        with connect() as conn, conn.transaction():
             print("epoch:", conn.execute("UPDATE meta SET epoch = gen_random_uuid() RETURNING epoch").fetchone()["epoch"])
+            if not args.keep_credentials:
+                # A restored dump also restores revocations as of the backup: start every credential over.
+                devices = conn.execute("UPDATE devices SET revoked_at = now() WHERE revoked_at IS NULL").rowcount
+                producers = conn.execute("UPDATE producers SET revoked_at = now() WHERE revoked_at IS NULL").rowcount
+                conn.execute("DELETE FROM tokens")
+                conn.execute("DELETE FROM pairing_codes WHERE used_at IS NULL")
+                print(f"revoked: {devices} devices, {producers} producers; pair phones again and reconnect Windows")
     else:
         import uvicorn
 
