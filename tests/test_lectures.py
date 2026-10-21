@@ -249,5 +249,77 @@ class LectureConfigTests(unittest.TestCase):
         self.assertLessEqual(example.keys(), set(Config.__dataclass_fields__))
 
 
+JOB = "e" * 64
+
+
+def lecture_job(audio=str(Path(tempfile.gettempdir()) / "incoming" / "lecture.opus")):
+    return {"id": JOB, "audio": audio, "sha256": "0" * 64, "metadata": json.dumps({
+        "device": "112233445566", "start_seq": 3, "mode": "lecture", "kind": "lecture",
+        "first_utc": "2026-10-21T15:00:00Z"})}
+
+
+def lecture_manifest():
+    return {"windows": [
+        {"id": "w0000", "start": 0.0, "end": 65.0, "memory_keep": False,
+         "final_transcript": "[0.00-5.00] Speaker 1 (c0000:S1): Today we define entropy.",
+         "speaker_identities": {}},
+        {"id": "w0001", "start": 3700.0, "end": 3720.0, "memory_keep": False,
+         "final_transcript": "[3700.00-3720.00] Ana (c0015:S1): Any questions?",
+         "speaker_identities": {"c0015:S1": {"id": "p1", "name": "Ana", "source": "voice match"}}},
+        {"id": "w0002", "start": 3720.0, "end": 3800.0, "memory_keep": False,
+         "speaker_filter": {"reason": "audiobook_speaker", "labels": ["c0015:S2"]},
+         "final_transcript": "[3720.00-3800.00] [AudioBook] Narrator (c0015:S2): Chapter one."},
+        {"id": "w0003", "start": 3800.0, "end": 3810.0, "memory_keep": False, "final_transcript": "  "},
+    ]}
+
+
+class LectureNoteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.vault = Path(self.tmp.name) / "vault"
+        self.vault.mkdir()
+
+    def publish(self, manifest=None, audio_retained=False):
+        from second_brain.vault import publish_lecture
+        return publish_lecture(self.vault, "Omi/Lectures", lecture_job(), manifest or lecture_manifest(), audio_retained)
+
+    def test_one_note_with_every_spoken_section_and_a_summary_link(self):
+        written = self.publish()
+        self.assertEqual([Path(p) for p in written], [Path("Omi/Lectures") / f"{JOB}.md"])
+        text = (self.vault / written[0]).read_text(encoding="utf-8")
+        self.assertIn('type: "omi-lecture"', text)
+        self.assertIn('recorded_at: "2026-10-21T15:00:00Z"', text)
+        self.assertIn(f'summary: "[[{JOB} Summary]]"', text)
+        self.assertIn(f"Summary: [[{JOB} Summary]]", text)
+        self.assertIn('speakers: ["Ana"]', text)
+        self.assertIn("Audio deleted after processing", text)
+        self.assertIn("## Transcript", text)
+        # The memory gate dropped every window; a lecture publishes them anyway.
+        self.assertLess(text.index("### 0:00"), text.index("Today we define entropy."))
+        self.assertLess(text.index("### 1:01:40"), text.index("Ana (c0015:S1): Any questions?"))
+        self.assertNotIn("Chapter one.", text)  # [AudioBook] exclusions still apply
+        self.assertNotIn("### 1:02:00", text)
+        self.assertNotIn("### 1:03:20", text)   # a window without speech gets no section
+
+    def test_a_retained_recording_is_linked(self):
+        text = (self.vault / self.publish(audio_retained=True)[0]).read_text(encoding="utf-8")
+        self.assertIn(f"[Source audio]({Path(lecture_job()['audio']).as_uri()})", text)
+
+    def test_republishing_is_idempotent_and_edits_are_preserved(self):
+        from second_brain.vault import NoteConflict
+        path = self.vault / self.publish()[0]
+        self.assertEqual(self.publish(), [str(path.relative_to(self.vault))])
+        path.write_text(path.read_text() + "\nmy notes\n")
+        with self.assertRaises(NoteConflict):
+            self.publish()
+        self.assertTrue(path.read_text().endswith("my notes\n"))
+
+    def test_a_lecture_without_speech_publishes_nothing(self):
+        self.assertEqual(self.publish({"windows": []}), [])
+        self.assertEqual(self.publish({"windows": lecture_manifest()["windows"][2:]}), [])
+        self.assertFalse((self.vault / "Omi" / "Lectures").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
