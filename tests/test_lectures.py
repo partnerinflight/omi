@@ -402,6 +402,101 @@ class LectureSummaryTests(unittest.TestCase):
         self.assertEqual(queue.snapshot()["pending"], 1)
         self.assertEqual(queue.snapshot()["last_error"], "URLError; see private service log")
 
+    def runtime(self, **changes):
+        from second_brain.runtime import Runtime
+        runtime = Runtime(dataclasses.replace(configuration(self.root), **changes))
+        write_json(runtime.cfg.data_dir / "jobs" / JOB / "publication-manifest.json", lecture_manifest())
+        return runtime
+
+    def test_summaries_need_hermes_but_not_the_router(self):
+        self.assertIsNone(self.runtime().summarizing(), "no_hermes")
+        runtime = self.runtime(no_hermes=False)
+        self.assertEqual(runtime.summarizing()["hermes_url"], "http://YOUR-PI-IP:8642/v1/chat/completions")
+        pipeline = json.loads(runtime.cfg.pipeline_config.read_text())
+        write_json(runtime.cfg.pipeline_config, dict(pipeline, hermes_url=""))
+        self.assertIsNone(runtime.summarizing(), "no hermes_url")
+
+    def test_summary_is_frozen_before_the_note_and_replays_identically(self):
+        from second_brain import router
+        runtime = self.runtime()
+        item = {"id": JOB, "job": JOB, "observed_at": "2026-10-21T15:00:00Z"}
+        with patch.object(router, "chat", FakeSummarizer()):
+            self.assertEqual(runtime.summarize_lecture({}, item), {"notes": 1})
+        frozen = runtime.cfg.data_dir / "jobs" / JOB / "lecture-summary.json"
+        note = runtime.cfg.vault_path / "Omi" / "Lectures" / f"{JOB} Summary.md"
+        text = note.read_text(encoding="utf-8")
+        self.assertEqual(json.loads(frozen.read_text())["summary"], "Combined.")
+        note.unlink()  # a crash before the note was written
+        outage = FakeSummarizer(error=OSError("Hermes down"))
+        with patch.object(router, "chat", outage):
+            runtime.summarize_lecture({}, item)
+        self.assertEqual(note.read_text(encoding="utf-8"), text)
+        self.assertEqual(outage.calls, [], "a replay never asks Hermes again")
+
+    def test_a_hermes_outage_only_delays_the_summary(self):
+        from second_brain import router
+        runtime = self.runtime()
+        runtime.summaries.enqueue(JOB, "2026-10-21T15:00:00Z")
+        item = runtime.summaries.claim()
+        with patch.object(router, "chat", FakeSummarizer(error=OSError("Hermes down"))):
+            with self.assertRaises(OSError):
+                runtime.summarize_lecture({}, item)
+        self.assertFalse((runtime.cfg.data_dir / "jobs" / JOB / "lecture-summary.json").exists())
+        self.assertFalse((runtime.cfg.vault_path / "Omi" / "Lectures").exists())
+        runtime.summaries.fail(item, "OSError; see private service log")
+        with runtime.summaries.connect() as db:
+            db.execute("UPDATE routes SET next_attempt=0")
+        item = runtime.summaries.claim()
+        with patch.object(router, "chat", FakeSummarizer()):
+            runtime.summaries.done(item["id"], runtime.summarize_lecture({}, item))
+        self.assertEqual(runtime.summaries.snapshot()["done"], 1)
+        self.assertTrue((runtime.cfg.vault_path / "Omi" / "Lectures" / f"{JOB} Summary.md").is_file())
+
+    def test_cli_retry_requeues_failed_summaries(self):
+        from second_brain.lectures import SummaryQueue
+        from tests.test_meetings import write_config
+        path = write_config(self.root)
+        queue = SummaryQueue(self.root / "data" / "lectures.sqlite3")
+        queue.enqueue(JOB, "2026-10-21T15:00:00Z")
+        with queue.connect() as db:
+            db.execute("UPDATE routes SET state='failed'")
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            [str(ROOT / "src"), str(ROOT / "omi/firmware/scripts/omi-local")]))
+        out = subprocess.run([sys.executable, "-m", "second_brain.cli", "retry", "--config", str(path)],
+                             capture_output=True, text=True, env=env, check=True).stdout
+        self.assertIn("Requeued 1 failed lecture summaries", out)
+        self.assertEqual(queue.snapshot()["pending"], 1)
+
+
+SECTION_REPLY = "The project launch moves to Friday."
+COMBINED_REPLY = "Overview: launch planning for Friday."
+
+
+class LectureHermes(http.server.BaseHTTPRequestHandler):
+    """Answers both summary prompts; any other prompt (the router's) would write a decision."""
+    seen = []
+
+    def do_POST(self):
+        from second_brain import lectures
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        system = body["messages"][0]["content"]
+        LectureHermes.seen.append(system)
+        if system == lectures.SECTION_PROMPT:
+            reply = {"summary": SECTION_REPLY}
+        elif system == lectures.COMBINE_PROMPT:
+            reply = {"summary": COMBINED_REPLY}
+        else:
+            reply = {"decisions": [{"text": "Routed lecture content.", "confidence": 1.0, "observed_at": None}],
+                     "items": []}
+        data = json.dumps({"choices": [{"message": {"content": json.dumps(reply)}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required")
 class LectureEndToEndTests(unittest.IsolatedAsyncioTestCase):
@@ -452,6 +547,7 @@ class LectureEndToEndTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_complete()
         folder = self.cfg.vault_path / "Omi" / "Lectures"
         [note] = list(folder.glob("*.md"))
+        self.assertEqual(self.runtime.summaries.snapshot()["pending"], 0)  # Hermes off: no summary queued
         text = note.read_text(encoding="utf-8")
         self.assertIn('type: "omi-lecture"', text)
         self.assertIn(f"[[{note.stem} Summary]]", text)
@@ -477,6 +573,49 @@ class LectureEndToEndTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_complete()
         self.assertEqual(note.read_text(encoding="utf-8"), text)
         self.assertEqual(len(list((self.root / "data/jobs").rglob("pipeline.log"))), 1)
+
+    async def test_lecture_summary_note_is_linked_and_nothing_is_routed(self):
+        from second_brain import lectures
+        from tests.helpers import lecture_records, upload
+        from omi_local import upload_protocol as U
+        server = http.server.HTTPServer(("127.0.0.1", 0), LectureHermes)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        LectureHermes.seen = []
+        await self.start(f"http://127.0.0.1:{server.server_port}/v1/chat/completions")
+        self.assertEqual(await upload(self.runtime.server.bound_port, lecture_records()), U.MSG_BYE)
+        await self.wait_complete()
+        for _ in range(200):
+            if self.runtime.summaries.snapshot()["done"]:
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(self.runtime.summaries.snapshot()["done"], 1, self.runtime.summaries.snapshot())
+        job_id = self.runtime.queue.snapshot()["recent"][0]["id"]
+        folder = self.cfg.vault_path / "Omi" / "Lectures"
+        self.assertEqual(sorted(p.name for p in self.cfg.vault_path.rglob("*.md")),
+                         [f"{job_id} Summary.md", f"{job_id}.md"])
+        text = (folder / f"{job_id} Summary.md").read_text(encoding="utf-8")
+        self.assertIn('type: "omi-lecture-summary"', text)
+        self.assertIn(f"Transcript: [[{job_id}]]", text)
+        self.assertIn(SECTION_REPLY, text)
+        self.assertIn(COMBINED_REPLY, text)
+        self.assertTrue((self.cfg.data_dir / "jobs" / job_id / "lecture-summary.json").is_file())
+        # Only the two summary prompts reached Hermes: the router never saw the lecture.
+        self.assertEqual(LectureHermes.seen, [lectures.SECTION_PROMPT, lectures.COMBINE_PROMPT])
+        self.assertEqual(self.runtime.router.snapshot()["pending"] + self.runtime.router.snapshot()["done"], 0)
+        self.assertFalse((self.cfg.vault_path / "Daily").exists())
+        self.runtime.status()
+        status = json.loads(self.cfg.status_file.read_text())
+        self.assertEqual((status["lecture_summaries"]["enabled"], status["lecture_summaries"]["done"]), (True, 1))
+        # Crash replay of the job re-enqueues nothing and leaves both notes byte-identical.
+        with self.runtime.queue.connect() as db:
+            db.execute("UPDATE jobs SET state='processing'")
+        self.runtime.queue.recover()
+        await self.wait_complete()
+        self.assertEqual((folder / f"{job_id} Summary.md").read_text(encoding="utf-8"), text)
+        self.assertEqual(self.runtime.summaries.snapshot()["done"], 1)
+        self.assertEqual(len(LectureHermes.seen), 2)
 
 
 if __name__ == "__main__":

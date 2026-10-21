@@ -16,7 +16,8 @@ from .meetings import overlapping, recording_span
 from .queue import Queue
 from .receiver import MeetingStore, ReceiverFactory
 from .router import RouterQueue, route
-from .vault import publish, publish_lecture, publish_meeting
+from .lectures import SummaryQueue, summarize
+from .vault import publish, publish_lecture, publish_lecture_summary, publish_meeting
 from .speakers import Speakers
 from .clarifications import Clarifications
 from . import bridge
@@ -61,6 +62,7 @@ class Runtime:
         self.speakers = Speakers(cfg.data_dir, cfg.review_dir, cfg.speaker_match_threshold, cfg.speaker_match_margin)
         self.speakers.rematch()
         self.router = RouterQueue(cfg.data_dir / "router.sqlite3")
+        self.summaries = SummaryQueue(cfg.data_dir / "lectures.sqlite3")
         self.clarifications = Clarifications(cfg.data_dir, cfg.review_dir, cfg.vault_path)
         self.bridge_status = {"enabled": bool(cfg.bridge_url), "last_success": None, "error": None}
 
@@ -72,6 +74,18 @@ class Runtime:
             log.exception("Pipeline config unreadable; routing paused")
             return None
         if not pipeline.get("router_enabled") or self.cfg.no_hermes or not pipeline.get("hermes_url"):
+            return None
+        return pipeline
+
+    def summarizing(self):
+        """The pipeline config when lecture summaries can run, else None. Unlike routing this
+        needs no router_enabled: lecture content never reaches the knowledge router."""
+        try:
+            pipeline = self.cfg.pipeline()
+        except (OSError, ValueError):
+            log.exception("Pipeline config unreadable; lecture summaries paused")
+            return None
+        if self.cfg.no_hermes or not pipeline.get("hermes_url"):
             return None
         return pipeline
 
@@ -289,8 +303,12 @@ class Runtime:
             notes = await asyncio.to_thread(
                 publish, cfg.vault_path, cfg.vault_folder, job, manifest, not cfg.delete_audio_after_processing
             )
-        # Lectures stay in the lectures folder: never routed, so never in daily notes either.
-        if kind != "lecture" and self.routing():
+        if kind == "lecture":
+            # Lectures stay in the lectures folder: never routed, so never in daily notes either.
+            # Idempotent, so a crash-replay of this job enqueues nothing twice.
+            if notes and self.summarizing():
+                self.summaries.enqueue(job["id"], metadata.get("first_utc", "unknown-time"))
+        elif self.routing():
             # Idempotent, so a crash-replay of this job enqueues nothing twice.
             kept = [w for w in manifest["windows"]
                     if w.get("memory_keep") is True and w.get("route_to_knowledge_router") is True]
@@ -358,6 +376,40 @@ class Runtime:
             except asyncio.TimeoutError:
                 pass
 
+    def summarize_lecture(self, pipeline, item):
+        """Summarize one published lecture. Hermes's result is frozen before the note is written,
+        so a crash replay writes byte-identical content and never asks Hermes again."""
+        root = self.cfg.data_dir / "jobs" / item["job"]
+        frozen = root / "lecture-summary.json"
+        if not frozen.exists():
+            write_json(frozen, summarize(pipeline, read_json(root / "publication-manifest.json")))
+        notes = publish_lecture_summary(self.cfg.vault_path, self.cfg.lectures_vault_folder, item["job"],
+                                        item["observed_at"], read_json(frozen))
+        return {"notes": len(notes)}
+
+    async def summarize_lectures(self):
+        """Summarize published lectures one at a time, separately from transcription, so a Hermes
+        outage only delays the summary note."""
+        while not self.stop.is_set():
+            item = None
+            try:
+                pipeline = await asyncio.to_thread(self.summarizing)
+                item = self.summaries.claim() if pipeline else None
+                if item:
+                    result = await asyncio.to_thread(self.summarize_lecture, pipeline, item)
+                    self.summaries.done(item["id"], result)
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.exception("Lecture summary failed for %s", item["id"] if item else "the summarizer")
+                if item:
+                    self.summaries.fail(item, f"{type(e).__name__}; see private service log")
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=max(self.cfg.poll_seconds, 1))
+            except asyncio.TimeoutError:
+                pass
+
     async def export(self):
         """Phone commands and shadow export to the server. Never raises: an unreachable or broken server must not
         stop the service (run() propagates task failures to SCM recovery)."""
@@ -412,6 +464,7 @@ class Runtime:
             speakers=self.speakers.summary(),
             clarifications=self.clarifications.count(),
             router=dict(self.router.snapshot(), enabled=self.routing() is not None),
+            lecture_summaries=dict(self.summaries.snapshot(), enabled=self.summarizing() is not None),
             bridge=self.bridge_status,
         )
         write_json(self.cfg.status_file, result)
@@ -456,6 +509,7 @@ class Runtime:
                 asyncio.create_task(self.heartbeat()),
                 asyncio.create_task(self.speaker_review()),
                 asyncio.create_task(self.route_published()),
+                asyncio.create_task(self.summarize_lectures()),
                 *([asyncio.create_task(self.export())] if self.cfg.bridge_url else []),
             ]
             waiter = asyncio.create_task(self.stop.wait())
