@@ -87,6 +87,14 @@ class Bridge:
         with self.read_only("queue.sqlite3") as db:
             return {r["id"]: dict(r) for r in db.execute("SELECT id,sha256,metadata FROM jobs WHERE state='complete'")}
 
+    def lecture_jobs(self) -> set[str]:
+        """Lecture job IDs in any state: speakers are ingested before a job completes."""
+        if not (self.data_dir / "queue.sqlite3").exists():
+            return set()
+        with self.read_only("queue.sqlite3") as db:
+            return {r["id"] for r in db.execute("SELECT id,metadata FROM jobs")
+                    if job_kind(json.loads(r["metadata"])) == "lecture"}
+
     def sources(self, jobs: dict, done: set) -> list[tuple]:
         """Immutable once complete, so a job already exported is never read again."""
         out = []
@@ -168,6 +176,7 @@ class Bridge:
         Voice vectors never leave the machine; clips go separately, only while unconfirmed."""
         if not (self.data_dir / "speakers.sqlite3").exists():
             return {}
+        lectures = self.lecture_jobs()
         with self.read_only("speakers.sqlite3") as db:
             people = db.execute("SELECT id,name FROM people").fetchall()
             observations = db.execute(
@@ -175,6 +184,8 @@ class Bridge:
                 "FROM observations").fetchall()
         out = {("person", p["id"]): {"name": p["name"]} for p in people}
         for o in observations:
+            if o["job"] in lectures:
+                continue  # lecture speakers stay local (tray review only), and so do their clips
             provenance = ("confirmed" if o["manual"] else "inferred") if o["person"] else ("cleared" if o["manual"] else None)
             clips = json.loads(o["clips"])
             out[("observation", o["id"])] = {
