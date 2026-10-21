@@ -96,5 +96,34 @@ class SessionSplitTests(unittest.TestCase):
         self.assertEqual(len(P.split_sessions(recs)), 1)
 
 
+def mode_marker(ts: int, mode: int) -> bytes:
+    payload = P.RECORD_MODE_MAGIC + bytes([mode])
+    return struct.pack(">I", ts) + payload + bytes(P.AUDIO_PAYLOAD_BYTES - len(payload))
+
+
+class ModeMarkerTests(unittest.TestCase):
+    def test_parses_known_modes(self):
+        self.assertEqual(P.parse_record(4, mode_marker(100, 1)), P.Record(4, 100, (), mode="lecture"))
+        self.assertEqual(P.parse_record(5, mode_marker(0, 0)), P.Record(5, 0, (), mode="normal"))
+
+    def test_unknown_mode_byte_is_processed_as_normal(self):
+        # A future firmware mode must not stall uploads to this receiver.
+        self.assertEqual(P.parse_record(1, mode_marker(100, 9)).mode, "normal")
+
+    def test_nonzero_padding_is_rejected(self):
+        raw = bytearray(mode_marker(100, 1))
+        raw[-1] = 1
+        with self.assertRaises(P.ProtocolError):
+            P.parse_record(1, bytes(raw))
+
+    def test_audio_and_end_records_have_no_mode(self):
+        self.assertIsNone(P.parse_record(0, make_record(0, 100)).mode)
+
+    def test_mode_marker_splits_sessions_and_is_not_counted(self):
+        data = make_record(0, 100) + mode_marker(100, 1) + make_record(2, 100)
+        sessions = P.split_sessions(P.iter_records(0, data))
+        self.assertEqual([(s.start_seq, s.end_seq) for s in sessions], [(0, 1), (2, 3)])
+
+
 if __name__ == "__main__":
     unittest.main()

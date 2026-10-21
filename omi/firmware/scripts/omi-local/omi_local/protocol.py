@@ -192,6 +192,10 @@ def parse_status(value: bytes | bytearray) -> Status:
 
 # --- Records -----------------------------------------------------------------
 RECORD_END_MAGIC = b"\x00OMIEND\x01"
+# Recording-mode marker: magic, then one mode byte. The leading 0 makes
+# receivers older than lecture mode treat it as an empty record.
+RECORD_MODE_MAGIC = b"\x00OMIMOD\x01"
+RECORD_MODES = {0: "normal", 1: "lecture"}
 
 @dataclass(frozen=True)
 class Record:
@@ -199,6 +203,7 @@ class Record:
     timestamp: int  # UTC epoch seconds, 0 = clock was not set when recorded
     frames: tuple[bytes, ...]
     recording_end: bool = False
+    mode: str | None = None  # set only on a mode marker record
 
     @property
     def has_time(self) -> bool:
@@ -206,7 +211,7 @@ class Record:
 
 
 def parse_record(seq: int, raw: bytes) -> Record:
-    """Parse timestamp + packed Opus frames, or the reserved zero-frame end marker."""
+    """Parse timestamp + packed Opus frames, or a reserved zero-frame marker."""
     if len(raw) != RECORD_SIZE:
         raise ProtocolError(f"record {seq}: expected {RECORD_SIZE} bytes, got {len(raw)}")
     timestamp = struct.unpack_from(">I", raw, 0)[0]
@@ -214,6 +219,12 @@ def parse_record(seq: int, raw: bytes) -> Record:
         if any(raw[TIMESTAMP_BYTES + len(RECORD_END_MAGIC):]):
             raise ProtocolError(f"record {seq}: invalid recording-end padding")
         return Record(seq, timestamp, (), recording_end=True)
+    if raw[TIMESTAMP_BYTES:].startswith(RECORD_MODE_MAGIC):
+        mode_at = TIMESTAMP_BYTES + len(RECORD_MODE_MAGIC)
+        if any(raw[mode_at + 1:]):
+            raise ProtocolError(f"record {seq}: invalid recording-mode padding")
+        # An unknown (future) mode is processed as normal rather than refused.
+        return Record(seq, timestamp, (), mode=RECORD_MODES.get(raw[mode_at], "normal"))
     frames: list[bytes] = []
     i = TIMESTAMP_BYTES
     end = RECORD_SIZE
@@ -309,7 +320,7 @@ def split_sessions(records: Iterable[Record], gap_s: int = 60) -> list[Session]:
     sessions: list[Session] = []
     prev: Record | None = None
     for rec in records:
-        if rec.recording_end:
+        if rec.recording_end or rec.mode is not None:
             prev = None
             continue
         if session_boundary(prev, rec, gap_s):
