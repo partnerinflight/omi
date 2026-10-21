@@ -679,3 +679,13 @@ can add a tap, turning a triple-click into a cancelled fourth tap or a double cl
 a triple), motor feel, yellow colour and brightness at 10 % PWM, battery cost of a
 4-hour lecture without acoustic sleep, AAD owner stack headroom at 1280 bytes, and how
 many frames are dropped at boot while the SD ring mounts.
+
+Deployed at the user's request on 2026-10-21 with `scripts/windows/flash_omi.py` on macOS,
+application image only (installed network core kept). Before staging, the device already
+reported `3.0.22-localwifi.20` with an unrecorded app digest `72888d1d…` (not this build);
+the user chose to replace it. The staged digest `ccab436a…` matched before reset. After
+reset, SMP reports `ccab436a…` active/confirmed/bootable and GATT reports
+`3.0.22-localwifi.20`. Clock set, battery 56%, ring read_seq 3517994 unchanged (389,914
+unread packets kept), write_seq advanced from 3907908 to 3909054, zero dropped packets.
+Triple-click, vibration, yellow LED, lecture upload and the hardware items above remain
+on-device checks.
