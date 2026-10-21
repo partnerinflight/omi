@@ -15,6 +15,11 @@ static const struct gpio_dt_spec haptic_pin = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(m
 // Haptic Off Work Item
 static struct k_work_delayable haptic_off_work;
 
+/* Pulse state is unlocked. It relies on a single core and on pulse_work running on the
+ * cooperative system work queue: callers are the button work item (same queue) and the
+ * microphone owner thread (lecture pulses). A triple-click and a hold cannot coincide, so
+ * overlapping callers are not expected; if they did, the later call restarts the pattern
+ * and at worst one pulse is cut short. Add a lock before calling this from more contexts. */
 static struct k_work_delayable pulse_work;
 static uint8_t pulses_left;
 static bool pulse_on;
