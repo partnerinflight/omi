@@ -9,11 +9,12 @@ from datetime import date
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from psycopg.types.json import Jsonb
+from psycopg_pool import PoolTimeout
 from pydantic import BaseModel, Field, field_validator
 
 from . import auth
 from .limits import BodyLimit
-from .db import connect
+from .db import pool
 
 # No interactive docs or schema on the public host.
 app = FastAPI(title="Second Brain", version="1", docs_url=None, redoc_url=None, openapi_url=None)
@@ -25,8 +26,14 @@ MAX_PAGE = 500
 
 
 def db():
-    with connect() as conn:
+    try:
+        conn = pool().getconn()
+    except PoolTimeout:
+        raise HTTPException(503, "busy", headers={"Retry-After": "5"}) from None
+    try:
         yield conn
+    finally:
+        pool().putconn(conn)
 
 
 Db = Annotated[object, Depends(db)]

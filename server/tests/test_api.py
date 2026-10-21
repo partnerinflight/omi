@@ -44,6 +44,7 @@ class Api(unittest.TestCase):
         subprocess.run(["docker", "run", "-d", "--rm", "--name", cls.container, "-e", "POSTGRES_PASSWORD=test",
                         "-p", f"127.0.0.1:{pg_port}:5432", PG_IMAGE], check=True, capture_output=True)
         os.environ["SB_DATABASE_URL"] = f"postgresql://postgres:test@127.0.0.1:{pg_port}/postgres"
+        os.environ["SB_DB_TIMEOUT"] = "1"  # pool wait before 503, short for the exhaustion test
         for _ in range(120):
             try:
                 psycopg.connect(os.environ["SB_DATABASE_URL"]).close()
@@ -564,6 +565,20 @@ class Api(unittest.TestCase):
     def test_api_docs_are_not_served(self):
         for path in ("/docs", "/redoc", "/openapi.json"):
             self.assertEqual(self.http("GET", path).status_code, 404, path)
+
+    def test_exhausted_pool_answers_503_not_a_hang(self):
+        from sb_server import db
+        self.assertEqual(self.http("GET", "/v1/health").status_code, 200)  # pool exists
+        held = [db.pool().getconn() for _ in range(db.pool().max_size)]
+        try:
+            started = time.monotonic()
+            r = self.http("GET", "/v1/health")
+            self.assertEqual((r.status_code, r.headers.get("retry-after")), (503, "5"))
+            self.assertLess(time.monotonic() - started, 5)
+        finally:
+            for conn in held:
+                db.pool().putconn(conn)
+        self.assertEqual(self.http("GET", "/v1/health").status_code, 200)
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,10 +5,26 @@ import psycopg
 from psycopg.rows import dict_row
 
 
+from psycopg_pool import ConnectionPool
+
+_pool: ConnectionPool | None = None
+
+
 def connect() -> psycopg.Connection:
+    """A direct connection, for the admin CLI and migrations. Requests use pool()."""
     # Autocommit: each `with conn.transaction()` block is a real, independent commit.
-    # ponytail: one connection per request; add psycopg_pool if request rate ever matters.
     return psycopg.connect(os.environ["SB_DATABASE_URL"], row_factory=dict_row, autocommit=True)
+
+
+def pool() -> ConnectionPool:
+    """At most SB_DB_POOL (5) connections to the shared postgres-db, whatever the request rate;
+    a request that waits SB_DB_TIMEOUT (5 s) for one is refused rather than queued forever."""
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(os.environ["SB_DATABASE_URL"], min_size=1, max_size=int(os.environ.get("SB_DB_POOL", "5")),
+                               timeout=float(os.environ.get("SB_DB_TIMEOUT", "5")), check=ConnectionPool.check_connection,
+                               kwargs={"row_factory": dict_row, "autocommit": True}, open=True)
+    return _pool
 
 
 def migrate() -> list[str]:
