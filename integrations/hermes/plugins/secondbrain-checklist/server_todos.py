@@ -16,6 +16,10 @@ from pathlib import Path
 
 from .todos import TodoError, TodoFile
 
+# Cloudflare's browser integrity check answers urllib's default "Python-urllib/x.y" with 403
+# (error 1010) before the request reaches the server; any explicit agent passes.
+USER_AGENT = "SecondBrain-Hermes-Checklist"
+
 LEGACY_NS = uuid.UUID("5b0c8d1e-3f7a-4d2b-9c61-0e4a7b2f9d13")  # server/sb_server/app.py
 SOURCE = "server"  # differs from "ToDos/Tasks.md", so buttons sent before cutover are refused
 STATES = {"done": "completed", "dismissed": "dismissed", "open": "open", "snoozed": "open"}
@@ -31,7 +35,8 @@ class ServerTodos(TodoFile):
     def api(self, method: str, path: str, body=None):
         request = urllib.request.Request(self.url + path, method=method,
                                          data=json.dumps(body).encode() if body is not None else None,
-                                         headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+                                         headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
+                                                  "User-Agent": USER_AGENT})
         try:
             with self.opener(request, timeout=20) as response:
                 return json.loads(response.read())

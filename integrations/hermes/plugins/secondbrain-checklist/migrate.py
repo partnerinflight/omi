@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 
 from .checklist import StateStore
+from .server_todos import USER_AGENT
 from .todos import MARKER, ROW, TodoFile
 
 STATES = {"open": "open", "snoozed": "open", "done": "completed", "dismissed": "dismissed"}
@@ -94,7 +95,8 @@ def apply(vault, server: str, token: str, migration_id: str, opener=urllib.reque
         body = json.dumps({"migration_id": migration_id, "source_hash": found["source_hash"],
                            "todos": found["todos"]}).encode()
         request = urllib.request.Request(server.rstrip("/") + "/v1/migration/todos", data=body, method="POST",
-                                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                                  "User-Agent": USER_AGENT})
         with opener(request, timeout=60) as response:
             result = json.loads(response.read())
     return {"report": found["report"], "source_hash": found["source_hash"], "result": result}

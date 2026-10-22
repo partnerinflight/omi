@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -504,7 +505,12 @@ class Api(unittest.TestCase):
         producer, phone = self.cli("add-producer", "migration-pc").strip(), self.paired()["access_token"]
         dry = legacy.inventory(vault)
         self.assertEqual((dry["report"]["tasks"], dry["report"]["prose_lines_not_imported"]), (2, 3))  # incl. the 2 header lines
-        first = legacy.apply(vault, self.base, producer, "todos-test")["result"]
+        def via_cloudflare(request, timeout):  # Cloudflare answers urllib's default agent with 403
+            agent = request.get_header("User-agent") or ""
+            assert agent and not agent.startswith("Python-urllib"), agent
+            return urllib.request.urlopen(request, timeout=timeout)
+
+        first = legacy.apply(vault, self.base, producer, "todos-test", opener=via_cloudflare)["result"]
         self.assertEqual(first, {"created": 2, "updated": 0, "unchanged": 0})
         self.assertEqual(legacy.apply(vault, self.base, producer, "todos-test")["result"]["unchanged"], 2)  # repeat: no effect
         todos = {t["legacy_id"]: t for t in self.http("GET", "/v1/bootstrap", phone).json()["todos"] if t["legacy_id"]}
@@ -525,7 +531,7 @@ class Api(unittest.TestCase):
             "migration_id": "late", "source_hash": "0" * 64, "todos": []}).status_code, 409)  # stale old writer refused
 
         integration = self.cli("add-integration", "hermes").strip()
-        server_mode = lambda: hermes(ServerTodos(vault, self.base, integration))  # noqa: E731
+        server_mode = lambda: hermes(ServerTodos(vault, self.base, integration, opener=via_cloudflare))  # noqa: E731
         # Buttons sent before cutover are refused rather than editing the wrong store.
         data = old_button and sender.calls[0]["reply_markup"][0][0]["callback_data"]
         self.assertFalse(server_mode().callback(data=data, user_id=42, chat_id=-1001, message_id=501).ok)
