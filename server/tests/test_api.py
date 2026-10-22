@@ -188,6 +188,22 @@ class Api(unittest.TestCase):
         self.cli("revoke-producer", "scope-pc")
         self.assertEqual(self.http("POST", "/v1/worker/events", producer, json=events).status_code, 401)
 
+    def test_status_page_needs_forward_auth_and_escapes_names(self):
+        producer = self.cli("add-producer", "<b>status-pc</b>").strip()
+        events = {"records": [], "status": {"jobs": {"pending": 2}, "export_conflicts": 1}}
+        self.assertEqual(self.http("POST", "/v1/worker/events", producer, json=events).status_code, 200)
+        phone = self.paired()["access_token"]
+        for path in ("/", "/status"):
+            # A device token is not a browser login: only Traefik's forward auth header opens the page.
+            self.assertEqual(self.http("GET", path, phone).status_code, 401)
+            page = self.http("GET", path, headers={"X-Forwarded-User": "owner@example.com"})
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("&lt;b&gt;status-pc&lt;/b&gt;", page.text)
+            self.assertNotIn("<b>status-pc", page.text)
+            self.assertIn("pending 2", page.text)
+            self.assertIn("1 export conflicts", page.text)
+        self.cli("revoke-producer", "<b>status-pc</b>")
+
     def test_invalid_worker_records_are_rejected(self):
         producer = self.cli("add-producer", "validation-pc").strip()
         for record in [{"kind": "todo", "id": "x", "hash": "h", "data": {}},

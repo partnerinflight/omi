@@ -23,6 +23,8 @@ checks = {
     "forwarded IPs not wildcard": s["environment"].get("SB_FORWARDED_ALLOW_IPS") not in (None, "*"),
     "rate limit on router": "secondbrain-rl" in router.split(","),
     "body limit on router": "secondbrain-body" in router.split(","),
+    "open router serves only /v1": labels.get("traefik.http.routers.secondbrain-rtr.rule", "").endswith("&& PathPrefix(`/v1/`)"),
+    "everything else behind oauth": labels.get("traefik.http.routers.secondbrain-web-rtr.middlewares") == "chain-oauth@file",
     "body limit configured": labels.get("traefik.http.middlewares.secondbrain-body.buffering.maxRequestBodyBytes") == "8000000",
 }
 failed = [name for name, ok in checks.items() if not ok]

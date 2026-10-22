@@ -1,6 +1,6 @@
 # Second Brain sync API for HA_Selfhost. Copy to HA_Selfhost/compose/ and follow README.md.
-# The phone authenticates natively (device tokens), so the whole host uses
-# chain-no-auth like lific's /mcp: Google forward auth cannot run inside the app.
+# The phone authenticates natively (device tokens), so /v1 uses chain-no-auth like lific's
+# /mcp: Google forward auth cannot run inside the app. The rest uses chain-oauth.
 services:
   secondbrain:
     profiles: ["apps", "all"]
@@ -34,7 +34,9 @@ services:
       - "com.centurylinklabs.watchtower.enable=false"
       - "traefik.enable=true"
       - "traefik.docker.network=${HA_COMPOSE_PROJECT_NAME}_proxy_secondbrain"
-      - "traefik.http.routers.secondbrain-rtr.rule=Host(`brain.${DOMAINNAME_CLOUD_SERVER}`)"
+      # The API (/v1) authenticates phones and Windows itself; every other path (the status page)
+      # is behind Google forward auth, which also sets the X-Forwarded-User the app requires.
+      - "traefik.http.routers.secondbrain-rtr.rule=Host(`brain.${DOMAINNAME_CLOUD_SERVER}`) && PathPrefix(`/v1/`)"
       - "traefik.http.routers.secondbrain-rtr.entrypoints=websecure"
       - "traefik.http.routers.secondbrain-rtr.tls=true"
       - "traefik.http.routers.secondbrain-rtr.middlewares=chain-no-auth@file,secondbrain-rl,secondbrain-body"
@@ -44,6 +46,11 @@ services:
       - "traefik.http.middlewares.secondbrain-rl.ratelimit.period=1s"
       - "traefik.http.middlewares.secondbrain-body.buffering.maxRequestBodyBytes=8000000"
       - "traefik.http.routers.secondbrain-rtr.service=secondbrain-svc"
+      - "traefik.http.routers.secondbrain-web-rtr.rule=Host(`brain.${DOMAINNAME_CLOUD_SERVER}`)"
+      - "traefik.http.routers.secondbrain-web-rtr.entrypoints=websecure"
+      - "traefik.http.routers.secondbrain-web-rtr.tls=true"
+      - "traefik.http.routers.secondbrain-web-rtr.middlewares=chain-oauth@file"
+      - "traefik.http.routers.secondbrain-web-rtr.service=secondbrain-svc"
       - "traefik.http.services.secondbrain-svc.loadbalancer.server.port=8000"
       - "traefik.http.services.secondbrain-svc.loadbalancer.healthcheck.path=/v1/health"
       - "traefik.http.services.secondbrain-svc.loadbalancer.healthcheck.interval=30s"

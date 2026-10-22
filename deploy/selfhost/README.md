@@ -78,13 +78,21 @@ there is no volume.
      limit's `sourceCriterion` must use its client-IP header;
    - from outside, `https://brain.<domain>/docs` and `/openapi.json` return 404, and a 10 MB
      POST returns 413.
+   - from a private window, `https://brain.<domain>/status` (and `/`) redirects to the Google
+     login, and only `/v1/...` answers without it. The status page shows worker freshness,
+     backlog counts and paired phone names, never content.
 
 ## 2. Windows bridge (shadow import, speaker review, memories)
 
 `./ha compose exec secondbrain python -m sb_server add-producer "Home PC"`; save the token
 on Windows as `C:\ProgramData\SecondBrain\config\bridge-token.txt` (service account and
-admins only), set `bridge_url` in `service.json`, restart the service. The tray status and
-the app's pipeline section should show it reporting within a minute.
+admins only), set `bridge_url` and `bridge_token_file` (that absolute path) in `service.json`,
+restart the service. Within a minute the tray's Receiver card shows "Server synced HH:MM"
+(a failure turns the tray to Needs attention with the error), the app's Status tab shows it
+reporting, and so does `https://brain.<domain>/status`.
+
+The token file may start with the UTF-8 BOM that Windows PowerShell 5.1 `Set-Content -Encoding utf8`
+writes; anything else besides the token is rejected with a clear error.
 
 ## 3. Todo cutover
 

@@ -8,6 +8,7 @@ import re
 from datetime import date
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 from psycopg.types.json import Jsonb
 from psycopg_pool import PoolTimeout
 from pydantic import BaseModel, Field, field_validator
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from . import auth
 from .limits import BodyLimit
 from .db import pool
+from .status_page import render_status
 
 # No interactive docs or schema on the public host.
 app = FastAPI(title="Second Brain", version="1", docs_url=None, redoc_url=None, openapi_url=None)
@@ -485,9 +487,8 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
     return {"accepted": len(body.records), "stored": stored, "epoch": str(meta["epoch"])}
 
 
-@app.get("/v1/pipeline")
-def pipeline(_: Device, conn: Db):
-    """What the phone can inspect during shadow import: worker freshness and record counts."""
+def pipeline_summary(conn) -> dict:
+    """Worker freshness and record counts: what the phone and the status page show."""
     producers = conn.execute(
         "SELECT name, last_seen_at, status FROM producers WHERE revoked_at IS NULL ORDER BY name").fetchall()
     counts = conn.execute(
@@ -499,6 +500,24 @@ def pipeline(_: Device, conn: Db):
                          "last_seen_at": p["last_seen_at"].isoformat() if p["last_seen_at"] else None} for p in producers],
             "counts": {c["kind"]: c["n"] for c in counts},
             "oldest_pending_command_at": oldest.isoformat() if oldest else None}
+
+
+@app.get("/v1/pipeline")
+def pipeline(_: Device, conn: Db):
+    """What the phone can inspect during shadow import: worker freshness and record counts."""
+    return pipeline_summary(conn)
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/status", response_class=HTMLResponse)
+def status_page(conn: Db, x_forwarded_user: Annotated[str | None, Header()] = None):
+    """Operational status for the owner's browser. Traefik puts every non-/v1 path behind Google
+    forward auth, which sets X-Forwarded-User; without it this page is never served."""
+    if not x_forwarded_user:
+        raise HTTPException(401, "browser_login_required")
+    summary = pipeline_summary(conn)
+    phones = conn.execute("""SELECT name, created_at FROM devices WHERE revoked_at IS NULL ORDER BY created_at""").fetchall()
+    return render_status(summary, phones)
 
 
 @app.get("/v1/pipeline/records")
