@@ -5,6 +5,8 @@
 #include <zephyr/kernel.h>
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 extern uint8_t battery_percentage;
+/** @brief True once a battery sample succeeded, so battery_percentage is real (not the boot 0). */
+bool battery_sampled(void);
 #endif
 /**
  * @brief Initialize the BLE transport logic

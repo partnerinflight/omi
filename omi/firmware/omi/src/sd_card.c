@@ -1197,6 +1197,13 @@ bool sd_ring_is_full(void)
     return atomic_get(&ring_full) != 0;
 }
 
+bool sd_ring_is_low(void)
+{
+    /* Same lock-free snapshot as sd_ring_peek_unread; false until the ring is mounted. */
+    uint64_t capacity = ring_state.capacity_packets;
+    return capacity && (capacity - MIN(ring_used_packets(), capacity)) * 10U < capacity;
+}
+
 uint64_t sd_ring_peek_unread(void)
 {
     /* Lock-free snapshot of the worker's in-RAM ring state; good enough for a

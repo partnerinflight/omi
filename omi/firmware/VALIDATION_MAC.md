@@ -689,3 +689,31 @@ reset, SMP reports `ccab436a…` active/confirmed/bootable and GATT reports
 unread packets kept), write_seq advanced from 3907908 to 3909054, zero dropped packets.
 Triple-click, vibration, yellow LED, lecture upload and the hardware items above remain
 on-device checks.
+
+## Low battery and low storage blinks — 2026-10-13 (a separate build also labelled `.20`)
+
+Built from `.19` source in parallel with lecture mode, and replaced by the lecture-mode `.20`
+(app digest `72888d1d…` above) on 2026-10-21. Rebased onto lecture mode as `.21`.
+
+Adds two LED warnings below storage-full and above the clock warning: battery under 10%
+(only after a successful sample, not while charging) blinks red 500 ms on/off, and less than
+10% of the ring free blinks blue 500 ms on/off; low battery wins. The blink phase comes from
+uptime and the main loop polls at 100 ms while either shows. Manual pause, setup and
+transfers keep priority. Includes the unflashed `.19` transfer-LED change.
+
+Tests: 138 receiver/native tests OK (`python -m unittest discover -s tests -t .` in
+`scripts/omi-local`), including `test_led_state_c.py` for both warnings, their priority and
+thresholds, and `sd_ring_is_low`; seven LED and two threshold mutations were each caught.
+NCS 2.9.0 Wi-Fi sysbuild on macOS (native protoc via `OMI_PROTOC`): app 873600 flash /
+428904 RAM bytes. Both OTA images pass MCUboot signature verification.
+ZIP SHA-256: `9550e6a27527da9b5d45738bea1f350782a233e151f3f374181e319faa9ab785`.
+App digest: `72888d1d6eaed985a3a3b02d1d0f3518e1ae13697908377c513f4ba1a0b17fed`.
+Network package digest: `898840906953daa6c6589d2fe86278c51aeb4b71ed71bc41d617e40b9f78ba0d` (not installed).
+
+Installed at the user's request on Oct 13 with `scripts/windows/flash_omi.py` from the Mac,
+application image only over `.18` (`2cd165b5…`). BLE was weak (about -97 to -99 dBm next to
+the Mac): two uploads disconnected at 10% and 30%, the third completed on the device out of its
+dock. SMP reported the staged digest pending in slot 1, then after reset active/confirmed in
+slot 0 (overwrite-only MCUboot: there is no revert). GATT reports `3.0.22-localwifi.20`; clock
+valid, battery 100% / 4237 mV off the dock, ring `[2657818, 2718975)` of 1115064 packets,
+zero dropped, Wi-Fi upload still configured. The blinks themselves are not yet seen on the device.

@@ -470,6 +470,12 @@ static ssize_t battery_diagnostics_read(struct bt_conn *conn,
     k_spin_unlock(&battery_snapshot_lock, key);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &st, sizeof(st));
 }
+
+bool battery_sampled(void)
+{
+    return battery_sample_ms >= 0;
+}
+
 void broadcast_battery_level(struct k_work *work_item);
 
 static int notify_charging_status(struct bt_conn *conn, bool force_notify)

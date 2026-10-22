@@ -32,6 +32,7 @@ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 #define BATTERY_FULL_THRESHOLD_PERCENT 98 // 98%
+#define BATTERY_LOW_THRESHOLD_PERCENT 10
 extern uint8_t battery_percentage;
 #endif
 bool is_connected = false;
@@ -136,8 +137,18 @@ static void boot_ready_sequence(void)
     k_msleep(10);
 }
 
+/* 500 ms on / 500 ms off from uptime, so it holds while the loop polls at 100 ms. */
+static bool fast_blink_on(void)
+{
+    return k_uptime_get_32() % 1000U < 500U;
+}
+
+/* Set while a fast blink shows, so the main loop polls at 100 ms instead of 1 s. */
+static bool led_fast_poll = false;
+
 void set_led_state()
 {
+    led_fast_poll = false;
     // If device is off, turn off all LEDs immediately
     if (is_off) {
         led_off();
@@ -187,6 +198,26 @@ void set_led_state()
         return;
     }
     storage_full_notified = false;
+#endif
+
+    /* Low battery (fast red, not while charging) wins over low storage (fast blue). */
+#ifdef CONFIG_OMI_ENABLE_BATTERY
+    if (!is_charging && battery_sampled() && battery_percentage < BATTERY_LOW_THRESHOLD_PERCENT) {
+        led_fast_poll = true;
+        set_led_green(false);
+        set_led_blue(false);
+        set_led_red(fast_blink_on());
+        return;
+    }
+#endif
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    if (sd_ring_is_low()) {
+        led_fast_poll = true;
+        set_led_green(false);
+        set_led_red(false);
+        set_led_blue(fast_blink_on());
+        return;
+    }
 
     // If RTC not synced, blink red to warn user to set the clock (omi-local time-sync)
     if (!rtc_is_valid()) {
@@ -434,7 +465,7 @@ int main(void)
 #endif
 
         set_led_state();
-        k_msleep(mic_is_manually_paused() ? 100 : 1000);
+        k_msleep(mic_is_manually_paused() || led_fast_poll ? 100 : 1000);
     }
 
     printk("Exiting omi...");

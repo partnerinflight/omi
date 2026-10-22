@@ -29,6 +29,8 @@ bool sd_is_ready(void);
 /** @brief True when the ring holds no free slot: recording is paused (nothing is
  *  overwritten) until the host explicitly deletes recordings. */
 bool sd_ring_is_full(void);
+/** @brief True when less than 10% of the ring is free (in-RAM state, no SD access). */
+bool sd_ring_is_low(void);
 /** @brief Approximate unread packets from the in-RAM ring state (no SD access). */
 uint64_t sd_ring_peek_unread(void);
 

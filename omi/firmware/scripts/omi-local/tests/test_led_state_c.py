@@ -11,7 +11,8 @@ class LedStateTests(unittest.TestCase):
         source = (SRC/'main.c').read_text()
         start = source.index('void set_led_state()')
         handler = source[start:source.index('\n}\n', start)+3]
-        harness = r'''
+        low = next(l for l in source.splitlines() if l.startswith('#define BATTERY_LOW_THRESHOLD_PERCENT'))
+        harness = low + r'''
 #include <stdbool.h>
 #include <stdint.h>
 #include <assert.h>
@@ -27,6 +28,10 @@ static bool red,green,blue;
 static bool manual_pause,pause_flash,lecture;
 static int red_level,green_level;
 static uint8_t battery_percentage;
+static bool sampled=true,low_storage,fast_on,led_fast_poll;
+bool battery_sampled(void){return sampled;}
+bool sd_ring_is_low(void){return low_storage;}
+static bool fast_blink_on(void){return fast_on;}
 static int buzzes;
 void set_led_red(bool v){red=v;red_level=v?100:0;}
 void set_led_green(bool v){green=v;green_level=v?100:0;}
@@ -48,7 +53,7 @@ void play_haptic_milli(int ms){assert(ms==300);buzzes++;}
 ''' + handler + r'''
 int main(void){
  for(int charging=0;charging<2;charging++)for(int connected=0;connected<2;connected++)
- for(int battery=1;battery<=100;battery+=99){
+ for(int battery=10;battery<=100;battery+=90){ // below 10% is the low-battery blink, tested below
   is_charging=charging;is_connected=connected;battery_percentage=battery;
   silent=false;recording=true;red=green=blue=true;set_led_state();
   assert(!red && !green && !blue);
@@ -100,6 +105,53 @@ int main(void){
  /* Leaving lecture mode returns to dark recording; off stays dark. */
  lecture=false;set_led_state();assert(!red && !green && !blue);
  lecture=true;is_off=true;set_led_state();assert(!red && !green && !blue);
+ is_off=false;lecture=false;
+ manual_pause=false;full=false;clock_valid=true;silent=true;battery_percentage=50;
+ // Low battery: 500 ms red blink while not charging; wins over low storage and the clock warning.
+ for(int on=0;on<2;on++){
+  fast_on=on;is_charging=false;battery_percentage=9;low_storage=true;clock_valid=false;
+  set_led_state();assert(red==on && !green && !blue && led_fast_poll);
+  low_storage=false;clock_valid=true;set_led_state();assert(red==on && !green && !blue && led_fast_poll);
+ }
+ is_charging=true;set_led_state();assert(!led_fast_poll);is_charging=false;
+ sampled=false;battery_percentage=0;set_led_state();assert(red && !green && !blue && !led_fast_poll);
+ sampled=true;battery_percentage=10;set_led_state();assert(!led_fast_poll);
+ // Low storage: 500 ms blue blink; storage full, pause and transfers keep their priority.
+ for(int on=0;on<2;on++){
+  fast_on=on;low_storage=true;set_led_state();assert(blue==on && !red && !green && led_fast_poll);
+ }
+ full=true;blink_toggle=true;set_led_state();assert(!led_fast_poll && red && !blue);full=false;
+ manual_pause=true;battery_percentage=5;pause_flash=false;set_led_state();assert(!red && !blue && !led_fast_poll);manual_pause=false;
+ upload=true;set_led_state();assert(green && !led_fast_poll);upload=false;
+ low_storage=false;battery_percentage=50;set_led_state();assert(red && !green && !blue && !led_fast_poll);
+ return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'test.c').write_text(harness)
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([str(root/'test')],check=True)
+
+    def test_storage_low_below_ten_percent_free(self):
+        source = (SRC/'sd_card.c').read_text()
+        start = source.index('bool sd_ring_is_low(void)')
+        harness = r'''
+#include <stdbool.h>
+#include <stdint.h>
+#include <assert.h>
+#define MIN(a,b) ((a)<(b)?(a):(b))
+static struct { uint32_t capacity_packets; } ring_state;
+static uint64_t used;
+static uint64_t ring_used_packets(void){return used;}
+''' + source[start:source.index('\n}\n', start)+3] + r'''
+int main(void){
+ assert(!sd_ring_is_low()); // not mounted yet
+ ring_state.capacity_packets=1000;
+ used=900;assert(!sd_ring_is_low()); // exactly 10% free
+ used=901;assert(sd_ring_is_low());
+ used=1000;assert(sd_ring_is_low());
+ used=1200;assert(sd_ring_is_low()); // a partial batch past capacity never wraps
+ used=0;assert(!sd_ring_is_low());
  return 0;
 }
 '''

@@ -33,7 +33,9 @@ Native VOX tests and receiver tests cover the 30-second timer, marker ordering,
 resume across upload sessions, and closing audio durably before acknowledging.
 
 Normal recording uses no LEDs; acoustic sleep uses solid red; lecture mode uses dim solid yellow (`CONFIG_OMI_LECTURE_LED_PWM`). Preserve the
-higher-priority setup/upload/storage/clock warnings. `test_led_state_c.py`
+higher-priority setup/upload/storage/clock warnings. Below storage-full: battery
+under 10% (sampled, not charging) blinks red and under 10% ring free blinks blue,
+both 500 ms on/off from uptime while the main loop polls at 100 ms. `test_led_state_c.py`
 executes the production selector across charging, connection and warning states.
 
 Every button gesture is hold-then-release (`button_hold.h`): release at 3–5 s toggles

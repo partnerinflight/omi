@@ -74,7 +74,10 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   Firmware `.19` restores setup/active-transfer priority over manual pause and
   includes BLE storage transfers in the solid-green/blinking-blue indication.
   Paused red blinking returns when the transfer ends; the microphone stays paused.
-  This change is prepared, not yet deployed.
+  `.21` adds two warnings below storage-full and above the clock warning: battery
+  under 10% while not charging blinks red 500 ms on/off, and under 10% of the ring
+  free blinks blue 500 ms on/off (battery wins when both apply). Manual pause,
+  setup and transfers keep priority over both.
 - Button, built `.15`: release at 10–15 s (2 pulses at 10 s) powers off; release at
   20 s or more (3 pulses at 20 s) enters setup (Wi-Fi build only; BLE-only has no
   setup). Short clicks and 5–10 s / 15–20 s releases do nothing.
