@@ -194,7 +194,8 @@ local mailbox. It cannot read the pairing key or stop the service.
   Resolve that conflict before retrying; the service never overwrites it.
 - **Shadow export to the mobile server** (`bridge_url`, off by default). When set,
   the service sends completed conversations (only published windows, excerpts up to
-  4000 characters), router extractions, people and speaker assignments to the
+  4000 characters, shortened evenly when a long conversation would exceed the server's
+  64 kB record limit), router extractions, people and speaker assignments to the
   selfhosted server over outbound HTTPS every `bridge_seconds` (60). It also fetches
   speaker and clarification changes made on the phone and applies them like tray
   changes (`docs/speakers.md`), and uploads review clips of speakers still waiting for

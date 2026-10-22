@@ -28,6 +28,7 @@ from .speaker_audio import useful_clip
 
 BATCH = 100
 EXCERPT_CHARS = 4000  # minimal evidence; the vault note keeps the full transcript
+MAX_RECORD_BYTES = 64_000  # the server rejects a whole batch holding a larger record (server/sb_server/app.py)
 TIMEOUT_SECONDS = 30
 try:
     _VERSION = metadata.version("second-brain-local")
@@ -116,19 +117,30 @@ class Bridge:
             kind = job_kind(metadata)
             if kind == "lecture":
                 continue  # lectures stay in the vault's lectures folder only
-            windows = [{
-                "id": w["id"], "start": w["start"], "end": w["end"],
-                "excerpt": w["final_transcript"].strip()[:EXCERPT_CHARS],
-                "conversation_type": w.get("memory_gate", {}).get("conversation_type"),
-                "speakers": w.get("speaker_identities", {}),
-            } for w in published_windows(manifest, kind)]
-            out.append((f"job:{job_id}", "source", job_id, {
-                "kind": kind,
-                "recorded_at": metadata.get("first_utc"),
-                "source_sha256": job["sha256"],
-                "window_count": len(manifest["windows"]),
-                "windows": windows,
-            }))
+            published = published_windows(manifest, kind)
+
+            def record(chars: int) -> dict:
+                return {
+                    "kind": kind,
+                    "recorded_at": metadata.get("first_utc"),
+                    "source_sha256": job["sha256"],
+                    "window_count": len(manifest["windows"]),
+                    "windows": [{
+                        "id": w["id"], "start": w["start"], "end": w["end"],
+                        "excerpt": w["final_transcript"].strip()[:chars],
+                        "conversation_type": w.get("memory_gate", {}).get("conversation_type"),
+                        "speakers": w.get("speaker_identities", {}),
+                    } for w in published],
+                }
+
+            # A long conversation shortens every excerpt evenly rather than lose windows; records
+            # under the limit are unchanged, so their hashes (and the server's copies) stay put.
+            chars = EXCERPT_CHARS
+            data = record(chars)
+            while chars and len(json.dumps(data)) > MAX_RECORD_BYTES:
+                chars = chars * 3 // 4
+                data = record(chars)
+            out.append((f"job:{job_id}", "source", job_id, data))
         return out
 
     def items(self, jobs: dict, done: set) -> list[tuple]:

@@ -21,6 +21,7 @@ from second_brain.router_markers import marker
 from second_brain.speakers import Speakers
 
 TOKEN = "producer-token"
+MAX_RECORD_BYTES = 64_000  # server/sb_server/app.py
 
 
 class FakeServer(ThreadingHTTPServer):
@@ -76,6 +77,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed():
             return
         body = json.loads(self.body())
+        # The real server validates the whole batch first: one oversized record rejects all of it.
+        if any(r.get("data") is not None and len(json.dumps(r["data"])) > MAX_RECORD_BYTES
+               for r in body.get("records", [])):
+            return self.reply(422, {"detail": "record too large"})
         if self.path.endswith("/result"):
             command = self.path.split("/")[-2]
             s.results.setdefault(command, body)  # the first result stands, as on the real server
@@ -159,6 +164,19 @@ class BridgeTests(unittest.TestCase):
         # Replay: nothing new, only the heartbeat.
         self.bridge.tick()
         self.assertEqual(self.server.requests[-1]["records"], [])
+
+    def test_long_conversation_shrinks_excerpts_to_fit_the_server_limit(self):
+        # Many kept windows of non-ASCII speech: 4000-character excerpts would far exceed the
+        # limit once json.dumps escapes them, and the server would reject every batch with it.
+        windows = [{"id": f"w{n}", "start": n * 30, "end": n * 30 + 30, "final_transcript": "Grüße, ça va? " * 400,
+                    "memory_keep": True, "route_to_knowledge_router": True} for n in range(40)]
+        write_json(self.data / "jobs" / self.job / "publication-manifest.json", {"windows": windows})
+        self.bridge.tick()
+        source = next(r["data"] for r in self.sent() if r["kind"] == "source")
+        self.assertLessEqual(len(json.dumps(source)), MAX_RECORD_BYTES)
+        self.assertEqual([w["id"] for w in source["windows"]], [f"w{n}" for n in range(40)])
+        self.assertTrue(all(w["excerpt"] and "Grüße, ça va?".startswith(w["excerpt"][:13]) for w in source["windows"]))
+        self.assertTrue(any(r["kind"] == "item" for r in self.sent()))  # the rest of the batch got through
 
     def test_outage_and_lost_response_resend_identically(self):
         self.server.mode = "down"
