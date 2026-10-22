@@ -4,9 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 from pathlib import Path
-from .io import utc_from_ms
+from .io import temp_beside, utc_from_ms
 
 
 class NoteConflict(RuntimeError):
@@ -37,7 +36,7 @@ def _write_note(path: Path, dest: Path, content: bytes) -> None:
         return
     # Publication is atomic; a durable per-job manifest makes retries deterministic.
     dest.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=dest, suffix=".tmp")
+    fd, temporary = temp_beside(path)
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(content)

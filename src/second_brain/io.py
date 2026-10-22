@@ -4,14 +4,22 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import tempfile
+import secrets
 import time
 from pathlib import Path
 
 
+def temp_beside(path: Path) -> tuple[int, str]:
+    """A new private temp file next to path. Not tempfile.mkstemp: on Windows it treats
+    PermissionError as a name clash and retries up to os.TMP_MAX (2**31 - 1) times, so a folder
+    the service account may not write hung the caller silently instead of raising."""
+    name = str(path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp"))
+    return os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600), name
+
+
 def atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    fd, name = temp_beside(path)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)

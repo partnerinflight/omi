@@ -516,6 +516,13 @@ Application Event Log. Use installed Python `-m second_brain.cli` with `check`,
   ambiguous). Never measured on Omi chest-mic audio. Windows refined by VibeVoice 7B keep
   VibeVoice's window-local labels. Calls with more than 8 people can still show one person under
   two labels. The Windows CPU build of NeMo-Speech.cpp was not run before release.
+- Bridge hang, fixed (2026-10-22): after the todo cutover the Windows service stopped
+  reporting with no error. The installer granted the service account write access to
+  Conversations, Meetings, Lectures and the router folders but not `ToDos\` or `Mobile\`, and
+  `tempfile.mkstemp` on Windows retries a denied create up to `os.TMP_MAX` (2**31 - 1) times
+  instead of raising. Temp files are now created once (`io.temp_beside`, also used by vault
+  publication, the installer config merge and the receiver state); a denied write raises and
+  shows as the bridge error. The installer grants both folders (`tests/test_io.py`).
 - Omi/meeting dedupe, known limits (2026-10-07): a meeting uploaded after its overlapping Omi
   recording was already processed leaves two notes; nothing reconciles them (owner accepted).
   Decisions are per ASR segment: a segment mixing meeting and room speech is kept or dropped

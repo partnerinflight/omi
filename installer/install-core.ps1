@@ -122,7 +122,9 @@ try {
     New-Item -ItemType Directory -Force $lecturesPath | Out-Null
     Run icacls.exe @($lecturesPath, '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
     # The knowledge router appends under "## Router Inbox" in these folders (router_enabled).
-    foreach ($folder in @('People', 'Projects', 'Topics', 'Decisions', 'Ideas', 'Daily', 'System\Router')) {
+    # The server bridge writes ToDos\Tasks.md after the todo cutover and Mobile\ notes for saved
+    # memories (bridge.py project_todos / project); without these it cannot publish either.
+    foreach ($folder in @('People', 'Projects', 'Topics', 'Decisions', 'Ideas', 'Daily', 'System\Router', 'ToDos', 'Mobile')) {
         New-Item -ItemType Directory -Force "$Vault\$folder" | Out-Null
         Run icacls.exe @("$Vault\$folder", '/grant', "${principal}:(OI)(CI)M", '/T', '/Q')
     }

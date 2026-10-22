@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
+import secrets
 import threading
 import time
 
@@ -33,7 +33,10 @@ def _replace(source, target):
 
 def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+    # Not tempfile.mkstemp: on Windows it retries a denied create up to os.TMP_MAX (2**31 - 1)
+    # times instead of raising (see second_brain.io.temp_beside).
+    name = str(path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp"))
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             json.dump(value, file, indent=2, sort_keys=True)

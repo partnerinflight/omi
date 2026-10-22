@@ -10,10 +10,10 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 from .config import Config
+from .io import temp_beside
 
 
 def merge_service_config(existing, managed, defaults):
@@ -36,7 +36,7 @@ def main(argv=None):
             return 2
     merged = merge_service_config(existing, installer["managed"], installer.get("defaults", {}))
     args.target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=args.target.parent, prefix=args.target.name + ".", suffix=".tmp")
+    fd, temporary = temp_beside(args.target)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out:
             json.dump(merged, out, indent=2)
