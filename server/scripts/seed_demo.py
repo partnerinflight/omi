@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 import wave
@@ -219,17 +220,24 @@ def main():
     print(f"seeded: {result['accepted']} records, {len(TODOS)} todos, clips for {len(observations)} speakers")
     while args.follow:
         time.sleep(5)
-        commands = call(args.url, t["producer"], "GET", "/v1/worker/commands")["commands"]
-        for c in commands:
-            ok = True
-            try:
-                apply(c, people, observations)
-            except KeyError:
-                ok = False
-            call(args.url, t["producer"], "POST", f"/v1/worker/commands/{c['id']}/result",
-                 {"ok": ok, **({} if ok else {"error": "unknown target"})})
-            print(f"applied {c['payload']['action']}" if ok else f"failed {c['payload']['action']}")
-        call(args.url, t["producer"], "POST", "/v1/worker/events", {"records": records(people, observations), "status": status(0)})
+        try:
+            follow_once(args.url, t, people, observations)
+        except (OSError, urllib.error.URLError) as e:  # server restarting or busy: try again next tick
+            print(f"retrying: {e}")
+
+
+def follow_once(url, t, people, observations):
+    commands = call(url, t["producer"], "GET", "/v1/worker/commands")["commands"]
+    for c in commands:
+        ok = True
+        try:
+            apply(c, people, observations)
+        except KeyError:
+            ok = False
+        call(url, t["producer"], "POST", f"/v1/worker/commands/{c['id']}/result",
+             {"ok": ok, **({} if ok else {"error": "unknown target"})})
+        print(f"applied {c['payload']['action']}" if ok else f"failed {c['payload']['action']}")
+    call(url, t["producer"], "POST", "/v1/worker/events", {"records": records(people, observations), "status": status(0)})
 
 
 if __name__ == "__main__":
