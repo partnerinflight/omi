@@ -36,14 +36,19 @@ def managed(title, item):
 class FakeHermes:
     """Answers each router prompt; records which prompts were sent."""
 
-    def __init__(self, extraction, collapse=None, verdicts=None):
-        self.extraction, self.collapse, self.verdicts, self.calls = extraction, collapse, verdicts, []
+    def __init__(self, extraction, collapse=None, verdicts=None, tasks=None):
+        self.extraction, self.collapse, self.verdicts, self.tasks, self.calls = extraction, collapse, verdicts, tasks, []
+        self.task_payload = None
 
     def __call__(self, cfg, system, user):
         if system is r.EXTRACT_PROMPT:
             self.calls.append("extract")
             return self.extraction
         payload = json.loads(user)
+        if system is r.TASK_PROMPT:
+            self.calls.append("tasks")
+            self.task_payload = payload
+            return self.tasks or {"items": [dict(index=c["index"], action="new", reason="new") for c in payload["candidates"]]}
         if system is r.COLLAPSE_PROMPT:
             self.calls.append("collapse")
             return self.collapse or {"items": [dict(index=c["index"], action="keep", reason="keep")
@@ -95,6 +100,44 @@ class RouteTests(unittest.TestCase):
         self.assertTrue(text.startswith(note), "existing content, including human prose, is untouched")
         self.assertIn("[REFINEMENT of fact: Speech runs on the Threadripper.] Speech runs on the Threadripper's GPU.", text)
         self.assertIn("[CONFLICTS with fact: Speech runs on the Threadripper.] Speech runs on the Raspberry Pi.", text)
+
+    def test_task_already_on_the_list_is_not_routed_again(self):
+        todos = ("# ToDos\n\n## Tasks\n- [ ] Schedule therapy for Ethan. (owner: Eugene) %% router:aaaaaaaaaaaaaaaa %%\n"
+                 "\n## Completed\n- [x] Book the dentist %% router:bbbbbbbbbbbbbbbb %%\n")
+        hermes = FakeHermes(
+            {"tasks": [dict(text="Find a therapist if Ethan's mother does not already have one ready.", owner="Eugene", due=None, confidence=0.9),
+                       dict(text="Book the dentist", owner="Eugene", due=None, confidence=0.9),
+                       dict(text="Call the clinic about Ethan's intake", owner="Eugene", due=None, confidence=0.9),
+                       dict(text="Ring the clinic about Ethan's intake form", owner="Eugene", due=None, confidence=0.9)]},
+            tasks={"items": [dict(index=0, action="duplicate", existing_index=0, candidate_index=None, reason="same"),
+                             dict(index=1, action="new", existing_index=None, candidate_index=None, reason="recurs"),
+                             dict(index=2, action="new", existing_index=None, candidate_index=None, reason="new"),
+                             dict(index=3, action="duplicate", existing_index=None, candidate_index=2, reason="same")]})
+        counts = self.route(hermes, {"ToDos/Tasks.md": todos})
+        # Only open todos are compared: a done task that comes up again is a new commitment.
+        self.assertEqual([t["text"] for t in hermes.task_payload["existing_tasks"]], ["Schedule therapy for Ethan. (owner: Eugene)"])
+        inbox = (self.vault / "Projects/_Tasks.md").read_text(encoding="utf-8")
+        self.assertNotIn("Find a therapist", inbox)
+        self.assertNotIn("Ring the clinic", inbox)
+        self.assertIn("Book the dentist", inbox)
+        self.assertIn("Call the clinic about Ethan's intake", inbox)
+        self.assertEqual((counts["tasks"], counts["task_duplicates"]), (2, 2))
+        ledger = json.loads(next((self.vault / "System/Router/Ledger").glob("*.json")).read_text(encoding="utf-8"))
+        self.assertEqual([v["action"] for v in ledger["reconciliation"]["tasks"]["results"]], ["duplicate", "new", "new", "duplicate"])
+
+        # A task routed earlier but not promoted to the list yet is compared too.
+        hermes = FakeHermes({"tasks": [dict(text="Phone the clinic re Ethan's intake", owner=None, due=None, confidence=0.9)]})
+        self.route(hermes, text="later source", source="job-w0001")
+        self.assertIn("Call the clinic about Ethan's intake (owner: Eugene)", [t["text"] for t in hermes.task_payload["existing_tasks"]])
+
+    def test_malformed_task_verdicts_keep_every_task(self):
+        todos = "# ToDos\n\n## Tasks\n- [ ] Schedule therapy for Ethan. %% router:aaaaaaaaaaaaaaaa %%\n"
+        hermes = FakeHermes({"tasks": [dict(text="Renew the passport", owner=None, due=None, confidence=0.9),
+                                       dict(text="Pay the water bill", owner=None, due=None, confidence=0.9)]},
+                            tasks={"items": [dict(index=0, action="duplicate", existing_index=7, candidate_index=None),
+                                             dict(index=1, action="duplicate", existing_index=None, candidate_index=1)]})
+        counts = self.route(hermes, {"ToDos/Tasks.md": todos})
+        self.assertEqual((counts["tasks"], counts["task_duplicates"]), (2, 0))
 
     def test_new_knowledge_lands_in_its_notes_with_a_ledger(self):
         hermes = FakeHermes({

@@ -315,10 +315,16 @@ Implementation: `hermes_score()` in [pipeline.py](src/second_brain/adaptive/pipe
   published window is queued in `data/router.sqlite3` and a separate service
   loop sends its named transcript to Hermes: extract facts/decisions/tasks/
   ideas/daily events, collapse duplicates within the batch, then reconcile
-  against all router-written items (new/duplicate/refinement/conflict). Items
+  against all router-written items (new/duplicate/refinement/conflict). Tasks
+  get their own check (since 2026-10-22; before, every extracted task was
+  written): one call compares them with the open todos in `ToDos/Tasks.md`, routed
+  tasks not yet on that list, and earlier tasks from the same conversation, and
+  drops duplicates, including a step the other task already covers. Done todos
+  are not compared, so a recurring task is new again; a malformed reply keeps
+  every task. Items
   are appended under `## Router Inbox` in People/Projects/Topics/Decisions/
   Ideas/Daily (curated prose is never rewritten), with a ledger and audit JSON
-  in `System/Router`. Up to 3 Hermes calls per window (`router_timeout_seconds`,
+  in `System/Router`. Up to 4 Hermes calls per window (`router_timeout_seconds`,
   default 180). Failures back off (1 min ×4 per attempt, ≤6 h) and stop after 6
   attempts; `second-brain retry` requeues them. A routed source is skipped by
   its ledger, so replays cost no calls. Transcription never waits for routing.

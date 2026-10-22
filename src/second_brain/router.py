@@ -168,6 +168,36 @@ Rules:
 - Do not infer beyond supplied text.
 """
 
+TASK_PROMPT = """You deduplicate new task candidates for one person's todo list.
+
+existing_tasks are open todos and tasks already routed but not yet on the list. candidates come
+from one new conversation, in order.
+
+Return ONLY:
+{
+  "items": [
+    {
+      "index": 0,
+      "action": "new" | "duplicate",
+      "existing_index": 0 | null,
+      "candidate_index": 0 | null,
+      "reason": "brief explanation"
+    }
+  ]
+}
+
+Rules:
+- Return exactly one item per candidate.
+- duplicate: the same commitment as an existing task or an earlier candidate, worded differently,
+  or a step the person would not track separately because finishing the other task does it.
+  Example: existing "Schedule therapy for Ethan"; candidate "Find a therapist for Ethan if his
+  mother does not already have one" => duplicate (existing_index 0).
+- Point a duplicate at exactly one of existing_index or candidate_index (an earlier candidate).
+- new: a different person, object, place or deadline, or a separate commitment that is only
+  related. When unsure, answer new: a missing task is worse than a repeated one.
+- Do not infer beyond supplied text.
+"""
+
 
 # --- Hermes -----------------------------------------------------------------------------------
 
@@ -322,6 +352,39 @@ def read_managed_items(path: Path) -> list[str]:
     return items
 
 
+def existing_tasks(vault: Path) -> list[str]:
+    """Open todos (ToDos/Tasks.md, whoever owns it) plus routed tasks not yet promoted there.
+    Done and dismissed todos are left out, so a task that recurs after completion is new again."""
+    todo_file = vault / "ToDos" / "Tasks.md"
+    todos = todo_file.read_text(encoding="utf-8") if todo_file.exists() else ""
+    listed = set(MARKER.findall(todos))
+    out = [MARKER.sub("", m.group(1)).strip() for m in re.finditer(r"^\s*- \[ \] (.+)$", todos, re.M)]
+    inbox = vault / "Projects" / "_Tasks.md"
+    if inbox.exists() and MANAGED_HEADER in (text := inbox.read_text(encoding="utf-8")):
+        for line in text.split(MANAGED_HEADER, 1)[1].splitlines():
+            if line.startswith("- ") and not set(MARKER.findall(line)) & listed:
+                out.append(MARKER.sub("", line[2:]).strip())
+    return [t for t in out if t]
+
+
+def normalize_tasks(raw: dict, count: int, existing: int) -> list[dict]:
+    by_index = {x.get("index"): x for x in _items(raw, "items") if isinstance(x.get("index"), int)}
+    out, kept = [], set()
+    for i in range(count):
+        item = by_index.get(i) or {}
+        e, c = item.get("existing_index"), item.get("candidate_index")
+        if item.get("action") == "duplicate" and isinstance(e, int) and 0 <= e < existing and c is None:
+            out.append(dict(index=i, action="duplicate", existing_index=e, candidate_index=None, reason=str(item.get("reason", ""))))
+            continue
+        if item.get("action") == "duplicate" and isinstance(c, int) and c in kept and e is None:
+            out.append(dict(index=i, action="duplicate", existing_index=None, candidate_index=c, reason=str(item.get("reason", ""))))
+            continue
+        kept.add(i)  # anything malformed stays: losing a task is worse than repeating one
+        out.append(dict(index=i, action="new", existing_index=None, candidate_index=None,
+                        reason=str(item.get("reason", "")) if item.get("action") == "new" else "Missing or invalid match; kept."))
+    return out
+
+
 def existing_knowledge(vault: Path, decision_files: int = 90) -> list[dict]:
     items = []
     for entity_type, folder in ENTITY_FOLDERS.items():
@@ -438,7 +501,19 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, c
 
     day = safe_name(observed_at[:10])
     counts["tasks"] = 0
-    for t in extraction["tasks"]:
+    tasks, open_tasks = extraction["tasks"], existing_tasks(vault)
+    if tasks and (open_tasks or len(tasks) > 1):
+        raw = chat(cfg, TASK_PROMPT, json.dumps({"existing_tasks": [dict(index=i, text=t) for i, t in enumerate(open_tasks)],
+                                                 "candidates": [dict(index=i, text=t["text"]) for i, t in enumerate(tasks)]},
+                                                ensure_ascii=False, indent=2))
+        task_verdicts = normalize_tasks(raw, len(tasks), len(open_tasks))
+    else:
+        task_verdicts = [dict(index=i, action="new", existing_index=None, candidate_index=None, reason="nothing to compare")
+                         for i in range(len(tasks))]
+    counts["task_duplicates"] = sum(v["action"] == "duplicate" for v in task_verdicts)
+    for t, verdict in zip(tasks, task_verdicts):
+        if verdict["action"] == "duplicate":
+            continue
         meta = []
         if t["owner"]:
             meta.append(f"owner: {t['owner']}")
@@ -455,7 +530,8 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, c
                                       event_id(shash, "daily", day, t), t) for t in extraction["daily_summary"])
 
     reconciliation = {"batch_collapse": {"candidates": candidates, "results": collapse},
-                      "global": {"existing_items": existing, "surviving_candidates": surviving, "results": verdicts}}
+                      "global": {"existing_items": existing, "surviving_candidates": surviving, "results": verdicts},
+                      "tasks": {"existing_tasks": open_tasks, "results": task_verdicts}}
     write_json(vault / "System" / "Router" / "Reconciliation" / f"{shash}.json", reconciliation)
     # The ledger is written last: a crash before it replays the source, and markers dedupe items.
     write_json(ledger_path(vault, shash), dict(
