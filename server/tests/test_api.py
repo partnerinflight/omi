@@ -204,6 +204,24 @@ class Api(unittest.TestCase):
             self.assertIn("1 export conflicts", page.text)
         self.cli("revoke-producer", "<b>status-pc</b>")
 
+    def test_browser_pairing_needs_login_and_same_origin_and_its_code_pairs(self):
+        login = {"X-Forwarded-User": "owner@example.com"}
+        origin = {"Origin": "https://" + self.base.removeprefix("http://")}
+        form = {"Content-Type": "application/x-www-form-urlencoded"}
+        self.assertEqual(self.http("POST", "/pair", headers={**origin, **form}, content="name=Pixel").status_code, 401)
+        for bad in ({"Origin": "https://evil.example"}, {}):
+            self.assertEqual(self.http("POST", "/pair", headers={**login, **bad, **form}, content="name=Pixel").status_code, 403)
+        self.assertEqual(self.http("POST", "/pair", headers={**login, **origin, **form}, content="name=%3Cb%3E").status_code, 422)
+        page = self.http("POST", "/pair", headers={**login, **origin, **form}, content="name=My+Pixel")
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("<svg", page.text)
+        code = page.text.split('class="code">')[1].split("<")[0]
+        paired = self.http("POST", "/v1/pair", json={"code": code})
+        self.assertEqual(paired.status_code, 200)
+        self.assertIn("My Pixel", self.cli("devices"))
+        self.assertEqual(self.http("POST", "/v1/pair", json={"code": code}).status_code, 401)  # single use
+
     def test_invalid_worker_records_are_rejected(self):
         producer = self.cli("add-producer", "validation-pc").strip()
         for record in [{"kind": "todo", "id": "x", "hash": "h", "data": {}},

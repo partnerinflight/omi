@@ -36,10 +36,8 @@ def main():
     if args.command == "migrate":
         print("applied:", ", ".join(migrate()) or "nothing")
     elif args.command == "pair":
-        code = auth.new_pairing_code()
         with connect() as conn:
-            conn.execute("INSERT INTO pairing_codes (code_hash, device_name, expires_at) VALUES (%s, %s, now() + %s)",
-                         (auth.digest(code), args.device_name, auth.PAIRING_TTL))
+            code = auth.create_pairing_code(conn, args.device_name)
         print(f"{code}  (valid {int(auth.PAIRING_TTL.total_seconds() // 60)} minutes, single use)")
     elif args.command == "add-producer":
         token = secrets.token_urlsafe(32)

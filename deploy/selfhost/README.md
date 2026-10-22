@@ -65,8 +65,10 @@ there is no volume.
    `./ha compose --profile apps start secondbrain`. The compose files list the networks,
    so the next routine recreate matches. The container migrates on start. Check `https://brain.<domain>/v1/health` from the phone on cellular,
    not just from the LAN.
-5. Pair a phone: `./ha compose exec secondbrain python -m sb_server pair "My iPhone"`, then
-   enter the code in the app within 10 minutes. `sb_server devices` lists every phone,
+5. Pair a phone: on `https://brain.<domain>/status` press **Pair a phone** and point the iPhone
+   camera at the QR code; the app opens on Status with server and code filled in, then tap
+   **Pair This iPhone** within 10 minutes. Without a browser:
+   `./ha compose exec secondbrain python -m sb_server pair "My iPhone"` and type the code. `sb_server devices` lists every phone,
    integration and Windows worker; `sb_server revoke-device NAME_OR_ID` cuts a phone or
    integration off immediately; `revoke-producer NAME` does the same for Windows.
 6. Before exposing it, confirm on the host:

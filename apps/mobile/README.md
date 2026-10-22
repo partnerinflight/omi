@@ -58,7 +58,7 @@ docs/mobile/implementation-plan.md, milestone 6.
 
 - [ ] Airplane mode: add, complete, reopen, dismiss todos; force-quit; relaunch; all persist and show Queued
 - [ ] Clip plays with ringer switch on silent; pauses on incoming call/Siri; resumes by tap; unplugging headphones pauses
-- [ ] Pair with a code from `python -m sb_server pair`; tokens survive relaunch; sign out clears them
+- [ ] Pair by scanning the QR from the server's Pair a Phone page (Camera opens the app prefilled) and with a typed code from `python -m sb_server pair`; tokens survive relaunch; sign out clears them
 - [ ] VoiceOver reads headers, checkbox state, Queued count; all buttons reachable
 - [ ] Largest Dynamic Type size: no clipped text; dark mode legible
 - [ ] `npx expo run:android` builds (Android path feasibility)

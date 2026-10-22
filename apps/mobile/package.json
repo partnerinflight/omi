@@ -33,7 +33,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "node --experimental-strip-types --no-warnings tests/db.test.ts",
+    "test": "node --experimental-strip-types --no-warnings tests/db.test.ts && node --experimental-strip-types --no-warnings tests/pairLink.test.ts",
     "typecheck": "tsc --noEmit",
     "test:sync": "node --experimental-strip-types --no-warnings tests/sync.test.ts",
     "test:restore": "node --experimental-strip-types --no-warnings tests/restore.test.ts"

@@ -26,6 +26,7 @@ SB_DATABASE_URL=postgresql://... PYTHONPATH=. uv run python scripts/seed_demo.py
 | `POST /v1/worker/events` | producer token only; ≤100 `source`/`item`/`person`/`observation` records, deduplicated by id and hash; `data: null` is a tombstone; also records worker freshness |
 | `GET /v1/pipeline`, `GET /v1/pipeline/records?kind=` | device token only; worker freshness, counts and latest records with their hash |
 | `GET /`, `GET /status` | owner's HTML status page; requires `X-Forwarded-User`, set by Traefik's Google forward auth on every non-`/v1/` path |
+| `POST /pair` | form from the status page (`name`); same login plus a same-origin `Origin`; returns a single-use code and a QR of `secondbrain://pair?server=…&code=…` (`no-store`) |
 | `POST /v1/operations` with `entity_type: "command"` | speaker/clarification change (`assign`, `clear`, `discard`, `rename`, `forget`, `clarify`, `clarify_dismiss`); saved as `pending_worker`, outcome arrives via `/v1/changes` |
 | `GET /v1/worker/commands`, `POST /v1/worker/commands/{id}/result` | producer token; pending commands in order; first result stands |
 | `PUT /v1/worker/clips/{observation}/{n}` | producer token; WAV ≤ 2 MB with `X-Content-SHA256`; mismatched uploads are not stored |
