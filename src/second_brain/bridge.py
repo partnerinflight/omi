@@ -13,6 +13,7 @@ a long outage replays exactly what is missing. The server deduplicates by id and
 from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
+from importlib import metadata
 import json
 from pathlib import Path
 import sqlite3
@@ -28,6 +29,12 @@ from .speaker_audio import useful_clip
 BATCH = 100
 EXCERPT_CHARS = 4000  # minimal evidence; the vault note keeps the full transcript
 TIMEOUT_SECONDS = 30
+try:
+    _VERSION = metadata.version("second-brain-local")
+except metadata.PackageNotFoundError:
+    _VERSION = "dev"
+# Cloudflare's browser integrity check rejects urllib's default "Python-urllib/x.y" with 403 (1010).
+USER_AGENT = f"SecondBrain-Bridge/{_VERSION}"
 MAX_CLIP_BYTES = 2_000_000  # matches the server limit
 STALE = "Changed on Windows since you loaded it; refresh and try again."
 
@@ -205,7 +212,7 @@ class Bridge:
         if value is not None:
             body, headers = json.dumps(value).encode(), {"Content-Type": "application/json"}
         request = urllib.request.Request(self.url + path, data=body, method=method, headers={
-            "Authorization": f"Bearer {self.token}", **(headers or {})})
+            "Authorization": f"Bearer {self.token}", "User-Agent": USER_AGENT, **(headers or {})})
         try:
             with self.opener(request, timeout=TIMEOUT_SECONDS) as response:
                 raw = response.read()

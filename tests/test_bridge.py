@@ -44,6 +44,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def allowed(self):
         s = self.server
+        # Cloudflare's browser integrity check answers 403 (error 1010) to urllib's default agent.
+        if self.headers["User-Agent"].startswith("Python-urllib"):
+            self.reply(403)
+            return False
         if s.mode == "down" or self.headers["Authorization"] != f"Bearer {TOKEN}":
             self.reply(503 if s.mode == "down" else 401)
             return False
