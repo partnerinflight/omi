@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 import re
 from datetime import date
+from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
@@ -16,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 from . import auth
 from .limits import BodyLimit
 from .db import pool
-from .status_page import render_status
+from .status_page import render_pairing, render_status
 
 # No interactive docs or schema on the public host.
 app = FastAPI(title="Second Brain", version="1", docs_url=None, redoc_url=None, openapi_url=None)
@@ -518,6 +519,29 @@ def status_page(conn: Db, x_forwarded_user: Annotated[str | None, Header()] = No
     summary = pipeline_summary(conn)
     phones = conn.execute("""SELECT name, created_at FROM devices WHERE revoked_at IS NULL ORDER BY created_at""").fetchall()
     return render_status(summary, phones)
+
+
+HOST = re.compile(r"[a-z0-9.-]+(:[0-9]+)?")
+PHONE_NAME = re.compile(r"[^\x00-\x1f\x7f<>]{1,40}")
+
+
+@app.post("/pair", response_class=HTMLResponse)
+async def pair_page(request: Request, conn: Db, x_forwarded_user: Annotated[str | None, Header()] = None):
+    """Browser pairing: a single-use code and a QR deep link for the phone's camera. Behind the same
+    forward auth as /status; the Origin check stops another site from minting codes in the owner's
+    browser (it could never read them, but they would clutter the pairing table)."""
+    if not x_forwarded_user:
+        raise HTTPException(401, "browser_login_required")
+    host = request.headers.get("host", "").lower()
+    if not HOST.fullmatch(host) or request.headers.get("origin") != f"https://{host}":
+        raise HTTPException(403, "cross_site")
+    name = (parse_qs((await request.body()).decode("utf-8", "replace")).get("name") or ["iPhone"])[0].strip()
+    if not PHONE_NAME.fullmatch(name):
+        raise HTTPException(422, "invalid_name")
+    # ponytail: sync DB call inside an async route, as in worker_clip; one owner pairing a phone.
+    code = auth.create_pairing_code(conn, name)
+    return HTMLResponse(render_pairing(f"https://{host}", code, name, int(auth.PAIRING_TTL.total_seconds() // 60)),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/v1/pipeline/records")

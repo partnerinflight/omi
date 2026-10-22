@@ -2,6 +2,9 @@
 names only, never content. Served behind Traefik's Google forward auth (see app.status_page)."""
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import urlencode
+
+import segno
 
 STALE_SECONDS = 300  # the Windows bridge reports every 60 s by default
 
@@ -15,6 +18,10 @@ body { background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, sy
 h1 { font-size: 22px; } h2 { font-size: 13px; text-transform: uppercase; color: var(--muted); margin-top: 24px; }
 section { background: var(--card); border-radius: 12px; padding: 12px 16px; margin-bottom: 8px; }
 .ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+input, button { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--muted); }
+button { background: var(--fg); color: var(--bg); border: 0; }
+.qr { background: #fff; display: inline-block; padding: 12px; border-radius: 12px; }
+.code { font: 600 24px ui-monospace, monospace; letter-spacing: 2px; }
 """
 
 
@@ -57,4 +64,24 @@ def render_status(summary: dict, phones: list[dict], now: datetime | None = None
 <h2>Synced records</h2><section>{records}</section>
 <h2>Speaker commands</h2><section>{f'<span class="bad">oldest waiting for Windows since {waiting}</span>' if waiting else 'none waiting'}</section>
 <h2>Phones</h2>{phone_rows}
+<form method="post" action="/pair"><input name="name" value="iPhone" maxlength="40" aria-label="Phone name" required>
+<button>Pair a phone</button></form>
 <p class="muted">Updated {now:%Y-%m-%d %H:%M} UTC · refreshes every 30 s</p></body></html>"""
+
+
+def pairing_link(server: str, code: str) -> str:
+    """What the QR holds; the app's +native-intent turns it into the Status tab, prefilled."""
+    return "secondbrain://pair?" + urlencode({"server": server, "code": code})
+
+
+def render_pairing(server: str, code: str, name: str, minutes: int) -> str:
+    qr = segno.make(pairing_link(server, code), error="m").svg_inline(scale=6, dark="#000", light="#fff")
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pair a Phone</title><style>{STYLE}</style></head>
+<body><h1>Pair {escape(name)}</h1>
+<section><p>Point the iPhone camera at this code, open Second Brain, then tap <b>Pair This iPhone</b>.</p>
+<div class="qr">{qr}</div>
+<p>Or enter it by hand: server <b>{escape(server)}</b>, code <span class="code">{escape(code)}</span></p>
+<p class="muted">Single use, valid {minutes} minutes.</p></section>
+<p><a href="/status">Back to status</a></p></body></html>"""

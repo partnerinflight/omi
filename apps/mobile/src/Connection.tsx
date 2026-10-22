@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, View } from 'react-native';
 import type { Sync, SyncStatus } from './sync';
 import { ActionRow, color, Field, Group, Icon, Row, T } from './ui';
@@ -11,11 +11,20 @@ const STATE: Record<SyncStatus['state'], { label: string; icon: 'checkmark.circl
   error: { label: 'Server error — will retry', icon: 'exclamationmark.triangle.fill', tone: color.warning },
 };
 
-export function Connection({ sync, status, onChange }: { sync: Sync; status: SyncStatus | null; onChange: () => void }) {
+export function Connection({ sync, status, onChange, link }: {
+  sync: Sync; status: SyncStatus | null; onChange: () => void; link?: { server: string; code: string };
+}) {
   const [url, setUrl] = useState(__DEV__ ? 'http://localhost:8000' : 'https://');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // A scanned pairing QR fills both fields; the user still checks the server and taps Pair.
+  useEffect(() => {
+    if (!link) return;
+    setUrl(link.server);
+    setCode(link.code);
+    setError(undefined);
+  }, [link?.server, link?.code]);
 
   if (!status) return null;
   const needsPairing = status.state === 'unpaired' || status.state === 'auth_required';
@@ -66,7 +75,7 @@ export function Connection({ sync, status, onChange }: { sync: Sync; status: Syn
         </Group>
       )}
 
-      <Group header="Sync" footer={needsPairing ? 'Create a code on the server with: python -m sb_server pair "My iPhone"' : undefined}>
+      <Group header="Sync" footer={needsPairing ? 'Scan the code from Pair a Phone on the server\'s status page with the Camera, or create one with: python -m sb_server pair "My iPhone"' : undefined}>
         <Row>
           <Icon name={s.icon} tint={s.tone} size={22} />
           <View style={{ flex: 1, gap: 2 }} accessibilityLiveRegion="polite">

@@ -23,6 +23,13 @@ def new_pairing_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(10))
 
 
+def create_pairing_code(conn, device_name: str) -> str:
+    code = new_pairing_code()
+    conn.execute("INSERT INTO pairing_codes (code_hash, device_name, expires_at) VALUES (%s, %s, now() + %s)",
+                 (digest(code), device_name, PAIRING_TTL))
+    return code
+
+
 def issue_tokens(conn, device_id: uuid.UUID) -> dict:
     access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     conn.execute(
