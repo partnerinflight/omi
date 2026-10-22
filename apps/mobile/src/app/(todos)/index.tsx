@@ -9,7 +9,7 @@ export default function TodosScreen() {
     <>
       <Stack.Screen options={{ title: 'Todos' }} />
       <Screen onRefresh={() => run(true)}>
-        <Todos sync={sync} version={version} onEdit={() => run()} />
+        <Todos sync={sync} version={version} onEdit={() => run(true)} />
       </Screen>
     </>
   );

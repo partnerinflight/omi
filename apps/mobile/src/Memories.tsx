@@ -26,6 +26,7 @@ export function Memories({ sync, version, query, onEdit }: { sync: Sync; version
   const [tab, setTab] = useState<MemoryState>('proposed');
   const [items, setItems] = useState<Memory[]>([]);
   const [open, setOpen] = useState<string | null>(null);
+  const [shown, setShown] = useState(PAGE);
 
   const refresh = useCallback(async () => setItems(await listMemories(db, { query, state: tab })), [db, query, tab]);
   useEffect(() => { refresh(); }, [refresh, version]);
@@ -49,10 +50,15 @@ export function Memories({ sync, version, query, onEdit }: { sync: Sync; version
 
   return (
     <>
-      <Segmented options={TABS} value={tab} onChange={(v) => { setTab(v); setOpen(null); }} />
+      <Segmented options={TABS} value={tab} onChange={(v) => { setTab(v); setOpen(null); setShown(PAGE); }} />
       {items.length > 0 ? (
-        <Group>
-          {items.map((m) => (
+        <Group footer={items.length > shown ? (
+          <View style={{ paddingTop: 8 }}>
+            <Button kind="tinted" title={`Show ${Math.min(PAGE, items.length - shown)} More of ${items.length - shown}`}
+              onPress={() => setShown((n) => n + PAGE)} />
+          </View>
+        ) : undefined}>
+          {items.slice(0, shown).map((m) => (
             <MemoryRow key={m.id} m={m} expanded={open === m.id} onToggle={() => setOpen(open === m.id ? null : m.id)}
               onEdit={(op) => edit(m, op)} onResolve={resolve} />
           ))}
@@ -68,6 +74,10 @@ export function Memories({ sync, version, query, onEdit }: { sync: Sync; version
   );
 }
 
+// Rows drawn at once. The Inbox can hold thousands of memories; drawing them all as swipeable
+// rows blocked the JS thread for seconds after every sync, so taps on any tab lagged.
+// ponytail: paging, not virtualization; a FlatList screen if one page ever feels slow.
+const PAGE = 100;
 const SAVE: MemoryOp = { action: 'set_state', payload: { state: 'confirmed' } };
 const SWIPE_THRESHOLD = 80;
 const ARCHIVE: MemoryOp = { action: 'set_state', payload: { state: 'archived' } };

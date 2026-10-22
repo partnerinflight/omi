@@ -9,7 +9,7 @@ export default function SpeakersScreen() {
     <>
       <Stack.Screen options={{ title: 'Speakers' }} />
       <Screen onRefresh={() => run(true)}>
-        <Speakers sync={sync} version={version} onEdit={() => run()} />
+        <Speakers sync={sync} version={version} onEdit={() => run(true)} />
       </Screen>
     </>
   );

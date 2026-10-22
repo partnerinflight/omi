@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { applyLocal, applyMemory, listCommands, listMemories, listTodos, migrate, queueCommand, type Db } from '../src/db.ts';
+import { applyLocal, getMeta, applyMemory, listCommands, listMemories, listTodos, migrate, queueCommand, type Db } from '../src/db.ts';
 import { createSync, type Tokens, type TokenStore } from '../src/sync.ts';
 import { openDb } from './sqlite.ts';
 
@@ -106,6 +106,10 @@ async function scenarios(url: string) {
   await a.edit(milk, { action: 'create', payload: { title: 'Buy milk' } });
   await a.edit(milk, { action: 'set_state', payload: { state: 'completed' } });
   assert.equal((await a.sync.sync()).state, 'offline');
+  // A long time offline: retries back off, but never past a minute, so queued edits leave soon
+  // after the network returns even if nothing else triggers a sync.
+  for (let i = 0; i < 12; i++) await a.sync.sync(true);
+  assert.ok(Number(await getMeta(a.db, 'next_attempt_at')) - Date.now() <= 60_000);
   await a.open();
   a.net.offline = false;
   let s = await a.sync.sync(true);

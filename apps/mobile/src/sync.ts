@@ -44,7 +44,9 @@ class HttpError extends Error {
 }
 
 const TIMEOUT_MS = 15_000;
-const MAX_BACKOFF_MS = 5 * 60_000;
+// Capped at a minute so edits made offline leave within about a minute of reconnecting; one
+// failed request a minute costs a phone nothing.
+const MAX_BACKOFF_MS = 60_000;
 const PUSH_BATCH = 100;
 const PULL_PAGE = 500;
 

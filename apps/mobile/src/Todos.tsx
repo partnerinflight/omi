@@ -37,10 +37,16 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
     const title = draft.trim();
     if (!title) return;
     setDraft('');
-    run(() => applyLocal(db, randomUUID(), { action: 'create', payload: { title } }, randomUUID));
+    const id = randomUUID();
+    setTodos((list) => [{ id, title, state: 'open', pending: 1, problem: null }, ...list]);
+    run(() => applyLocal(db, id, { action: 'create', payload: { title } }, randomUUID));
   };
-  const setState = (todo: Todo, state: TodoState) =>
-    run(() => applyLocal(db, todo.id, { action: 'set_state', payload: { state } }, randomUUID));
+  const setState = (todo: Todo, state: TodoState) => {
+    // Show the change now; the queued write and the sync follow in the background.
+    setTodos((list) => state === 'dismissed' ? list.filter((t) => t.id !== todo.id)
+      : list.map((t) => (t.id === todo.id ? { ...t, state, pending: t.pending + 1 } : t)));
+    return run(() => applyLocal(db, todo.id, { action: 'set_state', payload: { state } }, randomUUID));
+  };
   const resolve = (problem: Problem, choice: 'keep_mine' | 'discard') => run(() => sync.resolve(problem.seq, choice));
 
   return (

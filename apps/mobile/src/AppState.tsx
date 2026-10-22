@@ -33,7 +33,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Sync on open, on resume and on a timer; edits trigger it too.
   useEffect(() => {
     run();
-    const sub = AppState.addEventListener('change', (s) => s === 'active' && run());
+    const sub = AppState.addEventListener('change', (s) => s === 'active' && run(true)); // back in the app: try now
     const timer = setInterval(() => AppState.currentState === 'active' && run(), RETRY_MS);
     return () => {
       sub.remove();

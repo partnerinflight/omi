@@ -20,7 +20,7 @@ export default function MemoriesScreen() {
         },
       }} />
       <Screen onRefresh={() => run(true)}>
-        <Memories sync={sync} version={version} query={query} onEdit={() => run()} />
+        <Memories sync={sync} version={version} query={query} onEdit={() => run(true)} />
       </Screen>
     </>
   );

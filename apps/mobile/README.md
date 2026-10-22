@@ -12,7 +12,10 @@ milestone 1 todo sync engine ([implementation plan](../../docs/mobile/implementa
   Triggered on open/resume, after edits, every 30 s with backoff, and pull-to-refresh.
   Tokens live in the Keychain (`src/tokenStore.ts`).
 - `src/Memories.tsx`: swipe right saves (restores from Archived), swipe left archives; the row
-  leaves the list at once. Every write transaction goes through `exclusive()` in `src/db.ts`:
+  leaves the list at once. Rows are drawn 100 at a time: drawing a 2,000-memory Inbox after every
+  sync blocked the JS thread for seconds, so taps on every tab lagged. Todo changes show before
+  their write; edits and returning to the app sync at once, and offline retries back off to at
+  most a minute. Every write transaction goes through `exclusive()` in `src/db.ts`:
   expo-sqlite gives each transaction its own connection, so a tap during a sync page used to
   fail with "database is locked" (`npm test` reproduces that with the same connection model).
 
