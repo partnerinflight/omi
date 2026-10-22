@@ -11,6 +11,7 @@ export type ServerTodo = {
   title: string;
   state: TodoState;
   revision: number;
+  created_at?: string; // absent from servers older than 2026-10-22
   updated_at: string;
   deleted_at: string | null;
   snoozed_until?: string | null; // set in Telegram; any state change here clears it
@@ -20,6 +21,7 @@ export type Todo = {
   id: string;
   title: string;
   state: TodoState;
+  created_at: string;
   pending: number; // unacknowledged operations, including a stuck one
   problem: Problem | null;
 };
@@ -102,6 +104,15 @@ export async function migrate(db: Db) {
       PRAGMA user_version = 4;
     `);
   }
+  if (version < 5) {
+    // Creation time for chronological order. Cached todos predate it, so drop the cursor: the
+    // next sync bootstraps (acknowledged state only; queued edits are kept and replayed).
+    await db.execAsync(`
+      ALTER TABLE server_todos ADD COLUMN created_at TEXT;
+      DELETE FROM sync_meta WHERE key = 'cursor';
+      PRAGMA user_version = 5;
+    `);
+  }
 }
 
 export async function getMeta(db: Queries, key: string) {
@@ -118,11 +129,11 @@ export async function setMeta(db: Queries, key: string, value: string | number |
 // Keeps the newest revision; pulls and acknowledgments may arrive in either order.
 export async function upsertServerTodo(db: Queries, t: ServerTodo) {
   await db.runAsync(
-    `INSERT INTO server_todos (id, title, state, revision, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO server_todos (id, title, state, revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO UPDATE SET title = excluded.title, state = excluded.state, revision = excluded.revision,
-       updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+       created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
      WHERE excluded.revision > server_todos.revision`,
-    t.id, t.title, t.state, t.revision, t.updated_at, t.deleted_at,
+    t.id, t.title, t.state, t.revision, t.created_at ?? t.updated_at, t.updated_at, t.deleted_at,
   );
 }
 
@@ -240,12 +251,14 @@ export async function listTodos(db: Db): Promise<Todo[]> {
   const base = await db.getAllAsync<ServerTodo>('SELECT * FROM server_todos WHERE deleted_at IS NULL');
   const ops = await db.getAllAsync<OutboxRow>("SELECT * FROM outbox WHERE entity_type = 'todo' ORDER BY seq");
   const view = new Map<string, Todo & { touched: string }>(
-    base.map((t) => [t.id, { id: t.id, title: t.title, state: t.state, pending: 0, problem: null, touched: t.updated_at }]),
+    base.map((t) => [t.id, { id: t.id, title: t.title, state: t.state, created_at: t.created_at ?? t.updated_at, pending: 0,
+      problem: null, touched: t.updated_at }]),
   );
   for (const op of ops) {
     const payload = JSON.parse(op.payload);
     if (op.action === 'create' && !view.has(op.entity_id)) {
-      view.set(op.entity_id, { id: op.entity_id, title: payload.title, state: 'open', pending: 0, problem: null, touched: op.created_at });
+      view.set(op.entity_id, { id: op.entity_id, title: payload.title, state: 'open', created_at: op.created_at, pending: 0,
+        problem: null, touched: op.created_at });
     }
     const todo = view.get(op.entity_id);
     if (!todo) continue; // removed on the server; its op shows up as rejected
@@ -259,7 +272,9 @@ export async function listTodos(db: Db): Promise<Todo[]> {
   }
   return [...view.values()]
     .filter((t) => t.state !== 'dismissed' || t.problem)
-    .sort((a, b) => Number(a.state === 'completed') - Number(b.state === 'completed') || b.touched.localeCompare(a.touched))
+    // Open todos oldest first, in the order they came up; done ones most recently finished first.
+    .sort((a, b) => Number(a.state === 'completed') - Number(b.state === 'completed')
+      || (a.state === 'completed' ? b.touched.localeCompare(a.touched) : a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)))
     .map(({ touched, ...t }) => t);
 }
 

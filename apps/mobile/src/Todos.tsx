@@ -5,7 +5,7 @@ import { Alert, Pressable, View } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { applyLocal, listTodos, type Db, type Problem, type Todo, type TodoState } from './db';
 import type { Sync } from './sync';
-import { Button, color, Empty, Field, Group, Icon, MIN_TOUCH, Note, Row, styles, T } from './ui';
+import { Button, color, Empty, Field, Group, Icon, MIN_TOUCH, Note, Row, Segmented, styles, T } from './ui';
 
 const ERRORS: Record<string, string> = {
   stale_revision: 'Changed on another device.',
@@ -19,6 +19,7 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
   const db = useSQLiteContext() as unknown as Db;
   const [todos, setTodos] = useState<Todo[]>([]);
   const [draft, setDraft] = useState('');
+  const [tab, setTab] = useState<'open' | 'done'>('open');
 
   const refresh = useCallback(async () => setTodos(await listTodos(db)), [db]);
   useEffect(() => { refresh(); }, [refresh, version]);
@@ -38,7 +39,7 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
     if (!title) return;
     setDraft('');
     const id = randomUUID();
-    setTodos((list) => [{ id, title, state: 'open', pending: 1, problem: null }, ...list]);
+    setTodos((list) => [...list, { id, title, state: 'open', created_at: new Date().toISOString(), pending: 1, problem: null }]);
     run(() => applyLocal(db, id, { action: 'create', payload: { title } }, randomUUID));
   };
   const setState = (todo: Todo, state: TodoState) => {
@@ -49,20 +50,29 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
   };
   const resolve = (problem: Problem, choice: 'keep_mine' | 'discard') => run(() => sync.resolve(problem.seq, choice));
 
+  // Done todos have their own tab. A todo with a problem stays where its state puts it.
+  const shown = todos.filter((t) => (tab === 'done') === (t.state === 'completed'));
+  const row = (todo: Todo) => (
+    <TodoRow key={todo.id} todo={todo} onToggle={() => setState(todo, todo.state === 'completed' ? 'open' : 'completed')}
+      onDismiss={() => setState(todo, 'dismissed')} onResolve={(choice) => todo.problem && resolve(todo.problem, choice)} />
+  );
+
   return (
     <>
-      <Group inset={52}>
-        <Row>
-          <Icon name="plus.circle.fill" size={24} />
-          <Field value={draft} onChangeText={setDraft} onSubmitEditing={add} submitBehavior="submit"
-            placeholder="New Todo" accessibilityLabel="New todo title" returnKeyType="done" />
-        </Row>
-        {todos.map((todo) => (
-          <TodoRow key={todo.id} todo={todo} onToggle={() => setState(todo, todo.state === 'completed' ? 'open' : 'completed')}
-            onDismiss={() => setState(todo, 'dismissed')} onResolve={(choice) => todo.problem && resolve(todo.problem, choice)} />
-        ))}
-      </Group>
-      {todos.length === 0 && <Empty icon="checkmark.circle" title="Nothing open" detail="Todos you add here sync to your other devices." />}
+      <Segmented options={[{ value: 'open', label: 'Open' }, { value: 'done', label: 'Done' }]} value={tab} onChange={setTab} />
+      {tab === 'open' ? (
+        <Group inset={52}>
+          <Row>
+            <Icon name="plus.circle.fill" size={24} />
+            <Field value={draft} onChangeText={setDraft} onSubmitEditing={add} submitBehavior="submit"
+              placeholder="New Todo" accessibilityLabel="New todo title" returnKeyType="done" />
+          </Row>
+          {shown.map(row)}
+        </Group>
+      ) : shown.length > 0 && <Group inset={52}>{shown.map(row)}</Group>}
+      {shown.length === 0 && (tab === 'open'
+        ? <Empty icon="checkmark.circle" title="Nothing open" detail="Todos you add here sync to your other devices." />
+        : <Empty icon="checkmark.circle" title="Nothing done yet" detail="Completed todos move here." />)}
     </>
   );
 }

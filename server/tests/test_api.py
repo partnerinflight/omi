@@ -106,6 +106,7 @@ class Api(unittest.TestCase):
         token, todo, op_id = self.paired()["access_token"], uuid.uuid4(), uuid.uuid4()
         first = self.op(token, todo, "create", {"title": "Buy milk"}, op_id=op_id)
         self.assertEqual((first["outcome"], first["entity"]["revision"]), ("applied", 1))
+        self.assertEqual(first["entity"]["created_at"], first["entity"]["updated_at"])  # phones sort open todos by it
         cursor = self.http("GET", "/v1/bootstrap", token).json()["cursor"]
 
         self.assertEqual(self.op(token, todo, "create", {"title": "Buy milk"}, op_id=op_id), first)

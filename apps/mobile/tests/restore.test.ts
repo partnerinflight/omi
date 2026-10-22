@@ -40,8 +40,10 @@ function postgres(name: string, ...alias: string[]) {
   docker('run', '-d', '--name', name, '--network', net, ...alias, '-e', 'POSTGRES_USER=postgres', '-e', 'POSTGRES_PASSWORD=admin', 'postgres:14-alpine');
   for (let i = 0; ; i++) {
     try {
-      docker('exec', name, 'pg_isready', '-U', 'postgres');
-      docker('exec', name, 'psql', '-U', 'postgres', '-c', 'SELECT 1');
+      // Over TCP: the image's first-boot init server listens on the socket only and then restarts,
+      // so a socket check could pass just before the restart and the next command fail.
+      docker('exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres');
+      docker('exec', name, 'psql', '-h', '127.0.0.1', '-U', 'postgres', '-c', 'SELECT 1');
       return;
     } catch (e) {
       if (i > 120) throw e;

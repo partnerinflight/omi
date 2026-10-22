@@ -66,4 +66,16 @@ setTimeout(releasePage, 50);
 await Promise.all([pull, archive]);
 assert.deepEqual((await listMemories(db, { state: 'archived' })).map((m) => m.id), [memory.id]);
 
+// Open todos in the order they came up, oldest first; done ones most recently finished first.
+const order = openDb(`${process.env.TMPDIR ?? '/tmp'}/sb-order-${randomUUID()}.db`);
+await migrate(order);
+const at = (day: number) => `2026-10-${String(day).padStart(2, '0')}T12:00:00Z`;
+for (const [title, state, created, updated] of [
+  ['middle', 'open', 5, 20], ['oldest', 'open', 2, 21], ['newest', 'open', 9, 9], ['done early', 'completed', 1, 10], ['done late', 'completed', 3, 15],
+] as const) {
+  await upsertServerTodo(order, { id: randomUUID(), title, state, revision: 1, created_at: at(created), updated_at: at(updated), deleted_at: null });
+}
+await applyLocal(order, randomUUID(), { action: 'create', payload: { title: 'added now' } }, randomUUID);
+assert.deepEqual((await listTodos(order)).map((t) => t.title), ['oldest', 'middle', 'newest', 'added now', 'done late', 'done early']);
+
 console.log('db.test.ts: ok');

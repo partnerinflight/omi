@@ -130,7 +130,7 @@ def todo_json(row) -> dict:
     return {"id": str(row["id"]), "title": row["title"], "state": row["state"], "revision": row["revision"],
             "legacy_id": row["legacy_id"], "notes": row["notes"],
             "snoozed_until": row["snoozed_until"].isoformat() if row["snoozed_until"] else None,
-            "updated_at": row["updated_at"].isoformat(),
+            "created_at": row["created_at"].isoformat(), "updated_at": row["updated_at"].isoformat(),
             "deleted_at": row["deleted_at"].isoformat() if row["deleted_at"] else None}
 
 
