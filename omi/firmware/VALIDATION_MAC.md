@@ -717,3 +717,19 @@ dock. SMP reported the staged digest pending in slot 1, then after reset active/
 slot 0 (overwrite-only MCUboot: there is no revert). GATT reports `3.0.22-localwifi.20`; clock
 valid, battery 100% / 4237 mV off the dock, ring `[2657818, 2718975)` of 1115064 packets,
 zero dropped, Wi-Fi upload still configured. The blinks themselves are not yet seen on the device.
+
+## Firmware 3.0.22-localwifi.21: low battery/storage blinks on lecture mode — 2026-10-21
+
+The 2026-10-13 low battery and low storage blinks rebased onto lecture-mode `.20`. Both
+warnings sit above the lecture-mode yellow, like the other warnings. Host suite: Ran 165
+tests, OK. NCS 2.9.0 Wi-Fi sysbuild on macOS: app FLASH 875224 B of 949760 B (92.15%) /
+RAM 429240 B (95.27%). Both OTA images pass MCUboot signature verification.
+ZIP SHA-256: `4d87a2c65836662801056290e1c5dac99c3c5cc65da81db6b85770a8cd7b2676`.
+App digest: `d92cd0513c4acda1ee3d2106d3bb4a3a1eb4c7273804a5851b9778e10df35b2d`.
+Network digest: `b0a66395b14b514ab2356ff8f6d07f0ba020614b55fb6fda8e8e7a9eac87bbf3` (not installed).
+
+Installed at the user's request on 2026-10-21 with `scripts/windows/flash_omi.py` from the
+Mac, application image only over lecture-mode `.20` (`ccab436a…`), first attempt. SMP showed
+the staged digest pending in slot 1, then after reset active/confirmed in slot 0; GATT reports
+`3.0.22-localwifi.21`. Battery 100% / 4250 mV, ring `[3642986, 4000966)` of 1115064 packets,
+zero dropped, Wi-Fi upload still configured. The blinks and lecture mode are on-device checks.
