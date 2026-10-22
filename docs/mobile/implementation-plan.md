@@ -186,8 +186,9 @@ signing wait for the owner (`deploy/selfhost/README.md`).
   only delivery path (step 7 above), and sync never depends on push. Revisit only if the
   pilot shows a need; local notifications would be the first choice, APNs last.
 
-iPhone distribution: team SHWEFJ6M9Y is signed into Xcode with only a Developer ID (Mac)
-certificate. A device build needs an Apple Development or Distribution certificate, the
+iPhone distribution: the app signs with team SHWEFJ6M9Y (`ios.appleTeamId` in app.json, the
+team DeepQuill uses; automatic signing). It had only a Developer ID (Mac) certificate, and
+Xcode needs that Apple ID under Settings → Accounts. A device build needs an Apple Development or Distribution certificate, the
 bundle ID `dev.secondbrain.mobile` registered, and either the iPhone's UDID registered
 (development/ad hoc) or an App Store Connect app record for TestFlight internal testing
 (no review for internal testers; builds expire after 90 days). Recommended: TestFlight.

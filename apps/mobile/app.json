@@ -9,6 +9,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "dev.secondbrain.mobile",
+      "appleTeamId": "SHWEFJ6M9Y",
       "config": {
         "usesNonExemptEncryption": false
       }
@@ -32,6 +33,7 @@
       "expo-audio",
       "expo-asset",
       "./plugins/withSceneLifecycle",
+      "./plugins/withSourceBuiltModules",
       "expo-router"
     ],
     "scheme": "secondbrain"
