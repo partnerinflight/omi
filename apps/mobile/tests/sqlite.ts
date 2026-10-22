@@ -1,10 +1,11 @@
-// node:sqlite behind the subset of the expo-sqlite API that src/ uses.
+// node:sqlite behind the subset of the expo-sqlite API that src/ uses. Like expo-sqlite,
+// withExclusiveTransactionAsync opens its own connection and runs a plain BEGIN, so two
+// overlapping write transactions hit SQLITE_BUSY ("database is locked") exactly as on the phone.
 import { DatabaseSync } from 'node:sqlite';
 import type { Db } from '../src/db.ts';
 
-export function openDb(path: string): Db {
-  const raw = new DatabaseSync(path);
-  const q = {
+function queries(raw: DatabaseSync) {
+  return {
     runAsync: async (sql: string, ...args: any[]) => {
       const r = raw.prepare(sql).run(...args.flat());
       return { lastInsertRowId: Number(r.lastInsertRowid), changes: Number(r.changes) };
@@ -12,18 +13,28 @@ export function openDb(path: string): Db {
     getFirstAsync: async (sql: string, ...args: any[]) => (raw.prepare(sql).get(...args.flat()) ?? null) as any,
     getAllAsync: async (sql: string, ...args: any[]) => raw.prepare(sql).all(...args.flat()) as any,
   };
+}
+
+export function openDb(path: string): Db {
+  const raw = new DatabaseSync(path);
   return {
-    ...q,
+    ...queries(raw),
     execAsync: async (sql: string) => raw.exec(sql),
     withExclusiveTransactionAsync: async (task) => {
-      raw.exec('BEGIN EXCLUSIVE');
+      const conn = new DatabaseSync(path);
       try {
-        await task(q as any);
-        raw.exec('COMMIT');
-      } catch (e) {
-        raw.exec('ROLLBACK');
-        throw e;
+        conn.exec('BEGIN');
+        try {
+          await task(queries(conn) as any);
+          conn.exec('COMMIT');
+        } catch (e) {
+          conn.exec('ROLLBACK');
+          throw e;
+        }
+      } finally {
+        conn.close();
       }
     },
+    close: () => raw.close(),
   } as Db;
 }

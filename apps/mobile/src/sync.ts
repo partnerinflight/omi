@@ -2,7 +2,7 @@
 // push the first queued operation per entity, then pull ordered changes.
 // Foreground only: callers trigger it on open/resume, after edits, on a timer
 // and on manual refresh. Background execution is never required for correctness.
-import { getMeta, setMeta, upsertServerCommand, upsertServerMemory, upsertServerTodo, type Db, type ServerCommand, type ServerMemory,
+import { exclusive, getMeta, setMeta, upsertServerCommand, upsertServerMemory, upsertServerTodo, type Db, type ServerCommand, type ServerMemory,
   type ServerTodo } from './db.ts';
 
 export type Tokens = { access_token: string; refresh_token: string };
@@ -179,7 +179,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       );
       if (ops.length === 0) return;
 
-      await db.withExclusiveTransactionAsync(async (txn) => {
+      await exclusive(db, async (txn) => {
         for (const op of ops) {
           if (op.sent_base_revision !== null) continue;
           const table = op.entity_type === 'memory' ? 'server_memories' : 'server_todos'; // commands are creates
@@ -198,7 +198,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       const { results } = (await res.json()) as { results: { operation_id: string; outcome: string; error: string | null; entity: any }[] };
       const types = new Map(ops.map((op) => [op.operation_id, op.entity_type]));
 
-      await db.withExclusiveTransactionAsync(async (txn) => {
+      await exclusive(db, async (txn) => {
         for (const r of results) {
           if (r.entity) await upsertEntity(txn, types.get(r.operation_id)!, r.entity);
           const sent = ops.find((op) => op.operation_id === r.operation_id)!;
@@ -222,7 +222,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
     if (!res.ok) throw new HttpError(res.status);
     const snapshot = (await res.json()) as { cursor: string; todos: ServerTodo[]; commands: ServerCommand[]; memories: ServerMemory[] };
     // Replaces only acknowledged state, atomically; the outbox is untouched.
-    await db.withExclusiveTransactionAsync(async (txn) => {
+    await exclusive(db, async (txn) => {
       if (restored) await recoverLostEdits(txn, snapshot);
       await txn.runAsync('DELETE FROM server_todos');
       await txn.runAsync('DELETE FROM server_commands');
@@ -246,7 +246,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       }
       if (!res.ok) throw new HttpError(res.status);
       const page = (await res.json()) as { cursor: string; has_more: boolean; changes: { entity_type: string; entity: any }[] };
-      await db.withExclusiveTransactionAsync(async (txn) => {
+      await exclusive(db, async (txn) => {
         for (const c of page.changes) await upsertEntity(txn, c.entity_type, c.entity);
         await setMeta(txn, 'cursor', page.cursor);
       });
@@ -359,7 +359,7 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       if (!res.ok) throw new Error(`Pairing failed (HTTP ${res.status}).`);
       const body = await res.json();
       await tokens.set({ access_token: body.access_token, refresh_token: body.refresh_token });
-      await db.withExclusiveTransactionAsync(async (txn) => {
+      await exclusive(db, async (txn) => {
         await setMeta(txn, 'server_url', url);
         await setMeta(txn, 'device_id', body.device_id);
         await setMeta(txn, 'state', 'offline'); // until the first successful sync

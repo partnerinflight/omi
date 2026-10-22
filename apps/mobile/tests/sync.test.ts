@@ -155,8 +155,9 @@ async function scenarios(url: string) {
   await a.sync.sync(true);
   await b.sync.sync(true);
   // The server is restored from backup (new epoch) while the conflict is unresolved:
-  // the phone bootstraps again and the stuck edit survives the snapshot swap.
-  admin('new-epoch');
+  // the phone bootstraps again and the stuck edit survives the snapshot swap. Credentials are
+  // kept here; restore.test.ts covers the default, which revokes them.
+  admin('new-epoch', '--keep-credentials');
   s = await b.sync.sync(true);
   assert.deepEqual([s.state, s.pending, s.problems], ['synced', 1, 1]);
   const conflict = (await b.todos()).find((t) => t.id === bread)!.problem!;

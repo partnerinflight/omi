@@ -31,6 +31,8 @@ export function Memories({ sync, version, query, onEdit }: { sync: Sync; version
   useEffect(() => { refresh(); }, [refresh, version]);
 
   const edit = async (m: Memory, op: MemoryOp) => {
+    // Save/archive moves the row to another tab: drop it now, queue the write behind any sync.
+    if (op.action === 'set_state' && op.payload.state !== m.state) setItems((list) => list.filter((x) => x.id !== m.id));
     try {
       await applyMemory(db, m.id, op, randomUUID);
     } catch (e) {
@@ -67,6 +69,7 @@ export function Memories({ sync, version, query, onEdit }: { sync: Sync; version
 }
 
 const SAVE: MemoryOp = { action: 'set_state', payload: { state: 'confirmed' } };
+const SWIPE_THRESHOLD = 80;
 const ARCHIVE: MemoryOp = { action: 'set_state', payload: { state: 'archived' } };
 
 function MemoryRow({ m, expanded, onToggle, onEdit, onResolve }: { m: Memory; expanded: boolean; onToggle: () => void;
@@ -83,11 +86,16 @@ function MemoryRow({ m, expanded, onToggle, onEdit, onResolve }: { m: Memory; ex
       friction={2}
       overshootLeft={false}
       overshootRight={false}
-      renderLeftActions={m.state === 'proposed' ? (_a, _b, s) => (
-        <SwipeAction icon="bookmark.fill" label="Save" tone={color.tint} onPress={() => { s.close(); onEdit(SAVE); }} />
+      // Swipe right saves (restores from Archived), swipe left archives; past the threshold the
+      // action happens on release, no second tap.
+      leftThreshold={SWIPE_THRESHOLD}
+      rightThreshold={SWIPE_THRESHOLD}
+      onSwipeableWillOpen={(direction) => onEdit(direction === 'right' ? SAVE : ARCHIVE)}
+      renderLeftActions={m.state !== 'confirmed' ? () => (
+        <SwipeAction icon="bookmark.fill" label={m.state === 'archived' ? 'Restore' : 'Save'} tone={color.tint} />
       ) : undefined}
-      renderRightActions={m.state !== 'archived' ? (_a, _b, s) => (
-        <SwipeAction icon="archivebox.fill" label="Archive" tone={color.neutral} onPress={() => { s.close(); onEdit(ARCHIVE); }} />
+      renderRightActions={m.state !== 'archived' ? () => (
+        <SwipeAction icon="archivebox.fill" label="Archive" tone={color.neutral} />
       ) : undefined}
     >
       <View style={{ backgroundColor: color.cell }}>
@@ -160,13 +168,14 @@ function MemoryRow({ m, expanded, onToggle, onEdit, onResolve }: { m: Memory; ex
   );
 }
 
-function SwipeAction({ icon, label, tone, onPress }: { icon: 'bookmark.fill' | 'archivebox.fill'; label: string; tone: typeof color.tint; onPress: () => void }) {
+// Swipes are a shortcut; the expanded row's buttons stay the accessible path.
+function SwipeAction({ icon, label, tone }: { icon: 'bookmark.fill' | 'archivebox.fill'; label: string; tone: typeof color.tint }) {
   return (
-    <Pressable accessibilityElementsHidden onPress={onPress}
+    <View accessibilityElementsHidden
       style={{ width: 88, minHeight: MIN_TOUCH, backgroundColor: tone, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
       <Icon name={icon} tint={color.onTint} size={20} />
       <T ramp="caption1" tone={color.onTint} style={{ fontWeight: '600' }}>{label}</T>
-    </Pressable>
+    </View>
   );
 }
 

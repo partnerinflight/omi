@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Alert, View } from 'react-native';
 import type { Sync, SyncStatus } from './sync';
 import { ActionRow, color, Field, Group, Icon, Row, T } from './ui';
@@ -14,17 +14,12 @@ const STATE: Record<SyncStatus['state'], { label: string; icon: 'checkmark.circl
 export function Connection({ sync, status, onChange, link }: {
   sync: Sync; status: SyncStatus | null; onChange: () => void; link?: { server: string; code: string };
 }) {
-  const [url, setUrl] = useState(__DEV__ ? 'http://localhost:8000' : 'https://');
-  const [code, setCode] = useState('');
+  // A scanned pairing QR prefills both fields (the parent remounts this per link); the user
+  // still checks the server and taps Pair.
+  const [url, setUrl] = useState(link?.server ?? (__DEV__ ? 'http://localhost:8000' : 'https://'));
+  const [code, setCode] = useState(link?.code ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  // A scanned pairing QR fills both fields; the user still checks the server and taps Pair.
-  useEffect(() => {
-    if (!link) return;
-    setUrl(link.server);
-    setCode(link.code);
-    setError(undefined);
-  }, [link?.server, link?.code]);
 
   if (!status) return null;
   const needsPairing = status.state === 'unpaired' || status.state === 'auth_required';

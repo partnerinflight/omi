@@ -38,7 +38,23 @@ export type Db = Queries & Pick<SQLiteDatabase, 'execAsync'> & {
   withExclusiveTransactionAsync(task: (txn: Queries) => Promise<void>): Promise<void>;
 };
 
+// expo-sqlite runs each exclusive transaction on its own new connection with a plain BEGIN, so
+// two overlapping ones (a sync page and a tap) fail at once with "database is locked". Every
+// write transaction in the app goes through this queue instead, one at a time.
+// ponytail: one app-wide queue for one database file; key it by database if a second appears.
+let writes: Promise<unknown> = Promise.resolve();
+export function exclusive(db: Db, task: (txn: Queries) => Promise<void>): Promise<void> {
+  // busy_timeout covers the remaining overlap with single statements on the main connection.
+  const run = writes.then(() => db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync('PRAGMA busy_timeout = 5000');
+    await task(txn);
+  }));
+  writes = run.catch(() => {});
+  return run;
+}
+
 export async function migrate(db: Db) {
+  await db.execAsync('PRAGMA busy_timeout = 5000'); // per connection, so on every launch
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const version = row?.user_version ?? 0;
   if (version < 2) {
@@ -176,7 +192,7 @@ export async function upsertServerMemory(db: Queries, m: ServerMemory) {
 }
 
 export async function applyMemory(db: Db, id: string, op: MemoryOp, newId: () => string) {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await exclusive(db, async (txn) => {
     if (!(await txn.getFirstAsync('SELECT 1 FROM server_memories WHERE id = ?', id))) throw new Error(`memory ${id} not found`);
     await txn.runAsync(
       'INSERT INTO outbox (operation_id, entity_type, entity_id, action, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -249,7 +265,7 @@ export async function listTodos(db: Db): Promise<Todo[]> {
 
 // Desired-state operations only: completion is set_state, never a toggle.
 export async function applyLocal(db: Db, entityId: string, op: Op, newId: () => string) {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await exclusive(db, async (txn) => {
     if (op.action !== 'create') {
       const known = await txn.getFirstAsync(
         "SELECT 1 FROM server_todos WHERE id = ? UNION SELECT 1 FROM outbox WHERE entity_id = ? AND action = 'create'",

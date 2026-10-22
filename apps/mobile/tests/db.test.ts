@@ -1,7 +1,8 @@
 // Local cache and replay: `npm test` (Node >= 22.6).
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { applyLocal, listCommands, listTodos, migrate, queueCommand, upsertServerCommand, upsertServerTodo } from '../src/db.ts';
+import { applyLocal, applyMemory, exclusive, listCommands, listMemories, listTodos, migrate, queueCommand, upsertServerCommand, upsertServerMemory,
+  upsertServerTodo } from '../src/db.ts';
 import { openDb } from './sqlite.ts';
 
 const path = `${process.env.TMPDIR ?? '/tmp'}/sb-db-test-${randomUUID()}.db`;
@@ -47,5 +48,22 @@ await upsertServerCommand(db, { ...command, state: 'applied_worker', revision: 2
 await upsertServerCommand(db, { ...command, state: 'pending_worker', revision: 1, updated_at: '2026-01-01T00:00:00Z' });
 assert.deepEqual((await listCommands(db)).map((c) => c.state), ['queued', 'applied_worker']);
 assert.equal((await listTodos(db)).some((t) => t.title === undefined), false); // commands never appear as todos
+
+// A sync page being written while the user archives a memory: on the phone each write transaction
+// is its own connection, so overlapping ones failed with "database is locked". They now queue.
+const memory = { id: randomUUID(), kind: 'fact' as const, text: 'Likes tea', state: 'proposed' as const, revision: 1,
+  original_text: 'Likes tea', confidence: null, entity_type: null, entity_name: null, observed_at: null,
+  updated_at: '2026-01-01T00:00:00Z', deleted_at: null, evidence: null };
+await upsertServerMemory(db, memory);
+let releasePage!: () => void;
+const pageWriting = new Promise<void>((r) => (releasePage = r));
+const pull = exclusive(db, async (txn) => {
+  await upsertServerMemory(txn, { ...memory, id: randomUUID() });
+  await pageWriting; // the rest of the page is still being written
+});
+const archive = applyMemory(db, memory.id, { action: 'set_state', payload: { state: 'archived' } }, randomUUID);
+setTimeout(releasePage, 50);
+await Promise.all([pull, archive]);
+assert.deepEqual((await listMemories(db, { state: 'archived' })).map((m) => m.id), [memory.id]);
 
 console.log('db.test.ts: ok');

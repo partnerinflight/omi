@@ -13,7 +13,8 @@ export default function StatusScreen() {
     <>
       <Stack.Screen options={{ title: 'Status' }} />
       <Screen onRefresh={() => run(true)}>
-        <Connection sync={sync} status={status} onChange={changed} link={server && code ? { server, code } : undefined} />
+        <Connection key={`${server}|${code}`} sync={sync} status={status} onChange={changed}
+          link={server && code ? { server, code } : undefined} />
         <Pipeline sync={sync} version={version} />
         <ClipCheck />
       </Screen>
