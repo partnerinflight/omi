@@ -12,7 +12,7 @@ import unittest
 import uuid
 import wave
 
-from second_brain.bridge import STALE, Bridge
+from second_brain.bridge import STALE, Bridge, load_token
 from second_brain.clarifications import Clarifications
 from second_brain.io import write_json
 from second_brain.queue import Queue
@@ -386,6 +386,18 @@ class BridgeConfigTests(unittest.TestCase):
             for url in ["https://brain.example", "http://127.0.0.1:8000", ""]:
                 write_json(Path(tmp) / "c.json", {**base, "bridge_url": url, "bridge_token_file": token})
                 self.assertEqual(Config.load(Path(tmp) / "c.json").bridge_url, url)
+
+
+class TokenFileTests(unittest.TestCase):
+    def test_bom_from_windows_powershell_is_ignored_and_junk_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bridge-token.txt"
+            path.write_bytes(b"\xef\xbb\xbfsb_abc123\r\n")
+            self.assertEqual(load_token(path), "sb_abc123")
+            for junk in ("sb_ab\u00e9", "sb_a b\x00"):
+                path.write_text(junk, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_token(path)
 
 
 if __name__ == "__main__":

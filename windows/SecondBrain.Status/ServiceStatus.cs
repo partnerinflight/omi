@@ -6,6 +6,9 @@ public enum Health { Running, Attention, Stopped, Unavailable }
 
 public sealed record ReceiverInfo(bool Listening, int Port, int ActiveUploads, int SessionsOk, int SessionsFailed, string? Error);
 
+// The Windows-to-server bridge (runtime.py bridge_status). Off unless bridge_url is set.
+public sealed record BridgeInfo(bool Enabled, DateTimeOffset? LastSuccess, string? Error);
+
 public sealed record StatusEvent(DateTimeOffset Time, string Kind, string Detail);
 
 public sealed record JobInfo(string Id, string State, string Stage, int Attempts, string? Error, DateTimeOffset Updated, string Kind = "omi")
@@ -27,6 +30,8 @@ public sealed record ServiceStatus(
 
     public string Activity => Stage ?? (Pending > 0 ? "Waiting / retrying" : "Idle");
     public int Clarifications { get; init; }
+    public BridgeInfo Bridge { get; init; } = NoBridge;
+    static readonly BridgeInfo NoBridge = new(false, null, null);
 
     public string Title => Health switch
     {
@@ -97,17 +102,24 @@ public sealed record ServiceStatus(
             people = Int(speakers, "people");
         }
 
+        var bridge = Section(root, "bridge") is { } b
+            ? new BridgeInfo(Bool(b, "enabled"),
+                b.TryGetProperty("last_success", out var ok) && ok.ValueKind == JsonValueKind.Number ? Time(ok) : null,
+                Text(b, "error"))
+            : NoBridge;
+
         int failed = Count("failed");
         var problems = new List<string>();
         if (failed > 0) problems.Add(failed == 1 ? "1 recording failed processing" : $"{failed} recordings failed processing");
         if (!receiver.Listening) problems.Add(string.IsNullOrEmpty(receiver.Error) ? "Receiver is not listening" : $"Receiver is not listening: {receiver.Error}");
         if (discovery is not null) problems.Add("Recording discovery needs attention; check the service log");
+        if (bridge.Enabled && bridge.Error is not null) problems.Add($"Server sync failing: {bridge.Error}");
 
         return new ServiceStatus(
             problems.Count == 0 ? Health.Running : Health.Attention,
             problems.Count == 0 ? "Receiving and processing normally" : string.Join(" · ", problems),
             stage, inStage, Count("pending"), Count("processing"), Count("complete"), failed,
-            receiver, discovery, unidentified, people, events, jobs) { Clarifications = Int(root, "clarifications") };
+            receiver, discovery, unidentified, people, events, jobs) { Clarifications = Int(root, "clarifications"), Bridge = bridge };
     }
 
     static ServiceStatus Empty(Health health, string reason) =>

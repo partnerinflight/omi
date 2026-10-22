@@ -20,6 +20,7 @@
                         <TextBlock Text="Receiver" Style="{StaticResource Caption}" />
                         <TextBlock x:Name="ReceiverValue" Style="{StaticResource StatValue}" />
                         <TextBlock x:Name="ReceiverCaption" Style="{StaticResource Caption}" />
+                        <TextBlock x:Name="ServerSyncCaption" Style="{StaticResource Caption}" />
                     </StackPanel>
                 </Border>
                 <Border Style="{StaticResource Card}" Margin="6">

@@ -109,6 +109,17 @@ static class StatusTests
         Check.Equal(Health.Attention, discovery.Health, "discovery error needs attention");
         Check.That(discovery.Reason.Contains("Recording discovery needs attention"), "discovery reason");
 
+        Check.That(!Parse(Live()).Bridge.Enabled, "no bridge section means server sync is off");
+        var bridgeJson = Live();
+        bridgeJson["bridge"] = new JsonObject { ["enabled"] = true, ["last_success"] = Now.ToUnixTimeSeconds() - 30, ["error"] = null };
+        var syncing = Parse(bridgeJson);
+        Check.Equal(Health.Running, syncing.Health, "working server sync is healthy");
+        Check.Equal(Now.AddSeconds(-30), syncing.Bridge.LastSuccess, "server sync last success");
+        bridgeJson["bridge"]!["error"] = "UnicodeEncodeError";
+        var broken = Parse(bridgeJson);
+        Check.Equal(Health.Attention, broken.Health, "server sync error needs attention");
+        Check.That(broken.Reason.Contains("Server sync failing: UnicodeEncodeError"), "server sync reason");
+
         var minimal = Parse(new JsonObject
         {
             ["service"] = "running", ["heartbeat"] = Now.ToUnixTimeSeconds(), ["receiver"] = new JsonObject { ["listening"] = true },

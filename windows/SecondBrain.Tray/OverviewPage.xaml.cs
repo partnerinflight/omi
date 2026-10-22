@@ -41,6 +41,11 @@ public partial class OverviewPage : UserControl
         ReceiverCaption.Text = up
             ? $"Port {status.Receiver.Port} · {Formats.Plural(status.Receiver.ActiveUploads, "active upload")} · {status.Receiver.SessionsOk} ok / {status.Receiver.SessionsFailed} failed sessions"
             : "No live status";
+        var sync = status.Bridge;
+        ServerSyncCaption.Text = !up || !sync.Enabled ? ""
+            : sync.Error is not null ? "Server sync failing"
+            : sync.LastSuccess is { } synced ? $"Server synced {Formats.Time(synced, now)}"
+            : "Server sync starting";
         PendingValue.Text = status.Pending.ToString();
         QueueCaption.Text = $"pending · {status.Processing} processing";
         CompleteValue.Text = status.Complete.ToString();

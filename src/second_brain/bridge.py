@@ -469,9 +469,12 @@ def render_todos(todos: list[dict], managed: bool = True) -> bytes:
 
 
 def load_token(path: Path) -> str:
-    token = path.read_text(encoding="utf-8").strip()
+    # utf-8-sig: Windows PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM.
+    token = path.read_text(encoding="utf-8-sig").strip()
     if not token:
         raise ValueError("Bridge token file is empty")
+    if not (token.isascii() and token.isprintable()):
+        raise ValueError("Bridge token file must contain only the token printed by add-producer")
     return token
 
 
