@@ -5,6 +5,7 @@ import type { Sync } from './sync';
 // whole files without range support, which the iOS player needs to stream, and a cached clip
 // plays offline. iOS may purge the cache; a missing clip is fetched again on demand.
 // ponytail: keyed by observation and clip number only; a clip the worker re-uploads keeps the old copy.
+// A clip is deleted once its speaker is named or discarded, here or on Windows.
 const dir = new Directory(Paths.cache, 'clips');
 const inflight = new Map<string, Promise<string>>();
 
@@ -31,6 +32,21 @@ export function fetchClip(sync: Sync, observation: string, n: number, auth?: Pro
     inflight.set(key, job);
   }
   return job;
+}
+
+const owner = (f: File | Directory) => f.name.replace(/-\d+\.wav$/, '');
+
+// Named or discarded on this phone: its clips are not needed again.
+export function deleteClips(observation: string) {
+  if (!dir.exists) return;
+  for (const f of dir.list()) if (f instanceof File && owner(f) === observation) f.delete();
+}
+
+// After a fresh list from the server: drop clips of speakers no longer waiting for review
+// (named or discarded on Windows or another device).
+export function pruneClips(keep: Set<string>) {
+  if (!dir.exists) return;
+  for (const f of dir.list()) if (!keep.has(owner(f))) f.delete();
 }
 
 type Auth = Awaited<ReturnType<Sync['clipAuth']>>;

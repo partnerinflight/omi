@@ -3,7 +3,7 @@ import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-au
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Alert, Pressable, View } from 'react-native';
-import { fetchClip, prefetchClips } from './clips';
+import { deleteClips, fetchClip, prefetchClips, pruneClips } from './clips';
 import { listCommands, queueCommand, type Command, type CommandPayload, type Db } from './db';
 import type { Sync, WorkerRecord } from './sync';
 import { Button, color, Empty, Field, Group, Icon, Note, Row, styles, T } from './ui';
@@ -59,6 +59,8 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
   const send = async (payload: CommandPayload) => {
     try {
       await queueCommand(db, payload, randomUUID);
+      // Named or discarded; a correction that clears a match sends it back to review instead.
+      if (payload.action === 'assign' || payload.action === 'discard') deleteClips(payload.observation);
     } catch (e) {
       Alert.alert('Could not save', String(e));
     }
@@ -91,13 +93,17 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
   // Windows assigns voice matches itself (they name speakers in notes), as the tray shows them:
   // only speakers with no person need naming; matches are listed so a wrong one can be corrected.
   const toName = useMemo(() => obs.filter((o) => !o.data.person_id && reviewable(o)), [obs]);
-  const matched = obs.filter((o) => o.data.provenance === 'inferred' && o.data.person_id && reviewable(o));
+  const matched = useMemo(() => obs.filter((o) => o.data.provenance === 'inferred' && o.data.person_id && reviewable(o)), [obs]);
   // Clips for the rows on screen download in the background, so Play starts at once.
   useEffect(() => {
     let stop = false;
     prefetchClips(sync, toName.slice(0, shown).flatMap((o) => o.data.clips.map((n) => [o.id, n] as [string, number])), () => stop);
     return () => { stop = true; };
   }, [sync, toName, shown]);
+  // Only a fresh list says which speakers are done; an offline page keeps every clip.
+  useEffect(() => {
+    if (loaded && !offline) pruneClips(new Set([...toName, ...matched].map((o) => o.id)));
+  }, [loaded, offline, toName, matched]);
   const open = questions.filter((q) => q.data.state === 'pending');
   const assign = (o: WorkerRecord<Observation>) => (person: string | null, newName: string) => send(person
     ? { action: 'assign', observation: o.id, person, base_hash: o.hash }
