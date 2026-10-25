@@ -320,14 +320,13 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       return (await res.json()).records;
     },
 
-    // For the audio player, which fetches the clip itself: one authenticated call first
-    // so an expired access token is refreshed before the player uses it.
-    async clipSource(observation: string, n: number) {
-      await api('/v1/pipeline');
-      const url = await serverUrl();
+    // For clip downloads, which bypass api(): one authenticated call first so an expired
+    // access token is refreshed before the downloads use it.
+    async clipAuth() {
+      const res = await api('/v1/pipeline');
+      if (!res.ok) throw new HttpError(res.status);
       const current = await tokens.get();
-      return { uri: `${url}/v1/clips/${encodeURIComponent(observation)}/${n}`,
-        headers: { Authorization: `Bearer ${current?.access_token ?? ''}` } };
+      return { base: await serverUrl(), headers: { Authorization: `Bearer ${current?.access_token ?? ''}` } };
     },
 
     // Single flight. A trigger during a run (say, an edit made mid-pull) causes one

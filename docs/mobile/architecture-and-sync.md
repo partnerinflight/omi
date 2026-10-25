@@ -88,7 +88,7 @@ integration. Routes below are proposed names, not compatibility with existing AP
 | `GET /v1/changes?cursor=...&limit=...` | Ordered owner-scoped upserts/tombstones and next cursor |
 | `POST /v1/operations` | Bounded batch of desired-state commands, individual durable results |
 | `GET /v1/sources/{id}` | Authorized source excerpt and archive metadata |
-| `GET /v1/clips/{id}` | Authorized streamed audio; range support, content hash, private cache policy |
+| `GET /v1/clips/{id}/{n}` | Authorized whole-file WAV (no range support), content-hash ETag, `no-store` |
 | `POST /v1/worker/events` | Idempotent source/item/observation/result imports from registered producer |
 | `GET /v1/worker/commands?cursor=...` | Ordered command delivery to a specific worker |
 | `POST /v1/worker/commands/{id}/result` | Idempotent worker application/failure acknowledgment |
@@ -179,9 +179,11 @@ Upload clips atomically with size/hash validation before advertising availabilit
 The current service retains review clips only until name/discard; copy eligible
 clips into a bounded transfer spool before cleanup, or report them unavailable.
 Retain server clips while pending review with a proposed 30-day cap, and delete
-within 24 hours after resolved/discarded unless explicitly retained. Keep only
-explicitly downloaded clips offline (proposed 100 MB LRU); sync deletion metadata
-and clear cache on sign-out. These are proposed defaults to validate on-device.
+within 24 hours after resolved/discarded unless explicitly retained. The app
+downloads the clips of the speaker rows on screen (20 at a time, about 15 MB) into
+the iOS cache directory and plays them from there; the player cannot stream an
+endpoint without range support. iOS may purge that cache; a purged clip downloads
+again on tap. Still open: deleting cached clips after review and on sign-out.
 Do not retain entire recordings merely to support mobile playback.
 
 ## Obsidian and reminders

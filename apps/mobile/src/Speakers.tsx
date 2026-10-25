@@ -1,8 +1,9 @@
 import { randomUUID } from 'expo-crypto';
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Alert, Pressable, View } from 'react-native';
+import { fetchClip, prefetchClips } from './clips';
 import { listCommands, queueCommand, type Command, type CommandPayload, type Db } from './db';
 import type { Sync, WorkerRecord } from './sync';
 import { Button, color, Empty, Field, Group, Icon, Note, Row, styles, T } from './ui';
@@ -52,6 +53,8 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
   }, [db, sync]);
   useEffect(() => { load(); }, [load, version]);
   useEffect(() => { setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'doNotMix' }); }, []);
+  const clips = useClipPlayer(sync);
+  const [shown, setShown] = useState(PAGE);
 
   const send = async (payload: CommandPayload) => {
     try {
@@ -87,9 +90,14 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
   const name = (id: string | null) => people.find((p) => p.id === id)?.data.name;
   // Windows assigns voice matches itself (they name speakers in notes), as the tray shows them:
   // only speakers with no person need naming; matches are listed so a wrong one can be corrected.
-  const reviewable = (o: WorkerRecord<Observation>) => o.data.published !== 0 && o.data.clips.length > 0;
-  const toName = obs.filter((o) => !o.data.person_id && reviewable(o));
+  const toName = useMemo(() => obs.filter((o) => !o.data.person_id && reviewable(o)), [obs]);
   const matched = obs.filter((o) => o.data.provenance === 'inferred' && o.data.person_id && reviewable(o));
+  // Clips for the rows on screen download in the background, so Play starts at once.
+  useEffect(() => {
+    let stop = false;
+    prefetchClips(sync, toName.slice(0, shown).flatMap((o) => o.data.clips.map((n) => [o.id, n] as [string, number])), () => stop);
+    return () => { stop = true; };
+  }, [sync, toName, shown]);
   const open = questions.filter((q) => q.data.state === 'pending');
   const assign = (o: WorkerRecord<Observation>) => (person: string | null, newName: string) => send(person
     ? { action: 'assign', observation: o.id, person, base_hash: o.hash }
@@ -104,8 +112,16 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
     <>
       {offline && <Note icon="wifi.slash" tone={color.secondary} text="Showing the last loaded lists. Reconnect to refresh." />}
 
-      <Group header={`To name · ${toName.length}`} footer={toName.length ? 'Play a clip, then type who it is.' : undefined}>
-        {toName.map((o) => {
+      <Group header={`To name · ${toName.length}`} footer={toName.length ? (
+        <View style={{ gap: 8 }}>
+          <T ramp="footnote" tone={color.secondary}>Play a clip, then type who it is.</T>
+          {toName.length > shown && (
+            <Button kind="tinted" title={`Show ${Math.min(PAGE, toName.length - shown)} More of ${toName.length - shown}`}
+              onPress={() => setShown((n) => n + PAGE)} />
+          )}
+        </View>
+      ) : undefined}>
+        {toName.slice(0, shown).map((o) => {
           const s = status(o.id);
           return (
             <Item key={o.id}>
@@ -117,7 +133,7 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
                 </View>
               </View>
               <View style={actions}>
-                {o.data.clips.map((n) => <Clip key={n} sync={sync} observation={o.id} n={n} />)}
+                {o.data.clips.map((n) => <Clip key={n} clips={clips} observation={o.id} n={n} />)}
               </View>
               {s.note}
               {!s.busy && (
@@ -140,7 +156,7 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
           footer="Named automatically from the voices you confirmed. Tap one to correct it.">
           {matched.map((o) => (
             <MatchedRow key={o.id} o={o} name={name(o.data.person_id) ?? 'Unknown person'} note={status(o.id)}
-              people={people} sync={sync} onAssign={assign(o)}
+              people={people} clips={clips} onAssign={assign(o)}
               onClear={() => send({ action: 'clear', observation: o.id, base_hash: o.hash })} />
           ))}
         </Group>
@@ -219,8 +235,8 @@ function ClarificationCard({ q, note, onSave, onKeep }: { q: WorkerRecord<Clarif
   );
 }
 
-function MatchedRow({ o, name, note, people, sync, onAssign, onClear }: { o: WorkerRecord<Observation>; name: string;
-  note: { busy: boolean; note: ReactNode }; people: WorkerRecord<Person>[]; sync: Sync;
+function MatchedRow({ o, name, note, people, clips, onAssign, onClear }: { o: WorkerRecord<Observation>; name: string;
+  note: { busy: boolean; note: ReactNode }; people: WorkerRecord<Person>[]; clips: ClipPlayer;
   onAssign: (person: string | null, name: string) => void; onClear: () => void }) {
   const [open, setOpen] = useState(false);
   return (
@@ -241,7 +257,7 @@ function MatchedRow({ o, name, note, people, sync, onAssign, onClear }: { o: Wor
           {open && !note.busy && (
             <>
               <View style={actions}>
-                {o.data.clips.map((n) => <Clip key={n} sync={sync} observation={o.id} n={n} />)}
+                {o.data.clips.map((n) => <Clip key={n} clips={clips} observation={o.id} n={n} />)}
               </View>
               <NameInput people={people} placeholder="Wrong person? Type the right name" onSave={onAssign} />
               <View style={actions}>
@@ -322,26 +338,47 @@ function NameInput({ people, placeholder, initial = '', autoFocus, onSave, onCan
   );
 }
 
-function Clip({ sync, observation, n }: { sync: Sync; observation: string; n: number }) {
+// One player for the whole page: a native player per clip button made the list unusable.
+function useClipPlayer(sync: Sync) {
   const player = useAudioPlayer(null);
   const status = useAudioPlayerStatus(player);
-  const [loaded, setLoaded] = useState(false);
-  const toggle = async () => {
-    if (status.playing) return player.pause();
-    if (!loaded) {
+  const [current, setCurrent] = useState<string | null>(null);
+  const [loading, setLoading] = useState<string | null>(null);
+  const taps = useRef(0);
+  const toggle = async (observation: string, n: number) => {
+    const key = `${observation}/${n}`;
+    const tap = ++taps.current;
+    if (key === current && status.playing) return player.pause();
+    if (key !== current) {
+      setLoading(key);
+      let uri: string;
       try {
-        player.replace(await sync.clipSource(observation, n));
-        setLoaded(true);
+        uri = await fetchClip(sync, observation, n);
       } catch {
+        if (tap === taps.current) setLoading(null);
         return Alert.alert('Clip unavailable', 'Connect to the server to play clips.');
       }
+      if (tap !== taps.current) return; // another clip was tapped while this one downloaded
+      setLoading(null);
+      player.replace({ uri });
+      setCurrent(key);
     } else if (status.didJustFinish || status.currentTime >= status.duration) {
       player.seekTo(0);
     }
     player.play();
   };
-  return <Button kind="tinted" icon={status.playing ? 'pause.fill' : 'play.fill'} title={`Clip ${n + 1}`} onPress={toggle}
-    accessibilityLabel={status.playing ? `Pause clip ${n + 1}` : `Play clip ${n + 1}`} />;
+  return { playing: status.playing ? current : null, loading, toggle };
+}
+type ClipPlayer = ReturnType<typeof useClipPlayer>;
+
+function Clip({ clips, observation, n }: { clips: ClipPlayer; observation: string; n: number }) {
+  const key = `${observation}/${n}`;
+  const playing = clips.playing === key;
+  const icon = clips.loading === key ? 'arrow.down.circle' : playing ? 'pause.fill' : 'play.fill';
+  return <Button kind="tinted" icon={icon} title={`Clip ${n + 1}`} onPress={() => clips.toggle(observation, n)}
+    accessibilityLabel={playing ? `Pause clip ${n + 1}` : `Play clip ${n + 1}`} />;
 }
 
+const PAGE = 20;
+const reviewable = (o: WorkerRecord<Observation>) => o.data.published !== 0 && o.data.clips.length > 0;
 const actions = { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'center' } as const;
