@@ -3,11 +3,13 @@ The real server contract is exercised in server/tests/test_worker.py."""
 
 import hashlib
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 import wave
@@ -65,9 +67,11 @@ class Handler(BaseHTTPRequestHandler):
         # /v1/worker/commands: pending ones, in order
         self.reply(200, {"commands": [c for c in self.server.commands if c["id"] not in self.server.results]})
 
-    def do_PUT(self):  # /v1/worker/clips/{observation}/{n}
+    def do_PUT(self):  # /v1/worker/clips/{observation}/{n}, /v1/worker/task-clips/{item}
         if self.allowed():
             audio = self.body()
+            if "/task-clips/" in self.path and ("item", self.path.rsplit("/", 1)[-1]) not in self.server.records:
+                return self.reply(404)
             assert hashlib.sha256(audio).hexdigest() == self.headers["X-Content-SHA256"]
             self.server.clips[self.path.rsplit("/", 2)[-2] + ":" + self.path.rsplit("/", 1)[-1]] = audio
             self.reply(204)
@@ -295,6 +299,27 @@ class BridgeTests(unittest.TestCase):
         self.server.clips.clear()
         self.bridge.tick()
         self.assertEqual(self.server.clips, {})  # unchanged file is not resent
+
+    def test_task_clip_is_sent_once_after_its_item(self):
+        ledger = self.vault / "System/Router/Ledger" / f"{self.shash}.json"
+        record = json.loads(ledger.read_text(encoding="utf-8"))
+        record["extraction"]["tasks"][0]["span"] = {"start": 61.0, "end": 64.5, "speaker": "Speaker 1"}
+        write_json(ledger, record)
+        eid = event_id(self.shash, "task", "", "Buy oat milk")
+        clips = self.data / "task-clips"
+        clips.mkdir()
+        (clips / f"{eid}.wav").write_bytes(b"task clip")
+        (clips / "0123456789abcdef.wav").write_bytes(b"no item yet")  # its ledger is not exported yet
+        (clips / f"{eid}.part").write_bytes(b"still being cut")
+        self.bridge.tick()
+        [task] = [r["data"] for r in self.sent() if r["kind"] == "item" and r["data"]["kind"] == "task"]
+        self.assertEqual((task["span"]["speaker"], task["said_at"]), ("Speaker 1", "2026-10-09T08:01:01+00:00"))
+        self.assertEqual(self.server.clips[f"task-clips:{eid}"], b"task clip")
+        self.assertEqual(sorted(p.name for p in clips.iterdir()), ["0123456789abcdef.wav", f"{eid}.part"])
+        old = time.time() - 31 * 86400
+        os.utime(clips / "0123456789abcdef.wav", (old, old))
+        self.bridge.tick()
+        self.assertEqual([p.name for p in clips.iterdir()], [f"{eid}.part"])  # never accepted: dropped after 30 days
 
     def test_lecture_speakers_and_clips_are_never_exported(self):
         # Lectures stay in the vault's lectures folder only (owner decision, 2026-10-21); their

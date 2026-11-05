@@ -12,11 +12,13 @@ a long outage replays exactly what is missing. The server deduplicates by id and
 
 from __future__ import annotations
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 import hashlib
 from importlib import metadata
 import json
 from pathlib import Path
 import sqlite3
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -37,11 +39,19 @@ except metadata.PackageNotFoundError:
 # Cloudflare's browser integrity check rejects urllib's default "Python-urllib/x.y" with 403 (1010).
 USER_AGENT = f"SecondBrain-Bridge/{_VERSION}"
 MAX_CLIP_BYTES = 2_000_000  # matches the server limit
+TASK_CLIP_DAYS = 30
 STALE = "Changed on Windows since you loaded it; refresh and try again."
 
 
 def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def said_at(recorded_at: str, offset: float) -> str | None:
+    try:
+        return (datetime.fromisoformat(recorded_at) + timedelta(seconds=offset)).isoformat()
+    except ValueError:
+        return None  # "unknown" recording time
 
 
 def published_windows(manifest: dict, kind: str) -> list[dict]:
@@ -174,6 +184,8 @@ class Bridge:
                 "note": note,  # vault-relative, where router.route wrote it
                 "observed_at": fields.get("observed_at") or observed_at,
                 **{k: fields[k] for k in ("entity_type", "entity_name", "owner", "due", "confidence") if k in fields},
+                **({"span": fields["span"], "said_at": said_at(observed_at, fields["span"]["start"])}
+                   if fields.get("span") else {}),  # where a task was said; its clip is uploaded separately
             }) for kind, key, text, fields, note in found]
             # A ledger with no items still needs marking done; an empty marker record does it.
             out += records or [(f"ledger:{path.stem}", None, None, None)]
@@ -392,6 +404,30 @@ class Bridge:
                 sent += 1
         return sent
 
+    def upload_task_clips(self) -> int:
+        """Where each new task was said (Runtime.cut_task_clips). Sent once, then deleted here:
+        the server keeps it until the todo is completed or dismissed.
+        ponytail: a server restored from an older backup loses clips already sent; they are not re-cut."""
+        sent = 0
+        directory = self.data_dir / "task-clips"
+        for path in sorted(directory.glob("*.wav")) if directory.is_dir() else []:
+            stat = path.stat()
+            if stat.st_size > MAX_CLIP_BYTES or time.time() - stat.st_mtime > TASK_CLIP_DAYS * 86400:
+                path.unlink()  # too large to send, or its task never reached the server
+                continue
+            audio = path.read_bytes()
+            try:
+                self.send("PUT", f"/v1/worker/task-clips/{path.stem}", body=audio, headers={
+                    "Content-Type": "audio/wav", "X-Content-SHA256": hashlib.sha256(audio).hexdigest()})
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+                # The task's item record is not on the server yet; it is sent with the ledger.
+                continue
+            path.unlink()
+            sent += 1
+        return sent
+
     def tick(self, status: dict | None = None) -> dict:
         """Export everything not yet acknowledged. Raises on network/server failure; the
         acknowledged state only advances after a successful response, so the next tick resumes."""
@@ -442,7 +478,7 @@ class Bridge:
                 db.executemany("INSERT OR IGNORE INTO done_files VALUES(?)",
                                [(f,) for f, left in files.items() if left == 0])
             sent += len(batch)
-        return {"sent": sent, "clips": self.upload_clips(speakers, exported)}
+        return {"sent": sent, "clips": self.upload_clips(speakers, exported) + self.upload_task_clips()}
 
 
 PROJECTION = "Mobile"

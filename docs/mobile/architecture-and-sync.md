@@ -4,7 +4,9 @@ Design 2026-10-09. The todo slice (pair, auth, bootstrap, changes, operations)
 is implemented in [`server/`](../../server/README.md) as of 2026-10-10, as is the milestone 2
 shadow import (`POST /v1/worker/events`, read-only `GET /v1/pipeline[/records]`) and the
 milestone 3 command path (`command` entities through `/v1/operations`, `GET /v1/worker/commands`,
-`POST /v1/worker/commands/{id}/result`, `PUT /v1/worker/clips/...`, `GET /v1/clips/{obs}/{n}`).
+`POST /v1/worker/commands/{id}/result`, `PUT /v1/worker/clips/...`, `GET /v1/clips/{obs}/{n}`),
+and since 2026-11-04 task clips (`PUT /v1/worker/task-clips/{item}`, `GET /v1/todos/clips`,
+`GET /v1/todos/{id}/clip`).
 Milestone 4 memories are `memory` entities (bootstrap, changes, `set_text`/`set_state`
 operations) plus `GET /v1/worker/memories` for the vault projection. Evidence (excerpt,
 time, vault note) is copied into each memory at import instead of a `GET /v1/sources/{id}`
@@ -187,6 +189,19 @@ again on tap. A speaker's cached clips are deleted when it is named or discarded
 the phone, and after each fresh list for speakers no longer awaiting review (named or
 discarded elsewhere). Signing out deletes the whole clip cache.
 Do not retain entire recordings merely to support mobile playback.
+
+Task clips (2026-11-04) let the phone play where a new todo was said. The router asks
+the model for each task's `span`, copied from the `[start-end]` transcript lines, and
+keeps it only if it overlaps a real line (capped at 30 s; the speaker is the first line it
+overlaps). Right after routing, Windows cuts that span plus 1.5 s either side from the
+recording, which is deleted only once all of the job's windows are routed. The bridge
+sends each clip once, after the task's item record, then deletes it locally (an unaccepted
+clip goes after 30 days). The server keeps it while the todo (`legacy_id` = item id) is
+open and drops it at the next worker export after the todo is completed, dismissed or
+deleted, or after 30 days if no todo ever appears. The phone lists open todos with clips,
+downloads them ahead, shows the speaker and time with a Play button, deletes a clip as
+soon as its todo is completed or dismissed there, and clears them all on sign-out. Todos
+created before this, or by hand, have no clip.
 
 ## Obsidian and reminders
 

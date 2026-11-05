@@ -132,6 +132,12 @@ class Queue:
                 "INSERT INTO events(time,kind,job,detail) VALUES(?,'failed',?,?)", (time.time(), job["id"], error)
             )
 
+    def audio(self, key):
+        """(audio path, whether the job is complete), or (None, False) for an unknown job."""
+        with self.connect() as db:
+            row = db.execute("SELECT audio,state FROM jobs WHERE id=?", (key,)).fetchone()
+        return (row[0], row[1] == "complete") if row else (None, False)
+
     def completed(self):
         with self.connect() as db:
             return [dict(r) for r in db.execute("SELECT id,audio FROM jobs WHERE state='complete'")]

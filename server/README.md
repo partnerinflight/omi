@@ -31,6 +31,8 @@ SB_DATABASE_URL=postgresql://... PYTHONPATH=. uv run python scripts/seed_demo.py
 | `GET /v1/worker/commands`, `POST /v1/worker/commands/{id}/result` | producer token; pending commands in order; first result stands |
 | `PUT /v1/worker/clips/{observation}/{n}` | producer token; WAV ≤ 2 MB with `X-Content-SHA256`; mismatched uploads are not stored |
 | `GET /v1/clips/{observation}/{n}` | device token; 410 once confirmed, discarded, forgotten or older than 30 days |
+| `PUT /v1/worker/task-clips/{item}` | producer token; where a router task was said (WAV ≤ 2 MB, `X-Content-SHA256`); 404 until its task item record arrives |
+| `GET /v1/todos/clips`, `GET /v1/todos/{id}/clip` | device token; open todos with a task clip (`said_at`, `speaker`), and the WAV; 410 once the todo is not open. Pruned on each worker export |
 
 Worker records are untrusted model output stored as inert JSON. Device and producer
 tokens are separate tables, so neither can call the other's routes.

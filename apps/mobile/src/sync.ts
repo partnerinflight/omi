@@ -320,6 +320,13 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
       return (await res.json()).records;
     },
 
+    // Open todos that have a clip of where they were said; online only, like records().
+    async todoClips(): Promise<TodoClip[]> {
+      const res = await api('/v1/todos/clips');
+      if (!res.ok) throw new HttpError(res.status);
+      return (await res.json()).clips;
+    },
+
     // For clip downloads, which bypass api(): one authenticated call first so an expired
     // access token is refreshed before the downloads use it.
     async clipAuth() {
@@ -404,3 +411,4 @@ export function createSync(db: Db, tokens: TokenStore, opts: Options) {
 }
 
 export type Sync = ReturnType<typeof createSync>;
+export type TodoClip = { todo_id: string; sha256: string; said_at: string | null; speaker: string | null };

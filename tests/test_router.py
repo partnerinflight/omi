@@ -8,6 +8,7 @@ import json
 import tempfile
 import threading
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 from second_brain import router as r
@@ -130,6 +131,27 @@ class RouteTests(unittest.TestCase):
         self.route(hermes, text="later source", source="job-w0001")
         self.assertIn("Call the clinic about Ethan's intake (owner: Eugene)", [t["text"] for t in hermes.task_payload["existing_tasks"]])
 
+    def test_task_span_is_checked_against_the_source_lines(self):
+        text = ("[10.00-14.50] Speaker 1 (c:S0): Can you send the budget?\n"
+                "[14.50-20.00] Eugene (mic): Sure, I'll send it to Alex tomorrow.\n"
+                "[20.00-95.00] Speaker 1 (c:S0): Great, and then a long tangent.")
+        hermes = FakeHermes({"tasks": [
+            dict(text="Send Alex the budget", owner="Eugene", due="tomorrow", confidence=0.9, span=[14.5, 20.0]),
+            dict(text="Plan the tangent", owner=None, due=None, confidence=0.9, span=[20, 95]),
+            dict(text="Invented time", owner=None, due=None, confidence=0.9, span=[300, 310]),
+            dict(text="Backwards", owner=None, due=None, confidence=0.9, span=[14, 10]),
+            dict(text="No span", owner=None, due=None, confidence=0.9, span=None),
+            dict(text="Not numbers", owner=None, due=None, confidence=0.9, span=["14", True])]})
+        result = self.route(hermes, text=text)
+        eid = lambda t, owner="": r.event_id(r.source_hash("job-w0000", text), "task", owner, t)  # noqa: E731
+        self.assertEqual(result["task_clips"], [dict(id=eid("Send Alex the budget", "Eugene"), start=14.5, end=20.0),
+                                                dict(id=eid("Plan the tangent"), start=20.0, end=50.0)])  # capped at 30 s
+        ledger = json.loads(next((self.vault / "System/Router/Ledger").glob("*.json")).read_text(encoding="utf-8"))
+        self.assertEqual([t["span"] for t in ledger["extraction"]["tasks"]], [
+            {"start": 14.5, "end": 20.0, "speaker": "Eugene"},  # not Speaker 1, whose line only ends there
+            {"start": 20.0, "end": 50.0, "speaker": "Speaker 1"}, None, None, None, None])
+        self.assertIsNone(r.task_span("untimed source text", [0, 5]))
+
     def test_malformed_task_verdicts_keep_every_task(self):
         todos = "# ToDos\n\n## Tasks\n- [ ] Schedule therapy for Ethan. %% router:aaaaaaaaaaaaaaaa %%\n"
         hermes = FakeHermes({"tasks": [dict(text="Renew the passport", owner=None, due=None, confidence=0.9),
@@ -235,7 +257,10 @@ class FakeHermesServer(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         system = body["messages"][0]["content"]
         FakeHermesServer.seen.append((self.headers.get("Authorization"), system[:40]))
-        reply = ({"decisions": [decision("Launch the project next week.")]} if system == r.EXTRACT_PROMPT
+        first = r.LINE.search(body["messages"][1]["content"])  # the source's first transcript line
+        reply = ({"decisions": [decision("Launch the project next week.")],
+                  "tasks": [dict(text="Book the launch room", owner=None, due=None, confidence=0.9,
+                                 span=[float(first[1]), float(first[2])])]} if system == r.EXTRACT_PROMPT
                  else {"items": []})
         data = json.dumps({"choices": [{"message": {"content": json.dumps(reply)}}]}).encode()
         self.send_response(200)
@@ -245,6 +270,40 @@ class FakeHermesServer(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+class PurgeTests(unittest.TestCase):
+    def test_audio_waits_for_the_jobs_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = dataclasses.replace(configuration(root), no_hermes=False)
+            (root / "hermes-key.txt").write_text("k")
+            pipeline = json.loads(cfg.pipeline_config.read_text())
+            pipeline.update(router_enabled=True, hermes_api_key_file=str(root / "hermes-key.txt"),
+                            hermes_url="http://127.0.0.1:9/v1/chat/completions")
+            write_json(cfg.pipeline_config, pipeline)
+            runtime = Runtime(cfg)
+            audio = cfg.incoming_dir / "rec.opus"
+            audio.write_bytes(b"audio")
+            job = runtime.queue.enqueue(audio, {"device": "d", "start_seq": 1, "first_utc": WHEN})
+            runtime.router.enqueue(job, [{"id": "w0", "final_transcript": "t"}, {"id": "w1", "final_transcript": "t"}], WHEN)
+            runtime.queue.complete(job, {})
+            runtime.purge_audio_logged(job, str(audio))
+            self.assertTrue(audio.exists())  # both windows still to route
+            for n, window in enumerate(("w0", "w1")):
+                runtime.router.done(f"{job}-{window}", {})
+                runtime.after_route(job, [])
+                self.assertEqual(audio.exists(), n == 0)  # deleted after the last one
+            # Routing turned off: nothing will cut clips, so pending routes no longer hold audio.
+            audio.write_bytes(b"audio")
+            runtime.router.enqueue("other", [{"id": "w0", "final_transcript": "t"}], WHEN)
+            later = runtime.queue.enqueue(audio, {"device": "d", "start_seq": 2, "first_utc": WHEN})
+            runtime.router.enqueue(later, [{"id": "w0", "final_transcript": "t"}], WHEN)
+            runtime.queue.complete(later, {})
+            pipeline["router_enabled"] = False
+            write_json(cfg.pipeline_config, pipeline)
+            runtime.purge_audio_logged(later, str(audio))
+            self.assertFalse(audio.exists())
 
 
 class ServiceRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -268,6 +327,8 @@ class ServiceRoutingTests(unittest.IsolatedAsyncioTestCase):
                     if runtime.server and runtime.server._server:
                         break
                     await asyncio.sleep(0.01)
+                # Task clips are cut only for a configured bridge; set after start so no export loop runs.
+                runtime.cfg = dataclasses.replace(cfg, bridge_url="https://brain.example.invalid")
                 self.assertEqual(await upload(runtime.server.bound_port, records(count=250)), U.MSG_BYE)
                 for _ in range(600):
                     if runtime.router.snapshot()["done"]:
@@ -278,6 +339,17 @@ class ServiceRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(decisions), 1)
                 self.assertIn("Launch the project next week.", decisions[0].read_text(encoding="utf-8"))
                 self.assertEqual(FakeHermesServer.seen[0][0], "Bearer gateway-secret")
+                # The task's clip is cut from the recording before its audio is deleted.
+                [job] = runtime.queue.completed()
+                for _ in range(100):  # cut just after the route is marked done; the worker or the router deletes the audio
+                    if list((cfg.data_dir / "task-clips").glob("*.wav")) and not Path(job["audio"]).exists():
+                        break
+                    await asyncio.sleep(0.05)
+                [clip] = (cfg.data_dir / "task-clips").glob("*.wav")
+                with wave.open(str(clip)) as f:
+                    self.assertEqual((f.getnchannels(), f.getframerate()), (1, 16000))
+                    self.assertGreater(f.getnframes(), 16000)
+                self.assertFalse(Path(job["audio"]).exists())
                 runtime.status()
                 status = json.loads(cfg.status_file.read_text())
                 self.assertEqual((status["router"]["enabled"], status["router"]["done"]), (True, 1))

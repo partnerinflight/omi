@@ -1,9 +1,9 @@
 import { randomUUID } from 'expo-crypto';
-import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { setAudioModeAsync } from 'expo-audio';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Alert, Pressable, View } from 'react-native';
-import { deleteClips, fetchClip, prefetchClips, pruneClips } from './clips';
+import { speakerClips, useClipPlayer, type ClipPlayer } from './clips';
 import { listCommands, queueCommand, type Command, type CommandPayload, type Db } from './db';
 import type { Sync, WorkerRecord } from './sync';
 import { Button, color, Empty, Field, Group, Icon, Note, Row, styles, T } from './ui';
@@ -53,14 +53,17 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
   }, [db, sync]);
   useEffect(() => { load(); }, [load, version]);
   useEffect(() => { setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'doNotMix' }); }, []);
-  const clips = useClipPlayer(sync);
+  const clips = useClipPlayer(sync, speakerClips);
   const [shown, setShown] = useState(PAGE);
 
   const send = async (payload: CommandPayload) => {
     try {
       await queueCommand(db, payload, randomUUID);
       // Named or discarded; a correction that clears a match sends it back to review instead.
-      if (payload.action === 'assign' || payload.action === 'discard') deleteClips(payload.observation);
+      if (payload.action === 'assign' || payload.action === 'discard') {
+        const o = obs.find((x) => x.id === payload.observation);
+        if (o) speakerClips.remove(clipsOf(o).map((c) => c.key));
+      }
     } catch (e) {
       Alert.alert('Could not save', String(e));
     }
@@ -97,12 +100,12 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
   // Clips for the rows on screen download in the background, so Play starts at once.
   useEffect(() => {
     let stop = false;
-    prefetchClips(sync, toName.slice(0, shown).flatMap((o) => o.data.clips.map((n) => [o.id, n] as [string, number])), () => stop);
+    speakerClips.prefetch(sync, toName.slice(0, shown).flatMap(clipsOf), () => stop);
     return () => { stop = true; };
   }, [sync, toName, shown]);
   // Only a fresh list says which speakers are done; an offline page keeps every clip.
   useEffect(() => {
-    if (loaded && !offline) pruneClips(new Set([...toName, ...matched].map((o) => o.id)));
+    if (loaded && !offline) speakerClips.prune(new Set([...toName, ...matched].flatMap(clipsOf).map((c) => c.key)));
   }, [loaded, offline, toName, matched]);
   const open = questions.filter((q) => q.data.state === 'pending');
   const assign = (o: WorkerRecord<Observation>) => (person: string | null, newName: string) => send(person
@@ -139,7 +142,7 @@ export function Speakers({ sync, version, onEdit }: { sync: Sync; version: numbe
                 </View>
               </View>
               <View style={actions}>
-                {o.data.clips.map((n) => <Clip key={n} clips={clips} observation={o.id} n={n} />)}
+                {clipsOf(o).map((c) => <ClipButton key={c.key} clips={clips} clip={c} />)}
               </View>
               {s.note}
               {!s.busy && (
@@ -263,7 +266,7 @@ function MatchedRow({ o, name, note, people, clips, onAssign, onClear }: { o: Wo
           {open && !note.busy && (
             <>
               <View style={actions}>
-                {o.data.clips.map((n) => <Clip key={n} clips={clips} observation={o.id} n={n} />)}
+                {clipsOf(o).map((c) => <ClipButton key={c.key} clips={clips} clip={c} />)}
               </View>
               <NameInput people={people} placeholder="Wrong person? Type the right name" onSave={onAssign} />
               <View style={actions}>
@@ -344,45 +347,14 @@ function NameInput({ people, placeholder, initial = '', autoFocus, onSave, onCan
   );
 }
 
-// One player for the whole page: a native player per clip button made the list unusable.
-function useClipPlayer(sync: Sync) {
-  const player = useAudioPlayer(null);
-  const status = useAudioPlayerStatus(player);
-  const [current, setCurrent] = useState<string | null>(null);
-  const [loading, setLoading] = useState<string | null>(null);
-  const taps = useRef(0);
-  const toggle = async (observation: string, n: number) => {
-    const key = `${observation}/${n}`;
-    const tap = ++taps.current;
-    if (key === current && status.playing) return player.pause();
-    if (key !== current) {
-      setLoading(key);
-      let uri: string;
-      try {
-        uri = await fetchClip(sync, observation, n);
-      } catch {
-        if (tap === taps.current) setLoading(null);
-        return Alert.alert('Clip unavailable', 'Connect to the server to play clips.');
-      }
-      if (tap !== taps.current) return; // another clip was tapped while this one downloaded
-      setLoading(null);
-      player.replace({ uri });
-      setCurrent(key);
-    } else if (status.didJustFinish || status.currentTime >= status.duration) {
-      player.seekTo(0);
-    }
-    player.play();
-  };
-  return { playing: status.playing ? current : null, loading, toggle };
-}
-type ClipPlayer = ReturnType<typeof useClipPlayer>;
+const clipsOf = (o: WorkerRecord<Observation>) => o.data.clips.map((n) => ({
+  key: `${o.id}-${n}`, path: `/v1/clips/${encodeURIComponent(o.id)}/${n}`, n }));
 
-function Clip({ clips, observation, n }: { clips: ClipPlayer; observation: string; n: number }) {
-  const key = `${observation}/${n}`;
-  const playing = clips.playing === key;
-  const icon = clips.loading === key ? 'arrow.down.circle' : playing ? 'pause.fill' : 'play.fill';
-  return <Button kind="tinted" icon={icon} title={`Clip ${n + 1}`} onPress={() => clips.toggle(observation, n)}
-    accessibilityLabel={playing ? `Pause clip ${n + 1}` : `Play clip ${n + 1}`} />;
+function ClipButton({ clips, clip }: { clips: ClipPlayer; clip: ReturnType<typeof clipsOf>[number] }) {
+  const playing = clips.playing === clip.key;
+  const icon = clips.loading === clip.key ? 'arrow.down.circle' : playing ? 'pause.fill' : 'play.fill';
+  return <Button kind="tinted" icon={icon} title={`Clip ${clip.n + 1}`} onPress={() => clips.toggle(clip)}
+    accessibilityLabel={playing ? `Pause clip ${clip.n + 1}` : `Play clip ${clip.n + 1}`} />;
 }
 
 const PAGE = 20;

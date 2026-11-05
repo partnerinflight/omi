@@ -267,8 +267,10 @@ are authoritative; explain deliberate policy changes.
   `route_to_knowledge_router`.
 - Every window retains a final transcript. Filtered windows get audit metadata;
   kept windows get `router_queue` artifacts. Audio of completed Omi recordings
-  (original, sidecar, receipt, working WAVs) is deleted after publication when
-  `delete_audio_after_processing` is on (default); text artifacts are kept, and a
+  (original, sidecar, receipt, working WAVs) is deleted after publication, once the job's
+  router windows are done or failed for good, when `delete_audio_after_processing` is on
+  (default). Routing waits so it can cut each new task's clip (`data_dir/task-clips`, at
+  most 30 s plus 1.5 s either side, only with a bridge configured); text artifacts are kept, and a
   startup sweep completes interrupted deletions. Lecture recordings are Omi recordings and are
   deleted the same way. Meeting captures are exempt until
   meeting processing/dedupe defines their retention. Legacy `router_*` threshold settings remain

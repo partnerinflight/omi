@@ -482,6 +482,11 @@ def worker_events(body: WorkerEvents, producer_id: Producer, conn: Db):
                 conn.execute("DELETE FROM clips WHERE producer_id = %s AND observation_id = %s", (producer_id, r.id))
             import_memory(conn, meta, producer_id, r)
         conn.execute("DELETE FROM clips WHERE created_at < now() - interval '30 days'")
+        # A task clip lives while its todo is open; one whose todo never appeared goes after 30 days.
+        conn.execute("""DELETE FROM task_clips c WHERE NOT EXISTS (
+                          SELECT 1 FROM todos t WHERE t.legacy_id = c.item_id AND t.state = 'open' AND t.deleted_at IS NULL)
+                        AND (c.created_at < now() - interval '30 days'
+                             OR EXISTS (SELECT 1 FROM todos t WHERE t.legacy_id = c.item_id))""")
         conn.execute("UPDATE producers SET last_seen_at = now(), status = %s WHERE id = %s",
                      (Jsonb(body.status), producer_id))
     # The epoch changes when the database is restored: the worker then resends everything.
@@ -586,6 +591,52 @@ def clip(observation_id: str, n: int, _: Device, conn: Db):
     row = conn.execute("""SELECT c.sha256, c.bytes FROM clips c JOIN producers p ON p.id = c.producer_id AND p.revoked_at IS NULL
                           WHERE c.observation_id = %s AND c.n = %s ORDER BY c.created_at DESC LIMIT 1""",
                        (observation_id, n)).fetchone()
+    if not row:
+        raise HTTPException(410, "clip_unavailable")
+    return Response(bytes(row["bytes"]), media_type="audio/wav",
+                    headers={"ETag": f'"{row["sha256"]}"', "Cache-Control": "private, no-store"})
+
+
+@app.put("/v1/worker/task-clips/{item_id}", status_code=204)
+async def worker_task_clip(item_id: str, request: Request, producer_id: Producer, conn: Db,
+                           x_content_sha256: Annotated[str, Header()]):
+    if not RECORD_ID.match(item_id):
+        raise HTTPException(422, "invalid_clip")
+    if int(request.headers.get("content-length") or 0) > MAX_CLIP_BYTES:
+        raise HTTPException(413, "clip_too_large")
+    body = await request.body()
+    if len(body) > MAX_CLIP_BYTES:
+        raise HTTPException(413, "clip_too_large")
+    if hashlib.sha256(body).hexdigest() != x_content_sha256:
+        raise HTTPException(422, "hash_mismatch")
+    if not conn.execute("""SELECT 1 FROM worker_records WHERE producer_id = %s AND kind = 'item' AND id = %s
+                           AND data->>'kind' = 'task' AND deleted_at IS NULL""", (producer_id, item_id)).fetchone():
+        raise HTTPException(404, "unknown_task")  # the worker resends after exporting the item
+    conn.execute("""INSERT INTO task_clips (producer_id, item_id, sha256, bytes) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (producer_id, item_id) DO UPDATE SET sha256 = EXCLUDED.sha256,
+                    bytes = EXCLUDED.bytes, created_at = now()""", (producer_id, item_id, x_content_sha256, body))
+
+
+OPEN_TODO_CLIPS = """FROM todos t
+    JOIN task_clips c ON c.item_id = t.legacy_id
+    JOIN producers p ON p.id = c.producer_id AND p.revoked_at IS NULL
+    LEFT JOIN worker_records w ON w.producer_id = c.producer_id AND w.kind = 'item' AND w.id = c.item_id
+    WHERE t.state = 'open' AND t.deleted_at IS NULL"""
+
+
+@app.get("/v1/todos/clips")
+def todo_clips(_: Device, conn: Db):
+    """Open todos that have a clip of where they were said, for the phone to download."""
+    rows = conn.execute(f"""SELECT t.id, c.sha256, w.data->>'said_at' AS said_at, w.data->'span'->>'speaker' AS speaker
+                            {OPEN_TODO_CLIPS} ORDER BY t.id""").fetchall()
+    return {"clips": [{"todo_id": str(r["id"]), "sha256": r["sha256"], "said_at": r["said_at"], "speaker": r["speaker"]}
+                      for r in rows]}
+
+
+@app.get("/v1/todos/{todo_id}/clip")
+def todo_clip(todo_id: uuid.UUID, _: Device, conn: Db):
+    row = conn.execute(f"SELECT c.sha256, c.bytes {OPEN_TODO_CLIPS} AND t.id = %s ORDER BY c.created_at DESC LIMIT 1",
+                       (todo_id,)).fetchone()
     if not row:
         raise HTTPException(410, "clip_unavailable")
     return Response(bytes(row["bytes"]), media_type="audio/wav",

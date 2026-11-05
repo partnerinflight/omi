@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ log = logging.getLogger("second_brain")
 _READ = object()  # routing()/summarizing(): read the pipeline config themselves
 STAGES = {"segmentation", "transcribing", "scoring", "refining", "routing", "publishing", "speakers"}
 MEETING_WAIT_SECONDS = 300  # recheck an Omi job whose meeting is still uploading
+TASK_CLIP_PAD_SECONDS = 1.5  # context either side of a task's span
 AUDIO_SUFFIXES = {".opus", ".m4a", ".caf", ".wav", ".ogg", ".mp3", ".flac"}
 
 
@@ -142,6 +144,9 @@ class Runtime:
                     path.unlink(missing_ok=True)
 
     def purge_audio_logged(self, job_id, audio):
+        # Routing cuts each task's clip from this audio (cut_task_clips): wait for the job's routes.
+        if self.router.pending_for(job_id) and self.routing() is not None:
+            return
         try:
             self.purge_audio(job_id, audio)
         except OSError:
@@ -370,6 +375,7 @@ class Runtime:
                     result = await asyncio.to_thread(
                         route, pipeline, self.cfg.vault_path, item["id"], item["text"], item["observed_at"], self.clarifications)
                     self.router.done(item["id"], result)
+                    await asyncio.to_thread(self.after_route, item["job"], result.get("task_clips", []))
                     continue
             except asyncio.CancelledError:
                 raise
@@ -377,10 +383,42 @@ class Runtime:
                 log.exception("Routing failed for %s", item["id"] if item else "the router")
                 if item:
                     self.router.fail(item, f"{type(e).__name__}; see private service log")
+                    await asyncio.to_thread(self.after_route, item["job"], [])
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=max(self.cfg.poll_seconds, 1))
             except asyncio.TimeoutError:
                 pass
+
+    def after_route(self, job_id, clips):
+        # Routing can finish before the job is marked complete; the worker purges it then.
+        audio, complete = self.queue.audio(job_id)
+        if audio:
+            self.cut_task_clips(audio, clips)
+        if complete:
+            self.purge_audio_logged(job_id, audio)  # no-op while other windows of the job still route
+
+    def cut_task_clips(self, audio, clips):
+        """Where each new task was said, for the phone (bridge.upload_task_clips). Best effort:
+        a missing or undecodable recording only means the todo has no clip."""
+        if not self.cfg.bridge_url:
+            return  # only the phone plays them
+        directory = self.cfg.data_dir / "task-clips"
+        for clip in clips:
+            output = directory / f"{clip['id']}.wav"
+            if output.exists():
+                continue
+            start = max(0.0, clip["start"] - TASK_CLIP_PAD_SECONDS)
+            part = output.with_suffix(".part")  # the bridge uploads only finished .wav files
+            try:
+                directory.mkdir(exist_ok=True)
+                subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.2f}", "-i", str(audio),
+                                "-t", f"{clip['end'] + TASK_CLIP_PAD_SECONDS - start:.2f}", "-ac", "1", "-ar", "16000",
+                                "-c:a", "pcm_s16le", "-f", "wav", str(part)],
+                               check=True, timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                os.replace(part, output)
+            except (OSError, subprocess.SubprocessError):
+                log.exception("Could not cut the audio clip for task %s", clip["id"])
+                part.unlink(missing_ok=True)
 
     def summarize_lecture(self, pipeline, item):
         """Summarize one published lecture. Hermes's result is frozen before the note is written,

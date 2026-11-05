@@ -48,7 +48,8 @@ Use exactly this schema:
     {"text": "decision and rationale if present", "confidence": 0.0-1.0, "observed_at": "ISO timestamp or null"}
   ],
   "tasks": [
-    {"text": "commitment/action", "owner": "name or null", "due": "date/time or null", "confidence": 0.0-1.0}
+    {"text": "commitment/action", "owner": "name or null", "due": "date/time or null", "confidence": 0.0-1.0,
+     "span": [start, end] or null}
   ],
   "ideas": [
     {"text": "idea worth retaining", "confidence": 0.0-1.0}
@@ -73,6 +74,9 @@ Rules:
   daily_summary is for consequential events/outcomes only, not summaries of what was
   discussed, reminders of ordinary chores, or duplicate copies of another category.
   Do not rescue rejected content by moving it into facts, ideas, or daily_summary.
+- A task's span is where the commitment is said: the start seconds of the first and the end
+  seconds of the last transcript line stating it, copied from their [start-end] brackets.
+  Use null when the source has no bracketed times.
 - Decisions must be explicit real-world choices with lasting consequences for the owner,
   their projects, relationships, or meaningful commitments. A choice is not useful merely
   because someone accepted, chose, agreed, or decided something.
@@ -265,7 +269,8 @@ def parse_extraction(obj: dict) -> dict:
     for x in _items(obj, "tasks"):
         text, conf = _text(x.get("text")), _confidence(x.get("confidence"))
         if text and conf is not None:
-            result["tasks"].append(dict(text=text, owner=_text(x.get("owner")), due=_text(x.get("due")), confidence=conf))
+            result["tasks"].append(dict(text=text, owner=_text(x.get("owner")), due=_text(x.get("due")), confidence=conf,
+                                        span=x.get("span")))
     for x in _items(obj, "ideas"):
         text, conf = _text(x.get("text")), _confidence(x.get("confidence"))
         if text and conf is not None:
@@ -427,6 +432,24 @@ def _annotation(action: str, matched: dict | None) -> str:
 
 # --- One source -------------------------------------------------------------------------------
 
+LINE = re.compile(r"^\[(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\] (.+?) \([^()]*\): ", re.M)  # speakers.render
+MAX_TASK_CLIP_SECONDS = 30.0
+
+
+def task_span(text: str, span) -> dict | None:
+    """Where a task was said, from the model's span checked against the source's own
+    [start-end] lines (speakers.render): None unless it overlaps a real line. Over-long
+    spans keep their start. The speaker is the first line the span touches."""
+    if not (isinstance(span, list) and len(span) == 2 and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in span)):
+        return None
+    start, end = float(span[0]), float(span[1])
+    lines = [(float(a), float(b), who) for a, b, who in LINE.findall(text)]
+    touched = [(a, b, who) for a, b, who in lines if a < end and b > start]  # lines only touching it don't count
+    if end <= start or not touched:
+        return None
+    return {"start": start, "end": min(end, start + MAX_TASK_CLIP_SECONDS), "speaker": touched[0][2]}
+
 def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, clarifications=None) -> dict:
     """Route one source. Idempotent: a source with a ledger record is skipped."""
     shash = source_hash(source_id, text)
@@ -502,6 +525,9 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, c
     day = safe_name(observed_at[:10])
     counts["tasks"] = 0
     tasks, open_tasks = extraction["tasks"], existing_tasks(vault)
+    for t in tasks:  # validated in place, so the ledger (and the bridge's item record) carries it
+        t["span"] = task_span(text, t["span"])
+    clips = []
     if tasks and (open_tasks or len(tasks) > 1):
         raw = chat(cfg, TASK_PROMPT, json.dumps({"existing_tasks": [dict(index=i, text=t) for i, t in enumerate(open_tasks)],
                                                  "candidates": [dict(index=i, text=t["text"]) for i, t in enumerate(tasks)]},
@@ -521,8 +547,10 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, c
             meta.append(f"due: {t['due']}")
         suffix = f" ({'; '.join(meta)})" if meta else ""
         bullet = f"{t['text']}{suffix}"
-        counts["tasks"] += publish(vault / "Projects" / "_Tasks.md", bullet,
-                                   event_id(shash, "task", t["owner"] or "", t["text"]), t['text'])
+        eid = event_id(shash, "task", t["owner"] or "", t["text"])
+        counts["tasks"] += publish(vault / "Projects" / "_Tasks.md", bullet, eid, t['text'])
+        if t["span"]:
+            clips.append(dict(id=eid, start=t["span"]["start"], end=t["span"]["end"]))
     counts["ideas"] = sum(publish(vault / "Ideas" / f"{day}.md",
                                       i['text'],
                                       event_id(shash, "idea", day, i["text"]), i['text']) for i in extraction["ideas"])
@@ -537,7 +565,8 @@ def route(cfg: dict, vault: Path, source_id: str, text: str, observed_at: str, c
     write_json(ledger_path(vault, shash), dict(
         source_hash=shash, source_id=source_id, processed_at=datetime.now().astimezone().isoformat(),
         counts=counts, extraction=extraction, reconciliation=reconciliation))
-    return counts
+    # For the caller to cut audio clips of the tasks it published (Runtime.cut_task_clips).
+    return dict(counts, task_clips=clips)
 
 
 # --- Durable queue ----------------------------------------------------------------------------
@@ -595,6 +624,10 @@ class RouterQueue:
         with self.connect() as db:
             db.execute("UPDATE routes SET state=?,attempts=?,next_attempt=?,error=?,updated=? WHERE id=?",
                        (state, attempts, time.time() + delay, error, time.time(), route_row["id"]))
+
+    def pending_for(self, job: str) -> int:
+        with self.connect() as db:
+            return db.execute("SELECT count(*) FROM routes WHERE job=? AND state='pending'", (job,)).fetchone()[0]
 
     def retry_failed(self) -> int:
         with self.connect() as db:

@@ -176,8 +176,9 @@ local mailbox. It cannot read the pairing key or stop the service.
   router, daily notes or the bridge export. Lecture audio is deleted after processing like other Omi
   audio. The installer grants the service write access to `lectures_vault_folder`.
 - **Audio is deleted after processing** (`delete_audio_after_processing`, on by
-  default). Once a recording's note is published and its job is complete, the
-  service deletes the original Omi recording, its sidecar and receipt, and all
+  default). Once a recording's note is published, its job is complete and the
+  knowledge router has finished its windows (it cuts each new task's audio clip
+  first; see below), the service deletes the original Omi recording, its sidecar and receipt, and all
   working audio (chunk/window WAVs). Transcripts, manifests and logs are kept;
   notes say "Audio deleted after processing" instead of linking a file. Failed or
   pending recordings keep their audio for retry, and speaker-review clips stay

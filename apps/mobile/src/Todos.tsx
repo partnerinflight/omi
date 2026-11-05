@@ -1,10 +1,12 @@
+import { setAudioModeAsync } from 'expo-audio';
 import { randomUUID } from 'expo-crypto';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { applyLocal, listTodos, type Db, type Problem, type Todo, type TodoState } from './db';
-import type { Sync } from './sync';
+import { todoClips, useClipPlayer, type ClipPlayer } from './clips';
+import type { Sync, TodoClip } from './sync';
 import { Button, color, Empty, Field, Group, Icon, MIN_TOUCH, Note, Row, Segmented, styles, T } from './ui';
 
 const ERRORS: Record<string, string> = {
@@ -23,6 +25,21 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
 
   const refresh = useCallback(async () => setTodos(await listTodos(db)), [db]);
   useEffect(() => { refresh(); }, [refresh, version]);
+
+  // Where each new todo was said: listed by the server while the todo is open, downloaded ahead.
+  const [said, setSaid] = useState<Map<string, TodoClip>>(new Map());
+  const clips = useClipPlayer(sync, todoClips);
+  useEffect(() => { setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'doNotMix' }); }, []);
+  useEffect(() => {
+    let stop = false;
+    sync.todoClips().then((list) => {
+      if (stop) return;
+      setSaid(new Map(list.map((c) => [c.todo_id, c])));
+      todoClips.prune(new Set(list.map((c) => c.todo_id))); // completed or dismissed elsewhere
+      todoClips.prefetch(sync, list.map((c) => clipOf(c.todo_id)), () => stop);
+    }).catch(() => {}); // offline: keep what is downloaded
+    return () => { stop = true; };
+  }, [sync, version]);
 
   const run = async (fn: () => Promise<void>) => {
     try {
@@ -43,6 +60,7 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
     run(() => applyLocal(db, id, { action: 'create', payload: { title } }, randomUUID));
   };
   const setState = (todo: Todo, state: TodoState) => {
+    if (state !== 'open') todoClips.remove([todo.id]); // the server drops it too once the change syncs
     // Show the change now; the queued write and the sync follow in the background.
     setTodos((list) => state === 'dismissed' ? list.filter((t) => t.id !== todo.id)
       : list.map((t) => (t.id === todo.id ? { ...t, state, pending: t.pending + 1 } : t)));
@@ -53,7 +71,7 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
   // Done todos have their own tab. A todo with a problem stays where its state puts it.
   const shown = todos.filter((t) => (tab === 'done') === (t.state === 'completed'));
   const row = (todo: Todo) => (
-    <TodoRow key={todo.id} todo={todo} onToggle={() => setState(todo, todo.state === 'completed' ? 'open' : 'completed')}
+    <TodoRow key={todo.id} todo={todo} said={todo.state === 'open' ? said.get(todo.id) : undefined} clips={clips} onToggle={() => setState(todo, todo.state === 'completed' ? 'open' : 'completed')}
       onDismiss={() => setState(todo, 'dismissed')} onResolve={(choice) => todo.problem && resolve(todo.problem, choice)} />
   );
 
@@ -77,10 +95,21 @@ export function Todos({ sync, version, onEdit }: { sync: Sync; version: number; 
   );
 }
 
-function TodoRow({ todo, onToggle, onDismiss, onResolve }: {
-  todo: Todo; onToggle: () => void; onDismiss: () => void; onResolve: (choice: 'keep_mine' | 'discard') => void }) {
+const clipOf = (id: string) => ({ key: id, path: `/v1/todos/${id}/clip` });
+
+function saidLine(c: TodoClip) {
+  const when = c.said_at && new Date(c.said_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return [c.speaker, when].filter(Boolean).join(' · ') || 'Where this was said';
+}
+
+function TodoRow({ todo, said, clips, onToggle, onDismiss, onResolve }: {
+  todo: Todo; said?: TodoClip; clips: ClipPlayer; onToggle: () => void; onDismiss: () => void;
+  onResolve: (choice: 'keep_mine' | 'discard') => void }) {
   const done = todo.state === 'completed';
   const p = todo.problem;
+  const clip = clipOf(todo.id);
+  const playing = clips.playing === clip.key;
+  const play = () => clips.toggle(clip);
   return (
     <Swipeable
       friction={2}
@@ -99,8 +128,12 @@ function TodoRow({ todo, onToggle, onDismiss, onResolve }: {
         accessibilityState={{ checked: done }}
         accessibilityLabel={`${todo.title}${todo.pending > 0 && !p ? ', waiting to sync' : ''}`}
         accessibilityHint={done ? 'Double-tap to reopen' : 'Double-tap to complete'}
-        accessibilityActions={[{ name: 'activate' }, { name: 'dismiss', label: 'Dismiss' }]}
-        onAccessibilityAction={(e) => (e.nativeEvent.actionName === 'dismiss' ? onDismiss() : onToggle())}
+        accessibilityActions={[{ name: 'activate' }, { name: 'dismiss', label: 'Dismiss' },
+          ...(said ? [{ name: 'play', label: playing ? 'Pause recording' : 'Play where this was said' }] : [])]}
+        onAccessibilityAction={(e) => {
+          const action = e.nativeEvent.actionName;
+          return action === 'dismiss' ? onDismiss() : action === 'play' ? play() : onToggle();
+        }}
       >
         <View style={[styles.row, { alignItems: 'flex-start' }]}>
           <Pressable onPress={onToggle} hitSlop={10} style={{ minHeight: 22, justifyContent: 'center' }} importantForAccessibility="no">
@@ -108,6 +141,12 @@ function TodoRow({ todo, onToggle, onDismiss, onResolve }: {
           </Pressable>
           <View style={{ flex: 1, gap: 6, minHeight: 22, justifyContent: 'center' }}>
             <T tone={done ? color.secondary : color.label} style={done && { textDecorationLine: 'line-through' }}>{todo.title}</T>
+            {said && (
+              <View style={{ alignSelf: 'flex-start' }} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+                <Button kind="plain" title={saidLine(said)} onPress={play}
+                  icon={clips.loading === clip.key ? 'arrow.down.circle' : playing ? 'pause.fill' : 'play.fill'} />
+              </View>
+            )}
             {p && (
               <>
                 <Note icon="exclamationmark.triangle.fill" text={ERRORS[p.error] ?? p.error} />

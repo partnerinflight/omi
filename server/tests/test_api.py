@@ -25,6 +25,7 @@ from second_brain.io import write_json  # noqa: E402
 from second_brain.queue import Queue  # noqa: E402
 from second_brain.clarifications import Clarifications  # noqa: E402
 from second_brain.speakers import Speakers  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import wave  # noqa: E402
 
@@ -57,7 +58,7 @@ class Api(unittest.TestCase):
 
         from sb_server.db import migrate
         assert migrate() == ["001_init.sql", "002_worker.sql", "003_commands.sql", "004_memories.sql",
-                         "005_todo_authority.sql", "006_clip_producer.sql"]
+                         "005_todo_authority.sql", "006_clip_producer.sql", "007_task_clips.sql"]
         assert migrate() == []  # idempotent
 
         port = free_port()
@@ -382,6 +383,57 @@ class Api(unittest.TestCase):
         headers["X-Content-SHA256"] = hashlib.sha256(b"x").hexdigest()
         self.assertEqual(httpx.put(self.base + "/v1/worker/clips/unknown/0", content=b"x", headers=headers).status_code, 404)
 
+
+    def test_task_clip_lives_while_its_todo_is_open(self):
+        from second_brain.router import event_id, source_hash
+        producer, bridge, *_ = self.worker("task-clip-pc")
+        phone = self.paired()["access_token"]
+        root = bridge.data_dir.parent
+        queue = Queue(root / "data" / "queue.sqlite3")
+        (root / "task.opus").write_bytes(b"task test")
+        job = queue.enqueue(root / "task.opus", {"device": "t", "start_seq": 3, "first_utc": "2026-10-09T08:00:00+00:00"})
+        queue.complete(job, {})
+        text = "[61.00-64.50] Speaker 1 (c:S0): I'll send Alex the budget tomorrow."
+        write_json(root / "data" / "jobs" / job / "publication-manifest.json", {"windows": [
+            {"id": "w1", "start": 0, "end": 90, "final_transcript": text, "memory_keep": True, "route_to_knowledge_router": True}]})
+        shash = source_hash(f"{job}-w1", text)
+        span = {"start": 61.0, "end": 64.5, "speaker": "Speaker 1"}
+        write_json(root / "vault" / "System/Router/Ledger" / f"{shash}.json", {
+            "source_hash": shash, "source_id": f"{job}-w1", "extraction": {
+                "facts": [], "decisions": [], "ideas": [], "daily_summary": [], "clarifications": [],
+                "tasks": [{"text": "Send Alex the budget", "owner": None, "due": "tomorrow", "confidence": 0.9, "span": span}]}})
+        eid = event_id(shash, "task", "", "Send Alex the budget")
+        clip = root / "data" / "task-clips" / f"{eid}.wav"
+        clip.parent.mkdir(parents=True)
+        with wave.open(str(clip), "wb") as f:
+            f.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            f.writeframes(b"\2\0" * 16000)
+        audio = clip.read_bytes()
+        self.assertEqual(bridge.tick()["clips"], 2)  # the worker's speaker clip and this task clip
+        self.assertFalse(clip.exists())  # sent once; the server keeps it from here
+        self.assertEqual(self.http("GET", "/v1/todos/clips", phone).json()["clips"], [])  # no todo yet
+
+        with psycopg.connect(os.environ["SB_DATABASE_URL"], autocommit=True) as conn:
+            conn.execute("UPDATE authority SET mode = 'server' WHERE domain = 'todos'")
+        self.addCleanup(self.cli, "authority", "rollback")
+        todo = str(uuid.uuid5(uuid.UUID("5b0c8d1e-3f7a-4d2b-9c61-0e4a7b2f9d13"), eid))  # app.legacy_todo_id
+        self.assertEqual(self.op(phone, todo, "create", {"title": "Send Alex the budget", "legacy_id": eid})["outcome"], "applied")
+        [listed] = self.http("GET", "/v1/todos/clips", phone).json()["clips"]
+        self.assertEqual(listed, {"todo_id": todo, "sha256": hashlib.sha256(audio).hexdigest(),
+                                  "said_at": "2026-10-09T08:01:01+00:00", "speaker": "Speaker 1"})
+        self.assertEqual(self.http("GET", f"/v1/todos/{todo}/clip", phone).content, audio)
+
+        self.op(phone, todo, "set_state", {"state": "completed"}, base=1)
+        self.assertEqual(self.http("GET", f"/v1/todos/{todo}/clip", phone).status_code, 410)
+        bridge.tick()  # each worker export prunes clips of todos no longer open
+        with psycopg.connect(os.environ["SB_DATABASE_URL"]) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM task_clips WHERE item_id = %s", (eid,)).fetchone())
+
+        headers = {"Authorization": f"Bearer {producer}", "X-Content-SHA256": hashlib.sha256(b"x").hexdigest()}
+        self.assertEqual(httpx.put(self.base + "/v1/worker/task-clips/unknown", content=b"x", headers=headers).status_code, 404)
+        headers["X-Content-SHA256"] = "0" * 64
+        self.assertEqual(httpx.put(self.base + f"/v1/worker/task-clips/{eid}", content=b"x", headers=headers).status_code, 422)
+        self.assertEqual(self.http("GET", "/v1/todos/clips").status_code, 401)  # device token required
 
     # --- Milestone 4: memories ---
 

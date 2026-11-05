@@ -7,6 +7,7 @@ import re
 
 CAPS = [  # (method, path, max body bytes); first match wins
     ("PUT", re.compile(r"/v1/worker/clips/[^/]+/\d+"), 2_100_000),  # one <=30 s PCM16 clip (~960 KB) + slack
+    ("PUT", re.compile(r"/v1/worker/task-clips/[^/]+"), 2_100_000),  # one task clip (<=33 s) + slack
     ("POST", re.compile(r"/v1/worker/events"), 7_000_000),  # 100 records x 64 KB
     ("POST", re.compile(r"/v1/migration/todos"), 4_000_000),
     ("POST", re.compile(r"/v1/operations"), 1_100_000),  # 100 operations x 10 KB payloads
