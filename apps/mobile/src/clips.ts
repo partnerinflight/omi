@@ -49,6 +49,11 @@ export function pruneClips(keep: Set<string>) {
   for (const f of dir.list()) if (!keep.has(owner(f))) f.delete();
 }
 
+// Sign-out: every downloaded clip.
+export function clearClips() {
+  if (dir.exists) dir.delete();
+}
+
 type Auth = Awaited<ReturnType<Sync['clipAuth']>>;
 
 // One at a time in the background, sharing one token check; stops when `cancelled` turns true.

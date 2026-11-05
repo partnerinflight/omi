@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Alert, View } from 'react-native';
+import { clearClips } from './clips';
 import type { Sync, SyncStatus } from './sync';
 import { ActionRow, color, Field, Group, Icon, Row, T } from './ui';
 
@@ -39,15 +40,17 @@ export function Connection({ sync, status, onChange, link }: {
     onChange();
   };
 
+  // Downloaded speaker clips go with the rest of this phone's server data.
+  const signedOut = () => { clearClips(); onChange(); };
   const signOut = async () => {
     const result = await sync.signOut(false);
-    if (result.signedOut) return onChange();
+    if (result.signedOut) return signedOut();
     Alert.alert(
       'Discard unsynced changes?',
       `${result.pending} change${result.pending === 1 ? ' has' : 's have'} not reached the server and will be lost.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Discard and Sign Out', style: 'destructive', onPress: () => sync.signOut(true).then(onChange) },
+        { text: 'Discard and Sign Out', style: 'destructive', onPress: () => sync.signOut(true).then(signedOut) },
       ],
     );
   };

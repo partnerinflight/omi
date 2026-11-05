@@ -185,7 +185,7 @@ the iOS cache directory and plays them from there; the player cannot stream an
 endpoint without range support. iOS may purge that cache; a purged clip downloads
 again on tap. A speaker's cached clips are deleted when it is named or discarded on
 the phone, and after each fresh list for speakers no longer awaiting review (named or
-discarded elsewhere). Still open: clearing the clip cache on sign-out.
+discarded elsewhere). Signing out deletes the whole clip cache.
 Do not retain entire recordings merely to support mobile playback.
 
 ## Obsidian and reminders
