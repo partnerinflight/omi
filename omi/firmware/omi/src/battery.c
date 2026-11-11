@@ -10,6 +10,7 @@
 #include <zephyr/logging/log.h>
 
 #include "lib/core/battery_filter.h"
+#include "lib/core/dock.h"
 
 LOG_MODULE_REGISTER(battery, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -108,6 +109,7 @@ static void battery_charging_callback(const struct device *dev, struct gpio_call
     if (err) {
         LOG_ERR("Failed to read charging state (%d)", err);
     }
+    dock_recheck(); /* current into the battery also proves dock power */
 }
 
 int battery_get_millivolt(uint16_t *battery_millivolt)

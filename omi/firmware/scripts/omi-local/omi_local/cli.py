@@ -324,6 +324,9 @@ async def cmd_battery_status(args) -> int:
         print(f"battery        : {st.percentage}%")
         print(f"voltage        : {st.millivolts} mV")
         print(f"charging signal: {'active' if st.charging else 'inactive'}")
+        if st.dock_power is not None:
+            print(f"dock power     : {'present' if st.dock_power else 'absent'} "
+                  f"(VIN_DETECT {'high' if st.vin_detect else 'low'})")
         print(f"sample age     : {st.sample_age_ms} ms; error={st.error}")
         return 0 if st.error == 0 else 1
     finally:

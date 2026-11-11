@@ -83,6 +83,13 @@
 		gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};
+
+	/* Mainboard v1.2 VIN_DETECT: dock VIN through R39/R41 over R38/R40 (about 0.6 x VIN). */
+	vin_detect_pin: vin_detect_pin {
+		compatible = "nordic,gpio-pins";
+		gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
 	
 	flash_mosi_pin: flash-mosi {
 		compatible = "nordic,gpio-pins";

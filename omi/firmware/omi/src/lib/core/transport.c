@@ -23,6 +23,7 @@
 #include "accel.h"
 #include "button.h"
 #include "config.h"
+#include "dock.h"
 #include "features.h"
 #include "haptic.h"
 #include "mic.h"
@@ -448,7 +449,8 @@ static uint16_t battery_last_mv;
 static int64_t battery_sample_ms = -1;
 static int32_t battery_sample_error = -EAGAIN;
 
-/* LE: mV:u16, percent:u8, charging:u8, sample_age_ms:u32, error:i32. */
+/* LE: mV:u16, percent:u8, charging:u8, sample_age_ms:u32, error:i32, dock_power:u8,
+ * vin_detect:u8 (raw P1.06). Hosts accept the older 12-byte form. */
 static ssize_t battery_diagnostics_read(struct bt_conn *conn,
                                         const struct bt_gatt_attr *attr,
                                         void *buf,
@@ -460,6 +462,7 @@ static ssize_t battery_diagnostics_read(struct bt_conn *conn,
         uint8_t percent, charging;
         uint32_t age;
         int32_t error;
+        uint8_t dock_power, vin_detect;
     } __packed st;
     k_spinlock_key_t key = k_spin_lock(&battery_snapshot_lock);
     st.mv = battery_last_mv;
@@ -468,6 +471,8 @@ static ssize_t battery_diagnostics_read(struct bt_conn *conn,
     st.age = battery_sample_ms < 0 ? UINT32_MAX : (uint32_t) (k_uptime_get() - battery_sample_ms);
     st.error = battery_sample_error;
     k_spin_unlock(&battery_snapshot_lock, key);
+    st.dock_power = dock_power_present();
+    st.vin_detect = dock_vin_detect_raw();
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &st, sizeof(st));
 }
 
@@ -645,7 +650,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     storage_is_on = false;
     /* An idle microphone can release SD power once any Wi-Fi upload has
      * also finished using it. */
-    if ((mic_in_aad_sleep() || mic_is_manually_paused()) && !wifi_upload_active()) {
+    if ((mic_in_aad_sleep() || mic_is_paused()) && !wifi_upload_active()) {
         sd_request_power(false);
     }
 #endif

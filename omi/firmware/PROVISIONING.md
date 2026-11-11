@@ -63,7 +63,7 @@ restart. A fourth press cancels the gesture. Update the receiver first: older re
 ignore the marker and treat lectures as normal recordings.
 
 Configured boot does not expose an AP, including when Wi-Fi or the receiver is
-down. Normal uploads require charging, at least roughly one minute of queued
+down. Normal uploads require dock power (`.22`; earlier builds: charging), at least roughly one minute of queued
 audio, and a five-minute retry interval. `omi-local upload-now` also works on
 battery. Wi-Fi is brought down after setup/upload; BLE control and MCUboot
 SMP DFU remain available. Recording continues on its existing threads.

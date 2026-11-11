@@ -90,7 +90,11 @@ class DiagnosticsTests(unittest.TestCase):
     def test_battery_diagnostics_and_invalid_length(self):
         st=P.parse_battery_diagnostics(struct.pack('<HBBIi',4100,80,1,250,-5))
         self.assertEqual((st.millivolts,st.percentage,st.charging,st.sample_age_ms,st.error),(4100,80,True,250,-5))
+        self.assertIsNone(st.dock_power)
+        st=P.parse_battery_diagnostics(struct.pack('<HBBIiBB',4210,100,0,90,0,1,1))
+        self.assertEqual((st.charging,st.dock_power,st.vin_detect),(False,True,True))
         with self.assertRaises(P.ProtocolError): P.parse_battery_diagnostics(b'\0'*11)
+        with self.assertRaises(P.ProtocolError): P.parse_battery_diagnostics(b'\0'*13)
 
     def test_extended_dhcp_status(self):
         base=struct.pack('<BBBbiIIIII',1,4,4,0,-116,0,0,10,50000,70000)

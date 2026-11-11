@@ -6,6 +6,7 @@
 #include "lib/core/button.h"
 #include "lib/core/codec.h"
 #include "lib/core/config.h"
+#include "lib/core/dock.h"
 #include "lib/core/feedback.h"
 #include "lib/core/haptic.h"
 #include "lib/core/led.h"
@@ -253,14 +254,16 @@ void set_led_state()
     bool blue = false;
     bool red = false;
 
-    if (is_charging) {
+    /* Docked (the mic is paused there): alternate while charging; solid green once the
+     * battery is full or the charger has released CHG on the dock. */
+    if (dock_power_present()) {
+        bool full = !is_charging;
 #ifdef CONFIG_OMI_ENABLE_BATTERY
-        // Solid green if battery is full (>= BATTERY_FULL_THRESHOLD_PERCENT)
-        if (battery_percentage >= BATTERY_FULL_THRESHOLD_PERCENT) {
-            green = true;
-        } else
+        full = full || battery_percentage >= BATTERY_FULL_THRESHOLD_PERCENT;
 #endif
-        {
+        if (full) {
+            green = true;
+        } else {
             green = blink_toggle;
             blue = !blink_toggle && is_connected;
             red = !blink_toggle && !is_connected;
@@ -380,6 +383,13 @@ int main(void)
     LOG_INF("Battery initialized");
 #endif
 
+    /* After the charge signal is known and before the mic starts: booting on the dock
+     * (the dock's VIN edge resets the board) must not record. */
+    ret = dock_init();
+    if (ret) {
+        LOG_ERR("Dock detection degraded (err %d)", ret);
+    }
+
     // Initialize button
 #ifdef CONFIG_OMI_ENABLE_BUTTON
     ret = button_init();
@@ -464,6 +474,7 @@ int main(void)
         monitor_log_metrics();
 #endif
 
+        dock_poll();
         set_led_state();
         k_msleep(mic_is_manually_paused() || led_fast_poll ? 100 : 1000);
     }

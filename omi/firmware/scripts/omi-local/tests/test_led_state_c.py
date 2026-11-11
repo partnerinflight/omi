@@ -25,7 +25,8 @@ typedef enum { LED_RED, LED_GREEN, LED_BLUE } led_color_t;
 static bool is_off,is_charging,is_connected,blink_toggle,storage_full_notified;
 static bool setup,upload,ble_transfer,full,clock_valid=true,recording,silent;
 static bool red,green,blue;
-static bool manual_pause,pause_flash,lecture;
+static bool manual_pause,pause_flash,lecture,docked;
+bool dock_power_present(void){return docked||is_charging;}
 static int red_level,green_level;
 static uint8_t battery_percentage;
 static bool sampled=true,low_storage,fast_on,led_fast_poll;
@@ -124,6 +125,13 @@ int main(void){
  manual_pause=true;battery_percentage=5;pause_flash=false;set_led_state();assert(!red && !blue && !led_fast_poll);manual_pause=false;
  upload=true;set_led_state();assert(green && !led_fast_poll);upload=false;
  low_storage=false;battery_percentage=50;set_led_state();assert(red && !green && !blue && !led_fast_poll);
+ /* Mic paused on the dock: charging alternates, a battery that released CHG is solid green. */
+ silent=recording=is_connected=false;docked=true;is_charging=true;blink_toggle=true;set_led_state();assert(green && !red && !blue);
+ set_led_state();assert(!green && red && !blue);
+ is_connected=true;set_led_state();assert(green && !blue);set_led_state();assert(!green && blue && !red);
+ is_charging=false;set_led_state();assert(green && !red && !blue);
+ is_connected=false;set_led_state();assert(green && !red && !blue);
+ docked=false;set_led_state();assert(red && !green && !blue);
  return 0;
 }
 '''

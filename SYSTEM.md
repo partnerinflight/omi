@@ -96,13 +96,20 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
 - Setup: temporary `OMI-Setup-XXXX`, HTTP `192.168.4.1`; configure SSID/password,
   receiver hostname/IPv4/port, and existing 64-hex-character pairing key. Portal
   expires after five minutes; configured boot does not expose it automatically.
-- Automatic upload requires the charging signal, about one minute of queued
+- Dock detection (`.22`): mainboard v1.2 `VIN_DETECT` (P1.06, about 0.6 x dock VIN)
+  or an active CHG means docked. Docked, the microphone is paused through the manual-pause
+  path; undocking resumes unless the user paused. Before `.22` the recorder kept
+  capturing on the charger, and the BQ25101 (135 mA, no power path) fed that load
+  as well as the battery. On 2026-11-10 an Omi left on the dock for days was found
+  at 3549 mV / 1% with ~5 h (79 MiB) of audio still waiting to upload; why it did not
+  charge is unmeasured.
+- Automatic upload requires dock power (`.22`; earlier builds: the charging signal), about one minute of queued
   audio, and a five-minute retry interval. BLE `upload-now` bypasses charging.
   From `.15` a started upload runs to completion: the
   CHG signal only reports current flow, so a full battery on the charger drops it
   and `.14` aborted uploads mid-transfer ("aborted (charger removed / busy)",
   seen live 2026-09-29 at 100 %/4215 mV). Only a Wi-Fi setup request interrupts.
-  A full battery can still delay the *start* of an automatic upload.
+  Before `.22` a full battery could delay the *start* of an automatic upload; dock power does not drop.
   Recording and upload can coexist. One owner arbitrates BLE/Wi-Fi bulk access;
   BLE bulk reads defer acoustic sleep. Wi-Fi shuts down after its operation.
 - Protocol: mutual HMAC-SHA256 challenge/response, sequence resume, durable ACK.

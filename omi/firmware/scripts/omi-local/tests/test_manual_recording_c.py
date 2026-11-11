@@ -16,7 +16,8 @@ class ManualRecordingTests(unittest.TestCase):
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-I',str(SRC),str(p/'test.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)
     def test_owner_serializes_pause_wake_resume_and_failures(self):
-        names=['int mic_toggle_manual_pause(void)','bool mic_is_manually_paused(void)',
+        names=['int mic_toggle_manual_pause(void)','void mic_set_docked(bool docked)',
+               'bool mic_is_paused(void)','bool mic_is_manually_paused(void)',
                'bool mic_manual_pause_led_on(void)','static void exit_hw_aad(void)',
                'static void enter_manual_pause(void)','static void exit_manual_pause(void)',
                'static void aad_thread_fn(void *p1, void *p2, void *p3)\n{']
@@ -39,7 +40,7 @@ class ManualRecordingTests(unittest.TestCase):
 #define LOG_INF(...) ((void)0)
 #define LOG_ERR(...) ((void)0)
 static int aad_sem,aad_in_sleep,aad_woke,aad_wake_pending,aad_req_sleep;
-static int manual_pause_requested,manual_paused,mic_discard_blocks;
+static int manual_pause_requested,manual_paused,mic_discard_blocks,dock_paused;
 static uint32_t manual_pause_started_ms,aad_sleep_started_ms,now;
 static bool manual_end_pending,aad_thread_started=true,is_connected,upload;
 static bool running=true,rail=true,irq,sd=true,race_pause;
@@ -111,6 +112,29 @@ int main(void){
  /* Failed acoustic start must not claim a vibration or active recording. */
  mic_toggle_manual_pause();step();running=false;aad_in_sleep=1;aad_wake_pending=1;resume_error=-EIO;
  step();assert(!running && aad_in_sleep && buzzes==1 && irq);
+ resume_error=0;aad_wake_pending=1;step();assert(running && !aad_in_sleep);
+ /* Docking pauses like a manual pause, without the pause feedback. */
+ int f=flushes;mic_set_docked(true);step();
+ assert(manual_paused && !running && !rail && !irq && flushes==f+1 && mic_is_paused());
+ assert(!mic_is_manually_paused() && !mic_manual_pause_led_on());
+ /* Sound never resumes a docked mic. */
+ aad_wake_pending=1;aad_req_sleep=1;step();assert(!running && !rail && !aad_wake_pending);
+ /* A manual pause toggled on the dock still holds after undocking. */
+ assert(!mic_toggle_manual_pause());step();assert(manual_paused && mic_is_manually_paused());
+ mic_set_docked(false);step();assert(manual_paused && !running && !rail && mic_is_manually_paused());
+ assert(!mic_toggle_manual_pause());step();assert(!manual_paused && running);
+ /* A click on the dock cannot resume; undocking does. */
+ mic_set_docked(true);step();assert(manual_paused && !running);
+ mic_toggle_manual_pause();step();mic_toggle_manual_pause();step();assert(manual_paused && !rail);
+ int s=settles;mic_set_docked(false);step();
+ assert(!manual_paused && running && rail && settles==s+1 && !mic_is_paused() && aad_woke);
+ /* Docking from acoustic sleep writes no extra end marker. */
+ running=false;aad_in_sleep=1;f=flushes;mic_set_docked(true);step();
+ assert(manual_paused && flushes==f && !rail && !aad_in_sleep);
+ /* A failed resume on undocking stays paused as a manual pause the user can retry. */
+ resume_error=-EIO;mic_set_docked(false);step();
+ assert(manual_paused && manual_pause_requested && mic_is_manually_paused() && !rail);
+ resume_error=0;assert(!mic_toggle_manual_pause());step();assert(running && !manual_paused);
  return 0;
 }
 ''')
@@ -126,7 +150,7 @@ int main(void){
 #define MAX_FRAMES 1600
 #define __ASSERT_NO_MSG(x) assert(x)
 #define LOG_ERR(...) ((void)0)
-static int manual_pause_requested,manual_paused,mic_discard_blocks,mem_slab,forwarded,tracked,freed;
+static int manual_pause_requested,manual_paused,dock_paused,mic_discard_blocks,mem_slab,forwarded,tracked,freed;
 static int16_t mono_buffer[MAX_FRAMES];
 int atomic_get(int *p){return *p;}
 void atomic_dec(int *p){(*p)--;}
@@ -139,12 +163,14 @@ static void (*callback_func)(int16_t *)=callback;
 int main(void){int16_t samples[4]={0};
  manual_pause_requested=1;process_audio_buffer(samples,sizeof(samples));
  manual_pause_requested=0;manual_paused=1;process_audio_buffer(samples,sizeof(samples));
- assert(!forwarded && !tracked && freed==2);
- manual_paused=0;process_audio_buffer(samples,sizeof(samples));assert(forwarded==1 && tracked==1 && freed==3);
+ /* Docking drops PCM at once, before the owner has stopped the mic. */
+ manual_paused=0;dock_paused=1;process_audio_buffer(samples,sizeof(samples));dock_paused=0;
+ assert(!forwarded && !tracked && freed==3);
+ process_audio_buffer(samples,sizeof(samples));assert(forwarded==1 && tracked==1 && freed==4);
  /* Startup blocks after a restart are neither recorded nor VOX-tracked. */
  mic_discard_blocks=2;process_audio_buffer(samples,sizeof(samples));process_audio_buffer(samples,sizeof(samples));
- assert(forwarded==1 && tracked==1 && freed==5 && !mic_discard_blocks);
- process_audio_buffer(samples,sizeof(samples));assert(forwarded==2 && tracked==2 && freed==6);return 0;}
+ assert(forwarded==1 && tracked==1 && freed==6 && !mic_discard_blocks);
+ process_audio_buffer(samples,sizeof(samples));assert(forwarded==2 && tracked==2 && freed==7);return 0;}
 ''')
 
     def test_hold_windows_vibrate_while_held_and_act_on_release(self):

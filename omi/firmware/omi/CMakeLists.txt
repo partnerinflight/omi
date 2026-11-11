@@ -13,6 +13,7 @@ file(GLOB app_sources
     src/main.c
     src/mic.c
     src/battery.c
+    src/dock.c
     src/led.c
     src/haptic.c
     src/sd_card.c

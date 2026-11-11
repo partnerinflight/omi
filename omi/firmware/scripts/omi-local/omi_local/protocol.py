@@ -341,10 +341,15 @@ class BatteryDiagnostics:
     charging: bool
     sample_age_ms: int
     error: int
+    dock_power: bool | None = None  # None: firmware before .22 does not report it
+    vin_detect: bool | None = None  # raw VIN_DETECT (P1.06) level
 
 
 def parse_battery_diagnostics(value: bytes) -> BatteryDiagnostics:
-    if len(value) != 12:
-        raise ProtocolError("battery diagnostics must be 12 bytes")
-    mv, percent, charging, age, error = struct.unpack("<HBBIi", value)
-    return BatteryDiagnostics(mv, percent, bool(charging), age, error)
+    if len(value) == 12:
+        mv, percent, charging, age, error = struct.unpack("<HBBIi", value)
+        return BatteryDiagnostics(mv, percent, bool(charging), age, error)
+    if len(value) == 14:
+        mv, percent, charging, age, error, dock, vin = struct.unpack("<HBBIiBB", value)
+        return BatteryDiagnostics(mv, percent, bool(charging), age, error, bool(dock), bool(vin))
+    raise ProtocolError("battery diagnostics must be 12 or 14 bytes")

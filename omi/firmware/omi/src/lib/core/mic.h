@@ -28,6 +28,11 @@ void mic_set_gain(uint8_t gain_level);
 bool mic_in_aad_sleep(void);
 /* Nonblocking request; the microphone owner performs power/codec transitions. */
 int mic_toggle_manual_pause(void);
+/* Dock power changed (dock.c); the owner stops the mic while docked. */
+void mic_set_docked(bool docked);
+/* Mic off for any pause (manual or docked). */
+bool mic_is_paused(void);
+/* User-requested pause only, for the red pause pulse. */
 bool mic_is_manually_paused(void);
 bool mic_manual_pause_led_on(void);
 /* Nonblocking triple-click toggle; the microphone owner writes the markers. */

@@ -98,7 +98,9 @@ BUILD_ASSERT(CONFIG_OMI_VAD_SUSTAIN_BLOCKS <= CONFIG_OMI_VAD_WINDOW_BLOCKS,
              "OMI_VAD_SUSTAIN_BLOCKS must not exceed OMI_VAD_WINDOW_BLOCKS");
 static uint32_t aad_sleep_started_ms; /* owner-only: when the current AAD sleep began */
 static atomic_t manual_pause_requested;
+/* Mic is off for a pause: manual, docked, or both. Manual feedback needs the request too. */
 static atomic_t manual_paused;
+static atomic_t dock_paused; /* dock power present: no capture on the charger */
 static uint32_t manual_pause_started_ms;
 static bool manual_end_pending; /* owner-only: retry failed boundary before resume */
 /* Lecture mode (triple-click): one recording, no acoustic sleep, ends after
@@ -154,7 +156,7 @@ static void process_audio_buffer(void *buffer, uint32_t size)
     interleaved_stereo_to_mono(inter, frames, mono_buffer);
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-    if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused)) {
+    if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused) || atomic_get(&dock_paused)) {
         k_mem_slab_free(&mem_slab, buffer);
         return;
     }
@@ -382,6 +384,19 @@ int mic_toggle_manual_pause(void)
 #endif
 }
 
+/* Called by dock.c on every settled change, and once at boot before mic_start(). The
+ * owner pauses exactly like a manual pause; a manual pause still holds after undocking. */
+void mic_set_docked(bool docked)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    atomic_set(&dock_paused, docked);
+    if (aad_thread_started)
+        k_sem_give(&aad_sem);
+#else
+    ARG_UNUSED(docked);
+#endif
+}
+
 int mic_toggle_lecture(void)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -404,10 +419,20 @@ bool mic_in_lecture(void)
 #endif
 }
 
-bool mic_is_manually_paused(void)
+bool mic_is_paused(void)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     return atomic_get(&manual_paused) != 0;
+#else
+    return false;
+#endif
+}
+
+/* User pause only: a dock pause shows charging colours, not the red pause pulse. */
+bool mic_is_manually_paused(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    return atomic_get(&manual_paused) && atomic_get(&manual_pause_requested);
 #else
     return false;
 #endif
@@ -645,12 +670,18 @@ static void enter_lecture(void)
         if (!is_connected && !wifi_upload_active())
             sd_request_power(false);
     } else if (paused) {
+        atomic_clear(&manual_pause_requested); /* a lecture ends a manual pause */
+        if (atomic_get(&dock_paused)) {
+            /* Docked: the lecture starts when the Omi leaves the dock. */
+            if (!is_connected && !wifi_upload_active())
+                sd_request_power(false);
+        } else {
 #ifdef CONFIG_OMI_ENABLE_HAPTIC
-        /* Never power the mic rail while the motor runs; exit_manual_pause adds its settle margin. */
-        k_msleep(HAPTIC_PULSES_MS(2));
+            /* Never power the mic rail while the motor runs; exit_manual_pause adds its settle margin. */
+            k_msleep(HAPTIC_PULSES_MS(2));
 #endif
-        atomic_clear(&manual_pause_requested);
-        exit_manual_pause();
+            exit_manual_pause();
+        }
     } else {
         aad_sleep_started_ms = k_uptime_get_32(); /* the double pulse replaces the wake buzz */
         exit_hw_aad();
@@ -724,12 +755,12 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
         else if (!lecture && atomic_get(&lecture_active))
             exit_lecture();
 
-        bool requested = atomic_get(&manual_pause_requested);
+        bool requested = atomic_get(&manual_pause_requested) || atomic_get(&dock_paused);
         if (requested && !atomic_get(&manual_paused))
             enter_manual_pause();
         else if (!requested && atomic_get(&manual_paused))
             exit_manual_pause();
-        if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused)) {
+        if (atomic_get(&manual_pause_requested) || atomic_get(&manual_paused) || atomic_get(&dock_paused)) {
             atomic_clear(&aad_req_sleep);
             atomic_clear(&aad_wake_pending);
             continue;
@@ -812,6 +843,8 @@ static int aad_hw_start(void)
                     K_NO_WAIT);
     k_thread_name_set(&aad_thread_data, "aad");
     aad_thread_started = true;
+    if (atomic_get(&dock_paused))
+        k_sem_give(&aad_sem); /* booted on the dock: pause before any audio is kept */
     LOG_INF("AAD (hardware) started: WAKE=P1.%d thr=%d hold=%dms settle=%dms",
             aad_wake.pin,
             CONFIG_OMI_VAD_ABS_THRESHOLD,

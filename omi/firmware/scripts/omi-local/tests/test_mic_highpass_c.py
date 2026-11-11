@@ -112,7 +112,7 @@ class MicHighpassTests(unittest.TestCase):
 #define __ASSERT_NO_MSG(x) assert(x)
 #define LOG_ERR(...) (void) 0
 typedef void (*mix_handler)(int16_t *);
-static int mem_slab, freed, manual_pause_requested, manual_paused, mic_discard_blocks;
+static int mem_slab, freed, manual_pause_requested, manual_paused, dock_paused, mic_discard_blocks;
 static int atomic_get(int *p) { return *p; }
 static void atomic_dec(int *p) { (*p)--; }
 static void k_mem_slab_free(int *slab, void *b) { (void) slab; (void) b; freed++; }

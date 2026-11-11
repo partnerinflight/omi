@@ -733,3 +733,43 @@ Mac, application image only over lecture-mode `.20` (`ccab436a…`), first attem
 the staged digest pending in slot 1, then after reset active/confirmed in slot 0; GATT reports
 `3.0.22-localwifi.21`. Battery 100% / 4250 mV, ring `[3642986, 4000966)` of 1115064 packets,
 zero dropped, Wi-Fi upload still configured. The blinks and lecture mode are on-device checks.
+
+## Firmware 3.0.22-localwifi.22: no capture on the dock — 2026-11-10
+
+Observed on `.21`: after days on the dock the Omi read 3549 mV / 1%, charging signal
+inactive, with ring `[5015609, 5202095)` (186486 unread packets, 79.0 MiB, about 5 h 11 min)
+and 2067 dropped packets; it powered off minutes later. The receiver at
+`192.168.1.85:7331` accepted TCP, but pings dropped half their packets. The firmware never stopped the
+microphone on the dock, so new audio kept arriving while uploads ran. The BQ25101 is set to
+135 mA (R8 1 kΩ, ICHG = 135/RISET) and feeds the system and battery together. Why the
+battery did not charge (load, temperature cut-off via TS, or contacts) is unmeasured.
+
+The mainboard v1.2 schematic (upstream `omi/hardware/consumer/electrical/mainboard`,
+removed from this fork in `79ef41a1ab`) routes `VIN_DETECT` to P1.06 through R39/R41 over
+R38/R40, about 0.6 x VIN (roughly 2.5–2.8 V after the input rectifier). `.22` reads it with
+no pull and treats VIN_DETECT or CHG as docked; docking pauses the microphone through
+the manual-pause owner path and automatic uploads start on dock power.
+
+Host checks: both Python suites pass (277 + 169 tests); Mac app `swift test --disable-sandbox` 69 tests.
+NCS 2.9.0 Wi-Fi sysbuild on macOS (native protoc per `MAC_BUILD.md`): app FLASH 875832 B of
+949760 B (92.22%) / RAM 429312 B (95.28%); generated devicetree has `vin_detect_pin` on
+`&gpio1 6`. No new compiler warnings in changed files. Both OTA images pass MCUboot signature verification.
+ZIP SHA-256: `f1122b98c96149c675d752edb5033a6b278a800036ca85ec04835f4b3ae49311`.
+App digest: `c054d2080963ed8a2b91dbca5f16490bf29ec15b40c058785d6c9bd09d44fb9c`.
+Network digest: `372e27fc8c44bcfdaf4f1adb71ea62cb23d7370840277cb5eefb1934c62a42d6` (not installed; not reproducible between builds).
+Built.
+
+Before installing (2026-11-11, `.21`, after a night on the dock with the mic paused by hand): 100% /
+4244 mV, charging signal inactive, ring empty (`[5205350, 5205350)`); one upload session
+had sent 189561 packets. Installed at the user's request on 2026-11-11 with
+`scripts/windows/flash_omi.py` from the Mac, application image only over `.21` (`d92cd051…`),
+first attempt; network image skipped. SMP showed `c054d208…` pending in slot 1, then active/confirmed in
+slot 0; GATT reports `3.0.22-localwifi.22`. On the dock with a full battery:
+`battery-status` 100% / 4272 mV, charging signal inactive, dock power present (VIN_DETECT
+high), confirming the divider reads above the logic threshold. The ring gained one record
+after boot (the boot-pause end marker) and stayed at `write_seq=5205351` over about a minute;
+no audio was captured on the dock. Undocking resume, dock LED colours and charging from
+low battery with the mic paused are not yet observed.
+Not yet checked on hardware: whether the VIN_DETECT level reads high on the dock (read `battery-status`
+docked and undocked), whether docking stops capture, and whether the battery charges
+with the mic paused.

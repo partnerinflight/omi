@@ -35,7 +35,7 @@ void k_work_cancel_delayable(int *p){(void)p;}
 void shell_bt_nus_disable(void){}
 void sd_notify_ble_state(bool on){assert(!on);}
 bool mic_in_aad_sleep(void){return asleep;}
-bool mic_is_manually_paused(void){return paused;}
+bool mic_is_paused(void){return paused;}
 bool wifi_upload_active(void){return upload;}
 void sd_request_power(bool on){sd=on;}
 void bt_conn_unref(struct bt_conn *c){(void)c;}

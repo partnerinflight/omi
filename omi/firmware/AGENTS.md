@@ -27,6 +27,20 @@ Battery reports must stay fresh without a BLE connection. `battery-status`
 exposes voltage and sample age; the charging GPIO alone does not prove current
 flow. Native tests execute the battery work handler and fractional gauge filter.
 
+No capture on the dock (`.22`). Mainboard v1.2 divides the dock's VIN (R39/R41 over
+R38/R40, about 0.6 x VIN) onto `VIN_DETECT`, P1.06 (`vin_detect_pin`, input, no pull:
+a pull would load the divider). `dock.c` treats VIN_DETECT high or CHG active as docked,
+debounced `CONFIG_OMI_DOCK_DEBOUNCE_MS` (1 s) from either edge plus a main-loop poll, and
+reads it once at boot before `mic_start()`. CHG alone is not enough: it is released when a
+docked battery fills. Docking pauses through the manual-pause owner path (end marker, mic
+rail off, PCM dropped at once); a manual pause still holds after undocking; a failed resume
+stays paused as a manual pause. `mic_is_paused()` covers both causes (SD power);
+`mic_is_manually_paused()` is the user pause only (red pulse). Automatic uploads start on
+dock power. Docked idle LED: alternate while charging, solid green once full or CHG is
+released. The 14-byte battery diagnostic appends dock power and the raw VIN_DETECT level.
+`test_dock_c.py`, `test_manual_recording_c.py`, `test_lecture_mode_c.py`,
+`test_led_state_c.py` and `test_upload_policy_c.py` execute the production code.
+
 VOX recording boundaries must drain PCM and packed frames before SD sleep.
 Zero-length codec callbacks are ordered end markers, never Opus encode errors.
 Native VOX tests and receiver tests cover the 30-second timer, marker ordering,

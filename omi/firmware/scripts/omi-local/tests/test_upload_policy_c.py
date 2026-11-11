@@ -30,6 +30,12 @@ class UploadPolicyWiringTests(unittest.TestCase):
         self.assertIn('upload_should_abort(', loop)
         self.assertNotIn('is_charging', loop, 'the charging signal must not abort a running upload')
 
+    def test_automatic_start_uses_dock_power(self):
+        source, _ = policy_source()
+        # CHG drops when a docked battery fills; dock power (VIN_DETECT) does not.
+        self.assertIn('upload_ready(dock_power_present(), retries, sd_ring_peek_unread())', source)
+        self.assertNotIn('is_charging', source)
+
 
 @unittest.skipUnless(CC, 'native C compiler required')
 class UploadPolicyTests(unittest.TestCase):

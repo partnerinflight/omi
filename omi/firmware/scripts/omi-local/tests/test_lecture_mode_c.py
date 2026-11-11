@@ -11,7 +11,7 @@ def function(path, name):
 # The production pulse timing, so the motor-before-rail check uses the real pattern length.
 HAPTIC = ''.join(l + '\n' for l in (SRC/'lib/core/haptic.h').read_text().splitlines()
                  if l.startswith('#define HAPTIC_PULSE'))
-NAMES = ['int mic_toggle_manual_pause(void)', 'int mic_toggle_lecture(void)', 'bool mic_in_lecture(void)',
+NAMES = ['int mic_toggle_manual_pause(void)', 'void mic_set_docked(bool docked)', 'int mic_toggle_lecture(void)', 'bool mic_in_lecture(void)',
          'static void lecture_timer_expired(struct k_timer *timer)\n{', 'static void exit_hw_aad(void)',
          'static void enter_manual_pause(void)', 'static void exit_manual_pause(void)',
          'static void enter_lecture(void)\n{', 'static void exit_lecture(void)\n{',
@@ -44,7 +44,7 @@ PRELUDE = r'''
 struct k_timer {int unused;};
 static struct k_timer lecture_timer;
 static int aad_sem,aad_in_sleep,aad_woke,aad_wake_pending,aad_req_sleep;
-static int manual_pause_requested,manual_paused,mic_discard_blocks,lecture_requested,lecture_active,lecture_expired;
+static int manual_pause_requested,manual_paused,dock_paused,mic_discard_blocks,lecture_requested,lecture_active,lecture_expired;
 static uint32_t manual_pause_started_ms,aad_sleep_started_ms,now;
 static bool manual_end_pending,lecture_marker_pending,aad_thread_started=true,is_connected,upload;
 static bool running=true,rail=true,irq,sd=true,timer_on;
@@ -129,6 +129,21 @@ class LectureModeTests(unittest.TestCase):
  assert(!mic_in_lecture() && !timer_on);
  /* Two triple-clicks before the owner runs cancel each other. */
  mic_toggle_lecture();mic_toggle_lecture();step();expect("");assert(!mic_in_lecture());
+''')
+
+    def test_dock_pauses_a_lecture_and_triple_clicks_never_power_the_docked_mic(self):
+        self.run_main(r'''
+ now=1000;assert(!mic_toggle_lecture());step();expect("PEL2R");
+ /* Docking ends the recording but keeps lecture mode; undocking re-marks it before audio. */
+ mic_set_docked(true);step();expect("PE");
+ assert(manual_paused && mic_in_lecture() && lecture_marker_pending && !rail && !sd);
+ mic_set_docked(false);step();expect("LR");assert(running && !manual_paused && mic_in_lecture());
+ /* Triple-clicks on the dock switch modes with the mic off. */
+ mic_set_docked(true);step();expect("PE");
+ assert(!mic_toggle_lecture());step();expect("N2");assert(!mic_in_lecture() && manual_paused && !rail);
+ assert(!mic_toggle_lecture());step();expect("L2");
+ assert(mic_in_lecture() && manual_paused && !rail && !running && !sd && !manual_pause_requested);
+ mic_set_docked(false);step();expect("R");assert(running && mic_in_lecture() && !manual_paused);
 ''')
 
     def test_pause_inside_lecture_and_entry_or_exit_from_pause(self):

@@ -44,6 +44,7 @@
 #endif
 
 #include "lib/core/config.h"
+#include "lib/core/dock.h"
 #include "lib/core/local_auth.h"
 #include "lib/core/mic.h"
 #include "lib/core/sd_card.h"
@@ -52,7 +53,6 @@
 
 LOG_MODULE_REGISTER(wifi_upload, CONFIG_LOG_DEFAULT_LEVEL);
 
-extern bool is_charging;  /* main.c */
 extern bool is_connected; /* main.c */
 
 #define MSG_HELLO 0x01
@@ -306,9 +306,11 @@ static bool upload_retryable(enum wifi_upload_result result)
            result == WIFI_UPLOAD_ERR_RING_READ || result == WIFI_UPLOAD_ERR_LINK_LOST || result == WIFI_UPLOAD_ERR_BUSY;
 }
 
-static bool upload_ready(bool charging, unsigned int retries, uint64_t unread)
+/* Automatic uploads start on dock power (VIN_DETECT), which survives a full battery
+ * releasing CHG; a pending retry continues anywhere. */
+static bool upload_ready(bool docked, unsigned int retries, uint64_t unread)
 {
-    return retries ? unread > 0 : charging && unread >= UP_MIN_UNREAD_PACKETS;
+    return retries ? unread > 0 : docked && unread >= UP_MIN_UNREAD_PACKETS;
 }
 
 static unsigned int upload_retry_budget(enum wifi_upload_result result, bool manual, unsigned int previous)
@@ -554,7 +556,7 @@ out:
     }
     storage_release_upload();
     atomic_clear(&active);
-    if ((mic_in_aad_sleep() || mic_is_manually_paused()) && !is_connected) {
+    if ((mic_in_aad_sleep() || mic_is_paused()) && !is_connected) {
         sd_request_power(false);
     }
     set_state(WIFI_UPLOAD_IDLE);
@@ -596,7 +598,7 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
             if (last_attempt_ms != 0 && (now - last_attempt_ms) < UP_RETRY_INTERVAL_MS) {
                 continue;
             }
-            if (!upload_ready(is_charging, retries, sd_ring_peek_unread())) {
+            if (!upload_ready(dock_power_present(), retries, sd_ring_peek_unread())) {
                 continue;
             }
         }

@@ -120,12 +120,14 @@ python -m omi_local.cli wifi-status
 
 `battery-status` reports measured millivolts, estimated percent, the charger
 status input, age of the last successful sample, and the latest sampling error.
+From `3.0.22-localwifi.22` it also reports dock power and the raw VIN_DETECT level;
+the recorder does not capture while docked.
 Samples normally refresh every 5 seconds while connected and 10 seconds when
 disconnected. An age of `4294967295` with error `-11` means no valid sample yet.
 The charger flag is not a current measurement.
-Automatic uploads currently require this active-charging flag; a full battery
-can deassert it even on the charger. Use `upload-now` for an explicit transfer
-when the flag is off.
+Before `.22`, automatic uploads required this active-charging flag, which a full
+battery can deassert even on the charger; `.22` starts them on dock power instead.
+Use `upload-now` for an explicit transfer off the dock.
 
 `wifi-status` includes the DHCP state, retry count and requested IPv4 address
 on diagnostic-capable firmware. States are 0 disabled, 1 initializing,

@@ -111,9 +111,10 @@ minute of unread audio, it joins the provisioned network, connects to ONE
 provisioned receiver (`omi-local serve` on any Windows/macOS/Linux machine on
 the LAN), proves the receiver knows the shared secret, streams the unread
 records, and deletes each chunk only after the receiver has ACKed that it wrote
-and fsync'ed it. The nRF7002 is powered down again after the session (or when
-the charger is removed, which aborts the session). Off the charger nothing
-changes.
+and fsync'ed it. The nRF7002 is powered down again after the session; a started
+session runs to completion. From `.22` the microphone is paused while docked
+(VIN_DETECT, P1.06), so a docked upload drains a fixed backlog. Off the charger
+nothing changes.
 
 ### Build
 

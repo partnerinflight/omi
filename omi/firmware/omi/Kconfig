@@ -143,6 +143,15 @@ config OMI_LECTURE_MAX_MS
          triple-clicked again: end marker, normal-mode marker and two pulses.
          Default 4 hours."
 
+config OMI_DOCK_DEBOUNCE_MS
+    int "Dock power debounce (ms)"
+    range 100 10000
+    default 1000
+    help
+        "VIN_DETECT (P1.06) or the charge signal must hold a new level this long
+         before the recorder treats the Omi as docked or undocked. Magnetic pogo
+         contacts can bounce while the device is seated."
+
 config OMI_LECTURE_LED_PWM
     int "Lecture mode yellow LED level (percent)"
     range 1 100
