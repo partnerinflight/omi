@@ -824,3 +824,25 @@ the driver removes a fully started device, while our start hook raises BUCKEN/IO
 every bring-up; the SDK's `stop_board` default is empty. `.24` overrides it and lowers the
 rails after a failed `net_if_up()`. Whether this leak caused the drain is unproven; a
 discharge test with the mic paused off the dock is next.
+
+Host checks: both Python suites pass (277 + 171 tests); removing either rail-off path makes
+`test_wifi_radio_c.py` fail. NCS 2.9.0 Wi-Fi sysbuild: app FLASH 876096 B of 949760 B
+(92.24%) / RAM 429376 B (95.30%); the map links `nrf_wifi_if_zep_stop_board` from
+`wifi_radio.c` (the SDK weak definition is discarded). Both OTA images pass MCUboot
+signature verification. ZIP SHA-256: `10785a1e44cc88c6625119255531f090c93fc01076f23bb4e280572fa4a7e90f`.
+App digest: `17a9583f95c234e664b21b8eccbdc7480a5ce90f271f65879fee85cae1e01e40`.
+Network digest: `407c873e1c40453e7458b033f76ae59cadaafb59e17044728a5b33677641140c` (not installed).
+
+Installed at the user's request on 2026-11-13 after the backlog drained (one session,
+102498 packets), application image only over `.23` (`74b9d31b…`). Two attempts failed at BLE
+connection setup and one disconnected at 0%; the next completed. SMP showed `17a9583f…` pending,
+then active/confirmed in slot 0; GATT reports `3.0.22-localwifi.24`. Docked: 100% / 4250 mV,
+dock power present, uploader idle. The discharge test is pending.
+
+Discharge check on `.24`, 2026-11-13, off the dock near the Mac (quiet room). Mic recording
+19:40–21:02: 4148 → 4119 mV (about −21 mV/h; the voltage estimate maps to roughly 4–5% used,
+about 5 mA average for 150 mAh), with VOX sleeping much of the time (the write pointer moved in
+bursts). Manual pause from about 21:02: 4119 → 4123 mV by 21:28 (flat, slight recovery after
+load). The uploader stayed idle off the dock throughout. This is consistent with all-day
+battery life but does not exercise the Wi-Fi retry path off the dock that `.24` targets, nor
+continuous speech.
