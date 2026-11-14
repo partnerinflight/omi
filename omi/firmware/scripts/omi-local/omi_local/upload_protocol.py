@@ -376,6 +376,22 @@ class UploadStatus:
     ipv4: str | None = None
     last_stage: int | None = None
     retries_remaining: int | None = None
+    teardown_step: int | None = None  # .23+: call the current teardown is in (0: none)
+    hang_record: int | None = None  # .23+: count << 4 | step of a teardown hang before reboot
+    teardown_started_uptime_s: int | None = None
+    radio_stop_failures: int | None = None  # .24+: radio stops that timed out since boot
+
+    @property
+    def teardown_step_name(self) -> str | None:
+        return None if self.teardown_step is None else _step_name(self.teardown_step)
+
+    @property
+    def hang_step_name(self) -> str | None:
+        return None if not self.hang_record else _step_name(self.hang_record & 0x0F)
+
+    @property
+    def hang_reboots(self) -> int:
+        return (self.hang_record or 0) >> 4
 
     @property
     def state_name(self) -> str:
@@ -384,6 +400,13 @@ class UploadStatus:
     @property
     def result_name(self) -> str:
         return UPLOAD_RESULTS[self.last_result] if self.last_result < len(UPLOAD_RESULTS) else f"result {self.last_result}"
+
+
+TEARDOWN_STEPS = ["none", "socket close", "dhcp stop", "wifi disconnect", "radio stop", "release"]
+
+
+def _step_name(step: int) -> str:
+    return TEARDOWN_STEPS[step] if step < len(TEARDOWN_STEPS) else f"step {step}"
 
 
 def parse_upload_status(value: bytes) -> UploadStatus:
@@ -396,5 +419,8 @@ def parse_upload_status(value: bytes) -> UploadStatus:
         dhcp_state, dhcp_attempts = struct.unpack_from("<BB", value, 28)
         ipv4 = ".".join(str(b) for b in value[32:36])
     last_stage, retries = struct.unpack_from("<BB", value, 36) if len(value) >= 38 else (None, None)
+    step = hang = started = stop_failures = None
+    if len(value) >= 46:
+        step, hang, stop_failures, started = struct.unpack_from("<BBHI", value, 38)
     return UploadStatus(bool(configured), state, result, cfg_err, errno_, ok, pkts, last, heap_free, heap_max,
-                        dhcp_state, dhcp_attempts, ipv4, last_stage, retries)
+                        dhcp_state, dhcp_attempts, ipv4, last_stage, retries, step, hang, started, stop_failures)

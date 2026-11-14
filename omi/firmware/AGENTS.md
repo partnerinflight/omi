@@ -41,6 +41,22 @@ released. The 14-byte battery diagnostic appends dock power and the raw VIN_DETE
 `test_dock_c.py`, `test_manual_recording_c.py`, `test_lecture_mode_c.py`,
 `test_led_state_c.py` and `test_upload_policy_c.py` execute the production code.
 
+Wi-Fi teardown watch (`.23`). Seen on `.22`: after a link loss mid-upload, teardown never
+returned, so the uploader stayed active (~14 h), no later session ran and the transfer LED
+stayed on. Each teardown call sets `status.teardown_step` (socket close, DHCP stop, Wi-Fi
+disconnect, radio stop, release), shown by `wifi-status`. A periodic 60 s `k_timer` armed
+for teardown reboots only while docked (off the dock the mic may record, and a manual pause
+is not kept across reboot), first writing count << 4 | step to GPREGRET[1] (unused by app
+and MCUboot; survives soft reset, cleared at power-on), reported after boot as the hang
+record. Keep the step order; `test_upload_teardown_c.py` checks it and executes the watch.
+
+nRF7002 rails (`.24`). `nrf_wifi_if_zep_start_board()` (`wifi_radio.c`) raises BUCKEN and
+IOVDD on every bring-up, but the SDK only lowers them in `rpu_pwroff()` when it removes a
+fully started device. `nrf_wifi_if_zep_stop_board()` therefore lowers both (BUCKEN, then
+IOVDD) at the end of every driver stop, and `wifi_radio_start()` lowers them if `net_if_up()`
+fails. `wifi_radio_stop()` returns the supplicant-release wait; the upload status counts
+timeouts (`radio_stop_failures`). `test_wifi_radio_c.py` tracks the rail levels.
+
 VOX recording boundaries must drain PCM and packed frames before SD sleep.
 Zero-length codec callbacks are ordered end markers, never Opus encode errors.
 Native VOX tests and receiver tests cover the 30-second timer, marker ordering,

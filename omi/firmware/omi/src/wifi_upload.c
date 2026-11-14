@@ -20,6 +20,7 @@
 #include "lib/core/wifi_upload.h"
 
 #include <errno.h>
+#include <hal/nrf_power.h>
 #include <net/wifi_credentials.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 #include <zephyr/random/random.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/reboot.h>
 
 #include "lib/core/wifi_config.h"
 #include "lib/core/wifi_radio.h"
@@ -80,6 +82,7 @@ extern bool is_connected; /* main.c */
 #define UP_DHCP_TIMEOUT_MS 25000
 #define UP_SOCKET_TIMEOUT_S 20
 #define UP_RETRY_ATTEMPTS 6U
+#define UP_TEARDOWN_HANG_MS (60 * 1000) /* then reboot if docked; re-checked every period */
 
 K_THREAD_STACK_DEFINE(wifi_upload_stack, 6144);
 static struct k_thread wifi_upload_thread;
@@ -99,6 +102,43 @@ static int64_t last_attempt_ms;
 
 static struct wifi_upload_config cfg;
 static struct wifi_upload_status status;
+
+/* GPREGRET[1] is unused by this app and MCUboot; it survives a soft reset. */
+static uint8_t hang_record_read(void)
+{
+    return (uint8_t) nrf_power_gpregret_get(NRF_POWER, 1);
+}
+
+static void hang_record_write(uint8_t value)
+{
+    nrf_power_gpregret_set(NRF_POWER, 1, value);
+}
+
+/* Low nibble: the step that hung; high nibble: saturating count since power-on. */
+static uint8_t hang_record_next(uint8_t previous, uint8_t step)
+{
+    uint8_t count = previous >> 4;
+    if (count < 15U) {
+        count++;
+    }
+    return (uint8_t) ((count << 4) | (step & 0x0FU));
+}
+
+/* Timer (ISR) context. Off the dock the mic may be recording, and a manual pause is not
+ * kept across reboot, so only reboot when docked (the mic stays paused after boot). The
+ * periodic timer re-checks while the hang lasts. */
+static void teardown_watch_expired(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+    uint8_t step = status.teardown_step;
+    if (step == TEARDOWN_STEP_NONE || !dock_power_present()) {
+        return;
+    }
+    hang_record_write(hang_record_next(hang_record_read(), step));
+    LOG_ERR("Wi-Fi teardown hung at step %u; rebooting on the dock", step);
+    sys_reboot(SYS_REBOOT_COLD);
+}
+static K_TIMER_DEFINE(teardown_watch, teardown_watch_expired, NULL);
 static struct net_mgmt_event_callback wifi_mgmt_cb;
 static struct net_mgmt_event_callback ipv4_mgmt_cb;
 
@@ -543,6 +583,9 @@ static enum wifi_upload_result run_session(bool manual, int *err)
 out:
     status.last_stage = status.state;
     set_state(WIFI_UPLOAD_TEARDOWN);
+    status.teardown_started_uptime_s = (uint32_t) (k_uptime_get() / 1000);
+    k_timer_start(&teardown_watch, K_MSEC(UP_TEARDOWN_HANG_MS), K_MSEC(UP_TEARDOWN_HANG_MS));
+    status.teardown_step = TEARDOWN_STEP_SOCKET_CLOSE;
     if (sock >= 0) {
         (void) zsock_close(sock);
     }
@@ -550,11 +593,20 @@ out:
         status.dhcp_state = iface->config.dhcpv4.state;
         status.dhcp_attempts = iface->config.dhcpv4.attempts;
         memcpy(status.ipv4, &iface->config.dhcpv4.requested_ip, sizeof(status.ipv4));
+        status.teardown_step = TEARDOWN_STEP_DHCP_STOP;
         net_dhcpv4_stop(iface);
+        status.teardown_step = TEARDOWN_STEP_WIFI_DISCONNECT;
         (void) net_mgmt(NET_REQUEST_WIFI_DISCONNECT, iface, NULL, 0);
-        wifi_radio_stop(iface); /* powers the nRF7002 down */
+        status.teardown_step = TEARDOWN_STEP_RADIO_STOP;
+        if (wifi_radio_stop(iface)) { /* powers the nRF7002 down */
+            status.radio_stop_failures++;
+            LOG_WRN("Wi-Fi radio stop did not confirm the supplicant released the interface");
+        }
     }
+    status.teardown_step = TEARDOWN_STEP_RELEASE;
     storage_release_upload();
+    k_timer_stop(&teardown_watch);
+    status.teardown_step = TEARDOWN_STEP_NONE;
     atomic_clear(&active);
     if ((mic_in_aad_sleep() || mic_is_paused()) && !is_connected) {
         sd_request_power(false);
@@ -628,6 +680,10 @@ static void upload_thread_fn(void *p1, void *p2, void *p3)
 
 int wifi_upload_init(void)
 {
+    status.hang_record = hang_record_read();
+    if (status.hang_record) {
+        LOG_WRN("Previous boot ended in a teardown hang (record 0x%02x)", status.hang_record);
+    }
     (void) app_settings_get_wifi_upload(&cfg);
     if (cfg.version == 1) {
         snprintf(cfg.hostname, sizeof(cfg.hostname), "%u.%u.%u.%u", cfg.host[0], cfg.host[1], cfg.host[2], cfg.host[3]);

@@ -56,7 +56,22 @@ struct wifi_upload_status {
     uint8_t ipv4[4];
     uint8_t last_stage; /* stage before teardown, including on failure */
     uint8_t retries_remaining;
+    uint8_t teardown_step;        /* enum wifi_teardown_step, NONE outside teardown */
+    uint8_t hang_record;          /* at boot: count << 4 | hung step (GPREGRET[1]) */
+    uint16_t radio_stop_failures; /* teardowns whose radio stop timed out, since boot */
+    uint32_t teardown_started_uptime_s;
 } __packed;
+
+/* The call a session's teardown is in. A hang on the dock reboots after 60 s and keeps
+ * the step in GPREGRET[1], which survives a soft reset (cleared at power-on). */
+enum wifi_teardown_step {
+    TEARDOWN_STEP_NONE = 0,
+    TEARDOWN_STEP_SOCKET_CLOSE,
+    TEARDOWN_STEP_DHCP_STOP,
+    TEARDOWN_STEP_WIFI_DISCONNECT,
+    TEARDOWN_STEP_RADIO_STOP,
+    TEARDOWN_STEP_RELEASE,
+};
 
 enum wifi_upload_state {
     WIFI_UPLOAD_IDLE = 0,

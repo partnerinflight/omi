@@ -773,3 +773,54 @@ low battery with the mic paused are not yet observed.
 Not yet checked on hardware: whether the VIN_DETECT level reads high on the dock (read `battery-status`
 docked and undocked), whether docking stops capture, and whether the battery charges
 with the mic paused.
+
+## Firmware 3.0.22-localwifi.23: Wi-Fi teardown hang watch — 2026-11-13
+
+Observed on `.22` after a night on the dock: battery 100% / 4193 mV, charging, dock power
+present; the mic stayed paused (`write_seq` unchanged across readings). `wifi-status`
+showed `teardown` with last stage `uploading`, last attempt at 123004 s of ~172800 s
+uptime, DHCP state 0, heap free 70576 B (101488 B after a normal session); ring
+`[5531456, 5639938)`, 108482 packets (3 h) unread and not moving. The upload thread never
+returned from teardown, so `active` stayed set (transfer LED on) and no further session
+ran. An SMP reset recovered it: the next session started 10 s after boot. The DHCP state
+suggests the link was already down when teardown began; this build has no shell or
+reachable log, so the hung call (DHCP stop, `NET_REQUEST_WIFI_DISCONNECT` or `net_if_down`)
+is unknown.
+
+`.23` records each teardown step in the upload status (46 bytes; hosts accept older
+forms) and arms a periodic 60 s timer for teardown. If it expires while docked, it writes
+count << 4 | step to GPREGRET[1] and cold-reboots; off the dock it keeps waiting, because
+the mic may be recording and a manual pause is not kept across reboot.
+
+Host checks: both Python suites pass (277 + 171 tests), including `test_upload_teardown_c.py`
+(teardown step order; the watch reboots only when docked and records the step). NCS 2.9.0
+Wi-Fi sysbuild on macOS: app FLASH 876000 B of 949760 B (92.23%) / RAM 429376 B (95.30%);
+no new warnings. Both OTA images pass MCUboot signature verification.
+ZIP SHA-256: `922235e467862dfff0fb3e52e55961125e9b12cb5894935b636e73e359bb4c1a`.
+App digest: `74b9d31b08dabc9e09ba75144b7f041f86c16adf4260c437e5396fef3693c82f`.
+Network digest: `a0fcdab6e412f395654c7049c2f7bf283848cbc09f1ba3b03112b75fbd767451` (not installed).
+Installed at the user's request on 2026-11-13 with `scripts/windows/flash_omi.py` from the
+Mac, application image only over `.22` (`c054d208…`); the first upload disconnected mid-transfer
+(BLE, while a Wi-Fi upload ran), the second completed. SMP showed `74b9d31b…` pending, then
+active/confirmed in slot 0; GATT reports `3.0.22-localwifi.23`. Docked: 100% / 4247 mV,
+dock power present. The first session after boot failed to join Wi-Fi ("wifi connect
+failed", errno 1) and its teardown completed. A real teardown hang, the GPREGRET record
+surviving MCUboot, and the reboot path have not been exercised on hardware.
+
+## Firmware 3.0.22-localwifi.24: nRF7002 rails off on every stop — 2026-11-13
+
+On `.23` the Omi read 100% / 4247 mV at 06:20, was worn off the dock (about 23000 new
+packets by 09:04), and by 12:50 had shut itself down: one 100 ms buzz, LEDs off, no BLE,
+each button press booting into the same critical-battery shutdown (`turnoff_all()` below
+`CONFIG_OMI_BATTERY_CRITICAL_MV` 3500 mV). No teardown hang was recorded. Woken on the dock it
+read 3715 mV charging and rose steadily (3798 mV at 13:38 to 3960 mV at 13:52) while a
+Wi-Fi upload ran, so the charger outruns the upload; by 15:34 it read 100% / 4202 mV.
+The upload averaged about 12 packets/s (91080 packets in about 2 h 10 min).
+
+A 150 mAh cell (BOM `GRP1654M1-1C-1S1P-3.7V-150mAh`) lasting a day needs an average of about
+6 mA; this run implies at least 23 mA. Reading the SDK (`zephyr/drivers/wifi/nrf_wifi/src/
+net_if.c`, `zephyr/modules/nrf_wifi/bus/rpu_hw_if.c`) showed that `rpu_pwroff()` runs only when
+the driver removes a fully started device, while our start hook raises BUCKEN/IOVDD on
+every bring-up; the SDK's `stop_board` default is empty. `.24` overrides it and lowers the
+rails after a failed `net_if_up()`. Whether this leak caused the drain is unproven; a
+discharge test with the mic paused off the dock is next.

@@ -103,6 +103,17 @@ Sources: [firmware guide](omi/firmware/AGENTS.md),
   as well as the battery. On 2026-11-10 an Omi left on the dock for days was found
   at 3549 mV / 1% with ~5 h (79 MiB) of audio still waiting to upload; why it did not
   charge is unmeasured.
+- Wi-Fi teardown watch (`.23`): on 2026-11-13 a `.22` session that lost its link mid-upload
+  hung in teardown for ~14 h (uploader stuck active, 3 h backlog, transfer LED on); a remote
+  reset recovered it. Which call hung is unknown. `.23` reports the teardown step and, if
+  teardown exceeds 60 s on the dock, reboots and keeps the hung step for `wifi-status`.
+  The original dead-on-dock incident fits the same hang but was not confirmed.
+- nRF7002 power-down (`.24`): our start hook raised the radio rails on every bring-up but
+  only the SDK's full-device removal lowered them, so a partial start or context-less stop
+  could leave the Wi-Fi chip powered. `.24` lowers the rails on every stop and failed start.
+  On 2026-11-13 a full `.23` Omi worn off the dock shut down at the 3500 mV critical
+  level within about 3–6.5 h (an all-day 150 mAh budget is ~6 mA); whether a powered radio,
+  cell capacity or recording load caused it is not yet measured.
 - Automatic upload requires dock power (`.22`; earlier builds: the charging signal), about one minute of queued
   audio, and a five-minute retry interval. BLE `upload-now` bypasses charging.
   From `.15` a started upload runs to completion: the

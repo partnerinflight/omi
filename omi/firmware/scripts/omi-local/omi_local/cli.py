@@ -494,6 +494,12 @@ def _print_upload_status(st: U.UploadStatus) -> None:
         print(f"last attempt   : {st.last_attempt_uptime_s}s after boot")
     if st.dhcp_state is not None:
         print(f"DHCP           : state={st.dhcp_state}, attempts={st.dhcp_attempts}, IPv4={st.ipv4}")
+    if st.teardown_step:
+        print(f"teardown       : in {st.teardown_step_name} since {st.teardown_started_uptime_s}s after boot")
+    if st.radio_stop_failures:
+        print(f"radio stop     : {st.radio_stop_failures} timed out since boot (radio rails forced off)")
+    if st.hang_record:
+        print(f"teardown hang  : rebooted {st.hang_reboots}x since power-on; last stuck in {st.hang_step_name}")
     if st.heap_free or st.heap_max_used:
         print(f"heap           : {st.heap_free} B free, {st.heap_max_used} B max used (Wi-Fi stack tuning)")
 

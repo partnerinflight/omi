@@ -42,6 +42,27 @@ int nrf_wifi_if_zep_start_board(const struct device *dev)
     return 0;
 }
 
+/* Mirror of the SDK's rpu_pwroff(): BUCKEN low, then IOVDD. rpu_pwroff only runs when the
+ * driver removes a fully started device; our start hook raises both rails on every
+ * bring-up, so without this a partial start or a context-less stop leaves them up. */
+static void rails_off(void)
+{
+    static const struct gpio_dt_spec buck = GPIO_DT_SPEC_GET(DT_NODELABEL(nrf70), bucken_gpios);
+    static const struct gpio_dt_spec io = GPIO_DT_SPEC_GET(DT_NODELABEL(nrf70), iovdd_ctrl_gpios);
+    if (gpio_is_ready_dt(&buck))
+        (void) gpio_pin_set_dt(&buck, 0);
+    if (gpio_is_ready_dt(&io))
+        (void) gpio_pin_set_dt(&io, 0);
+}
+
+/* Board-specific shutdown, run by the driver at the end of every interface stop. */
+int nrf_wifi_if_zep_stop_board(const struct device *dev)
+{
+    (void) dev;
+    rails_off();
+    return 0;
+}
+
 static uint8_t local_mac[6];
 
 static int wait_managed(struct net_if *iface, bool ready)
@@ -55,14 +76,14 @@ static int wait_managed(struct net_if *iface, bool ready)
     return 0;
 }
 
-void wifi_radio_stop(struct net_if *iface)
+int wifi_radio_stop(struct net_if *iface)
 {
-    if (iface) {
-        net_if_down(iface);
-        /* NCS removes the supplicant interface asynchronously. Its removal
-         * must finish before the owner starts the next AP/STA session. */
-        (void) wait_managed(iface, false);
-    }
+    if (!iface)
+        return 0;
+    net_if_down(iface);
+    /* NCS removes the supplicant interface asynchronously. Its removal
+     * must finish before the owner starts the next AP/STA session. */
+    return wait_managed(iface, false);
 }
 
 int wifi_radio_start(struct net_if *iface)
@@ -85,8 +106,12 @@ int wifi_radio_start(struct net_if *iface)
         if (ret)
             return ret;
         ret = net_if_up(iface);
-        if (ret && ret != -EALREADY)
+        if (ret && ret != -EALREADY) {
+            /* The driver runs no stop after a failed start, but our start hook has
+             * already powered the radio. */
+            rails_off();
             return ret;
+        }
     }
     /* Interface-up is not supplicant-ready: registration happens on its
      * event/work queue. Scan/AP/connect must wait for that authoritative owner. */

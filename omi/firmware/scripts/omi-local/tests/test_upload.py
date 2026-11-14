@@ -119,6 +119,14 @@ class ProtocolCodecTests(unittest.TestCase):
         status = U.parse_upload_status(old + bytes([6, 1, 0, 0, 192, 168, 1, 40, 7, 5]))
         self.assertEqual((status.last_stage, status.retries_remaining), (7, 5))
         self.assertEqual(status.result_name, 'aborted')
+        self.assertIsNone(status.teardown_step)
+        # .23: current teardown step + start, and the hang recorded before the last reboot.
+        ext = old + bytes([6, 1, 0, 0, 192, 168, 1, 40, 8, 0]) + struct.pack('<BBHI', 3, 0x23, 4, 123004)
+        status = U.parse_upload_status(ext)
+        self.assertEqual((status.teardown_step, status.teardown_started_uptime_s), (3, 123004))
+        self.assertEqual(status.radio_stop_failures, 4)
+        self.assertEqual((status.teardown_step_name, status.hang_step_name, status.hang_reboots),
+                         ('wifi disconnect', 'wifi disconnect', 2))
 
     def test_frame_timeout_identifies_header_or_payload(self):
         async def check():
